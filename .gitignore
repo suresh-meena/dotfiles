@@ -1,0 +1,42 @@
+# This repository is intentionally safe to publish.
+
+# Machine-specific dotfiles stay ordinary local files and are never committed.
+/personal/*
+!/personal/README.md
+
+# Local secrets and credentials.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.crt
+credentials/
+secrets/
+.password-store/
+.ssh/
+.gnupg/
+
+# Runtime state from local tools.
+.codex/
+.opencode/
+.config/fleet/
+.config/opencode/
+
+# Shell/editor history and caches.
+.bash_history*
+.zsh_history*
+.zcompdump*
+history*
+.cache/
+*.log
+*.tmp
+*~
+
+# OS/editor noise.
+.DS_Store
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
