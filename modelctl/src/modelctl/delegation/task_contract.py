@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+
+def canonical_task_hash(task: dict[str, Any]) -> str:
+    j = json.dumps(task, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(j.encode()).hexdigest()
+
+
+def load_task_file(path: str | Path) -> dict[str, Any]:
+    p = Path(path)
+    text = p.read_text()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"invalid task JSON {p}: {e}")
+    if not isinstance(data, dict):
+        raise ValueError(f"task file must be JSON object: {p}")
+    return data
+
+
+def validate_write_scope(*, changed_paths: list[str], allowed: list[str] | None) -> bool:
+    if allowed is None:
+        return False
+    # canonicalize: resolve symlinks and .. ; for v1 we use posix norm and check prefix
+    import posixpath
+
+    def canon(p: str) -> str:
+        return posixpath.normpath(p)
+
+    allowed_canon = [canon(a.rstrip("/")) for a in allowed]
+    for cp in changed_paths:
+        c = canon(cp)
+        if not any(c == a or c.startswith(a + "/") for a in allowed_canon):
+            return False
+    return True

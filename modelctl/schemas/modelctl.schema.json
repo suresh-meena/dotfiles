@@ -1,0 +1,245 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "modelctl config v1",
+  "type": "object",
+  "required": ["version"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "startup_timeout_s": { "type": "integer", "minimum": 1 },
+        "graceful_stop_timeout_s": { "type": "integer", "minimum": 1 },
+        "kill_timeout_s": { "type": "integer", "minimum": 1 },
+        "cleanup_verify_timeout_s": { "type": "integer", "minimum": 1 },
+        "bind_host": { "type": "string", "enum": ["127.0.0.1", "::1"] },
+        "access": { "type": "string", "enum": ["tunnel"] },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "type": "string", "enum": ["persistent", "ttl", "session"] },
+            "ttl_s": { "type": "integer", "minimum": 1 },
+            "lease_grace_s": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "security": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "request_logging": { "type": "boolean" },
+            "output_logging": { "type": "boolean" },
+            "allow_remote_exposure": { "type": "boolean" },
+            "state_file_mode": { "type": "string", "pattern": "^0[0-7]{3}$" },
+            "state_dir_mode": { "type": "string", "pattern": "^0[0-7]{3}$" }
+          }
+        },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "gpu_memory_utilization": { "type": "number", "minimum": 0.1, "maximum": 1.0 }
+      }
+    },
+    "machines": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ssh": {
+              "type": "object",
+              "required": ["host"],
+              "additionalProperties": false,
+              "properties": {
+                "host": { "type": "string", "minLength": 1 },
+                "user": { "type": "string" },
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+              }
+            },
+            "supervisor": { "type": "string", "enum": ["systemd-user"] },
+            "inventory": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "roots": { "type": "array", "items": { "type": "string" } },
+                "max_age_before_start_s": { "type": "integer", "minimum": 0 },
+                "auto_refresh_before_start": { "type": "boolean" }
+              }
+            },
+            "runtime": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": { "type": "string", "enum": ["venv", "container", "system"] },
+                "activate": { "type": "string" },
+                "image": { "type": "string" }
+              }
+            },
+            "gpu": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sharing": { "type": "string", "enum": ["exclusive-managed", "shared"] },
+                "require_same_user_for_foreign_processes": { "type": "boolean" }
+              }
+            },
+            "defaults": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "gpu_memory_utilization": { "type": "number", "minimum": 0.1, "maximum": 1.0 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-zA-Z0-9][a-zA-Z0-9_.-]*$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "served_model_name": { "type": "string" },
+            "family": { "type": "string" },
+            "generation_config": { "type": "string", "enum": ["vllm"] }
+          }
+        }
+      }
+    },
+    "targets": {
+      "type": "object",
+      "patternProperties": {
+        "^.+@.+$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "model": { "type": "string" },
+            "machine": { "type": "string" },
+            "artifact": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": { "type": "string" },
+                "require_observed": { "type": "boolean" }
+              },
+              "required": ["path"]
+            },
+            "gpus": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+            "lifecycle": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "mode": { "type": "string", "enum": ["persistent", "ttl", "session"] },
+                "ttl_s": { "type": "integer", "minimum": 1 },
+                "lease_grace_s": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "security": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "allow_remote_exposure": { "type": "boolean" },
+                "network_policy": { "type": "string" }
+              }
+            },
+            "vllm": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "tensor_parallel_size": { "type": "integer", "minimum": 1 },
+                "max_model_len": { "type": "integer", "minimum": 1 },
+                "gpu_memory_utilization": { "type": "number", "minimum": 0.1, "maximum": 1.0 },
+                "dtype": { "type": "string" },
+                "extra_args": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          },
+          "required": ["model", "machine", "artifact"]
+        }
+      }
+    },
+    "delegation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "brain": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "owner": { "type": "string", "enum": ["codex"] },
+            "final_authority": { "type": "boolean" },
+            "authority": { "type": "string" },
+            "labels": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "backend": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string", "enum": ["opencode"] },
+            "executable": { "type": "string" },
+            "provider": { "type": "string" },
+            "model": { "type": "string" }
+          }
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "driver": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "backend": { "type": "string" },
+                "model": { "type": "string" },
+                "max_parallel": { "type": "integer", "minimum": 1 },
+                "max_files_read": { "type": "integer", "minimum": 1 },
+                "max_files_write": { "type": "integer", "minimum": 0 },
+                "max_patch_lines": { "type": "integer", "minimum": 1 },
+                "default_timeout_s": { "type": "integer", "minimum": 1 },
+                "workspace": { "type": "string" },
+                "validation": { "type": "string" }
+              }
+            },
+            "worker": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "backend": { "type": "string" },
+                "model": { "type": "string" },
+                "max_parallel": { "type": "integer", "minimum": 1 },
+                "max_files_read": { "type": "integer", "minimum": 1 },
+                "max_files_write": { "type": "integer", "minimum": 0 },
+                "max_patch_lines": { "type": "integer", "minimum": 1 },
+                "default_timeout_s": { "type": "integer", "minimum": 1 },
+                "workspace": { "type": "string" },
+                "validation": { "type": "string" }
+              }
+            }
+          }
+        },
+        "orchestration": { "type": "object", "additionalProperties": true },
+        "execution": { "type": "object", "additionalProperties": true },
+        "validation": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_parallel_total": { "type": "integer", "minimum": 1 },
+        "max_parallel_worker": { "type": "integer", "minimum": 1 },
+        "max_parallel_driver": { "type": "integer", "minimum": 1 },
+        "max_task_fanout": { "type": "integer", "minimum": 1 },
+        "soft_daily_usd": { "type": "number", "minimum": 0 },
+        "hard_daily_usd": { "type": "number", "minimum": 0 },
+        "go_usage_value": { "type": "object", "additionalProperties": true }
+      }
+    }
+  }
+}

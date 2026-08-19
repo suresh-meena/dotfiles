@@ -40,3 +40,7 @@ history*
 .vscode/
 __pycache__/
 *.py[cod]
+
+# modelctl runtime state.
+.modelctl/
+*.egg-info/
