@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
+import signal
+import socket
 import subprocess
+import sys
 import json
 import time
-import urllib.request
-import urllib.error
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +82,9 @@ class RuntimeAdapter:
         return vllm_args
 
     def check_health(self, host: str = "127.0.0.1", port: int = 8000, timeout: float = 2.0) -> bool:
+        import urllib.request
+        import urllib.error
+
         url = f"http://{host}:{port}/health"
         try:
             with urllib.request.urlopen(url, timeout=timeout) as r:
@@ -92,6 +97,9 @@ class RuntimeAdapter:
             return False
 
     def check_model_identity(self, host: str = "127.0.0.1", port: int = 8000, expected: str | None = None, timeout: float = 2.0) -> bool:
+        import urllib.request
+        import urllib.error
+
         if not expected:
             return True
         url = f"http://{host}:{port}/v1/models"
@@ -117,4 +125,84 @@ class RuntimeAdapter:
             # jitter
             time.sleep(delay + random.uniform(0, delay * 0.2))
             delay = min(max_delay, delay * 1.5)
+        return False
+
+
+def spawn_local_fake(served_model: str, port: int, log_file: Path, child: bool = False) -> subprocess.Popen:
+    """Spawn the fake vLLM-compatible runtime as a new session leader.
+
+    The process becomes its own session/process group leader so the pid can
+    be used directly for process-group termination (killpg).
+    """
+    argv = [
+        sys.executable,
+        "-m",
+        "modelctl.runtime.fake",
+        "--port",
+        str(port),
+        "--served-model",
+        served_model,
+        "--log-file",
+        str(log_file),
+    ]
+    if child:
+        argv.append("--child")
+    return subprocess.Popen(
+        argv,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def pid_alive(pid: int | None) -> bool:
+    """True when a pid still exists. Fail-closed: unknown/error => False."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # exists but owned by another user; treat as alive (cannot prove dead)
+        return True
+    except Exception:
+        return False
+
+
+def process_group_gone(pid: int | None) -> bool:
+    """True only when the whole process group is proven gone.
+
+    Any error other than ProcessLookupError (e.g. EPERM, EINVAL) means we
+    cannot prove the group is gone, so we fail closed and report alive.
+    """
+    if not pid or pid <= 0:
+        return True
+    try:
+        os.killpg(pid, 0)
+        return False
+    except ProcessLookupError:
+        return True
+    except Exception:
+        return False
+
+
+def kill_group(pid: int | None, sig: int = signal.SIGTERM) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.killpg(pid, sig)
+        return True
+    except ProcessLookupError:
+        return True
+    except Exception:
+        return False
+
+
+def port_busy(host: str, port: int, timeout: float = 0.5) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
         return False

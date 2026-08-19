@@ -46,8 +46,16 @@ class OpenCodeAdapter:
         workdir: Path,
         timeout_s: int = 600,
         extra_args: list[str] | None = None,
+        on_start: Any | None = None,
+        variant: str | None = "max",
     ) -> dict[str, Any]:
-        """Invoke `opencode --pure run --model <ref> --agent <profile> --format json --dir <workdir> <prompt>` via argv vector."""
+        """Invoke `opencode --pure run --model <ref> --agent <profile> --format json --dir <workdir> <prompt>` via argv vector.
+
+        By default the maximum reasoning variant is requested (--variant max,
+        "maximum thinking"); pass variant=None to omit the flag.
+        on_start(proc) is invoked with the Popen handle immediately after
+        spawn so the caller can record the process pid for later cancellation.
+        """
         # Validate model_ref and agent_profile to prevent injection
         if "/" not in model_ref or any(c in model_ref for c in [";", "&", "|", "`", "$", "\n"]):
             raise ValueError(f"invalid model_ref: {model_ref}")
@@ -67,6 +75,8 @@ class OpenCodeAdapter:
             "--dir",
             str(workdir),
         ]
+        if variant:
+            argv += ["--variant", variant]
         if extra_args:
             argv.extend(extra_args)
         argv.append(task_prompt)
@@ -86,6 +96,11 @@ class OpenCodeAdapter:
             from ...errors import ModelctlError
 
             raise ModelctlError(code="E_OPENCODE_NOT_FOUND", message="opencode executable not found")
+        if on_start is not None:
+            try:
+                on_start(proc)
+            except Exception:
+                pass
         try:
             stdout, stderr = proc.communicate(timeout=timeout_s)
             latency_ms = int((time.time() - start) * 1000)
@@ -128,9 +143,9 @@ class OpenCodeAdapter:
 
             raise ModelctlError(code="E_DELEGATE_TIMEOUT", message=f"opencode run timed out after {timeout_s}s", details={"latency_ms": latency_ms})
 
-    def build_argv(self, *, model_ref: str, agent_profile: str, workdir: Path, prompt: str) -> list[str]:
+    def build_argv(self, *, model_ref: str, agent_profile: str, workdir: Path, prompt: str, variant: str | None = "max") -> list[str]:
         # helper for testing / dry-run
-        return [
+        argv = [
             self.executable,
             "--pure",
             "run",
@@ -142,5 +157,8 @@ class OpenCodeAdapter:
             "json",
             "--dir",
             str(workdir),
-            prompt,
         ]
+        if variant:
+            argv += ["--variant", variant]
+        argv.append(prompt)
+        return argv

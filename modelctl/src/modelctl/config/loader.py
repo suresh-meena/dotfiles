@@ -4,8 +4,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from ..errors import ModelctlError
 from .schema import validate_config
 
@@ -35,6 +33,8 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
+    import yaml
+
     try:
         text = path.read_text()
     except FileNotFoundError:

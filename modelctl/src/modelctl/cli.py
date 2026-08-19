@@ -1,31 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
-import traceback
 import uuid
 from pathlib import Path
 from typing import Any
 
 import click
-import yaml
 
 from .config.loader import load_config
-from .config.resolver import resolve_target, target_digest, explain_target, list_targets, list_machines, list_models
-from .inventory.registry import Registry, DEFAULT_DB
-from .inventory.scanner import scan_local_roots, validate_path_inside_roots
-from .errors import ModelctlError, e_internal
-from .lifecycle.start import start_target
-from .lifecycle.stop import stop_target
-from .lifecycle.reconcile import reconcile
-from .tunnel import TunnelManager
-from .diagnostics import doctor as doctor_fn, version_info
-from .delegation.catalog import Catalog
-from .delegation.router import deterministic_select, routing_explain
-from .delegation.budget import check_budget
-from .delegation.task_contract import load_task_file, canonical_task_hash
-from .delegation import policy as delegation_policy
+from .config.resolver import resolve_target, explain_target, list_targets, list_machines, list_models
+from .inventory.registry import Registry
+from .errors import ModelctlError
 from .privacy.redaction import redact_dict
 from .state import ensure_state_dirs, STATE_ROOT
 
@@ -69,6 +55,8 @@ def _handle_error(e: Exception, ctx: Ctx | None, *, json_out: bool | None = None
                 click.echo(f"details: {json.dumps(e.details)}", err=True)
             click.echo(f"suggested: {d.get('suggested_action')}", err=True)
         if debug:
+            import traceback
+
             traceback.print_exc()
         sys.exit(1 if e.code != "E_INTERNAL" else 3)
     else:
@@ -80,6 +68,8 @@ def _handle_error(e: Exception, ctx: Ctx | None, *, json_out: bool | None = None
         else:
             click.echo(f"[E_INTERNAL] {msg} (trace {tid})", err=True)
         if debug:
+            import traceback
+
             traceback.print_exc()
         sys.exit(3)
 
@@ -118,6 +108,8 @@ def cli(ctx, json_out, non_interactive, timeout, config, verbose, trace_id, debu
 @pass_ctx
 def version_cmd(ctx: Ctx, remote_machine):
     try:
+        from .diagnostics import version_info
+
         info = version_info(machine=remote_machine)
         _ok({"ok": True, "version": info}, ctx)
     except Exception as e:
@@ -159,6 +151,8 @@ def config_explain(ctx: Ctx, target):
         if ctx.json_out:
             _ok({"ok": True, "target": target, **resolved}, ctx)
         else:
+            import yaml
+
             click.echo(yaml.safe_dump(resolved["resolved"], sort_keys=True))
             click.echo(f"digest: {resolved['config_digest']}")
     except Exception as e:
@@ -177,7 +171,10 @@ def start_cmd(ctx: Ctx, model, machine, wait, replace, ttl, persistent):
     target = f"{model}@{machine}"
     try:
         cfg, reg = _load_config_pair(ctx)
-        result = start_target(registry=reg, config=cfg, target_id=target, replace=replace, ttl=ttl, wait=wait, trace_id=ctx.trace_id)
+        from .lifecycle.start import start_target
+
+        ttl_eff = None if persistent else ttl
+        result = start_target(registry=reg, config=cfg, target_id=target, replace=replace, ttl=ttl_eff, wait=wait, trace_id=ctx.trace_id)
         _ok(result, ctx)
     except Exception as e:
         _handle_error(e, ctx)
@@ -191,6 +188,8 @@ def stop_cmd(ctx: Ctx, model, machine, force):
     target = f"{model}@{machine}"
     try:
         cfg, reg = _load_config_pair(ctx)
+        from .lifecycle.stop import stop_target
+
         result = stop_target(registry=reg, config=cfg, target_id=target, force=force, trace_id=ctx.trace_id)
         _ok(result, ctx)
     except Exception as e:
@@ -205,6 +204,9 @@ def restart_cmd(ctx: Ctx, model, machine, replace):
     target = f"{model}@{machine}"
     try:
         cfg, reg = _load_config_pair(ctx)
+        from .lifecycle.start import start_target
+        from .lifecycle.stop import stop_target
+
         # stop then start
         try:
             stop_target(registry=reg, config=cfg, target_id=target, force=False, trace_id=ctx.trace_id)
@@ -237,10 +239,13 @@ def status_cmd(ctx: Ctx, model, machine):
                 resolved = resolve_target(cfg, target)
             except Exception:
                 pass
-            # check health simulation
+            # check health via live process/port verification
+            from .lifecycle.procs import deployment_live, lease_expired
+
+            live = deployment_live(dep)
             vllm = "unknown"
             if dep["state"] == "READY":
-                vllm = "healthy"
+                vllm = "healthy" if live else "not_running"
             elif dep["state"] == "STARTING":
                 vllm = "starting"
             elif dep["state"] == "LEAK_SUSPECTED":
@@ -248,6 +253,8 @@ def status_cmd(ctx: Ctx, model, machine):
             else:
                 vllm = dep["state"].lower()
             # tunnel
+            from .tunnel import TunnelManager
+
             tm = TunnelManager(reg)
             ep = tm.endpoint(target_id=target)
             tunnel_info = ep.get("local") if ep.get("ok") else "none"
@@ -255,7 +262,7 @@ def status_cmd(ctx: Ctx, model, machine):
                 "ok": True,
                 "target": target,
                 "CONTROL": "managed" if dep else "unmanaged",
-                "PROCESS": "running" if dep and dep["state"] == "READY" else "not running",
+                "PROCESS": "running" if dep and dep["state"] == "READY" and live else "not running",
                 "VLLM": vllm,
                 "MODEL": model,
                 "ARTIFACT": dep.get("artifact_fingerprint", "")[:12] if dep.get("artifact_fingerprint") else "unknown",
@@ -263,7 +270,13 @@ def status_cmd(ctx: Ctx, model, machine):
                 "CONFIG_DIGEST": dep["config_digest"],
                 "TUNNEL": tunnel_info,
                 "deployment": dep,
+                "simulation": True,
+                "backend": "local-simulation",
             }
+            if lease_expired(dep):
+                payload["LEASE"] = "expired"
+            if dep.get("server_pid"):
+                payload["pid"] = dep["server_pid"]
             if resolved:
                 payload["bind_host"] = resolved.get("bind_host")
                 payload["port"] = resolved.get("port")
@@ -289,12 +302,28 @@ def ps_cmd(ctx: Ctx, machine):
     try:
         _, reg = _load_config_pair(ctx)
         deps = reg.list_deployments(machine=machine)
+        # latest deployment per target
+        latest: dict[str, dict[str, Any]] = {}
+        for d in deps:
+            tid = d["target_id"]
+            if tid not in latest or (d.get("started_at") or "") >= (latest[tid].get("started_at") or ""):
+                latest[tid] = d
+        rows = list(latest.values())
         if ctx.json_out:
-            _ok({"ok": True, "targets": deps}, ctx)
+            from .lifecycle.procs import deployment_live
+
+            out = []
+            for d in rows:
+                row = dict(d)
+                row["live"] = deployment_live(d)
+                out.append(row)
+            _ok({"ok": True, "targets": out, "simulation": True, "backend": "local-simulation"}, ctx)
         else:
-            click.echo(f"{'TARGET':25} {'STATE':15} {'GPU(S)':10} {'AGE':10} {'LEASE'}")
+            click.echo(f"{'TARGET':25} {'STATE':15} {'PID':8} {'PORT':6} {'AGE':10} {'LEASE'}")
             from datetime import datetime, timezone
-            for d in deps:
+            from .lifecycle.procs import deployment_live
+
+            for d in rows:
                 age = "-"
                 if d.get("started_at"):
                     try:
@@ -308,8 +337,16 @@ def ps_cmd(ctx: Ctx, machine):
                             age = f"{age_s//3600}h{age_s%3600//60}m"
                     except Exception:
                         pass
-                # try to get gpus from config if available
-                click.echo(f"{d['target_id']:25} {d['state']:15} {'-':10} {age:10} {'-'}")
+                pid = str(d["server_pid"]) if d.get("server_pid") else "-"
+                port = str(d["port"]) if d.get("port") else "-"
+                live = deployment_live(d)
+                state = d["state"]
+                if state == "READY" and not live:
+                    state = "READY(dead)"
+                lease = "-"
+                if d.get("lease_expires_at"):
+                    lease = d["lease_expires_at"][:19].replace("T", " ")
+                click.echo(f"{d['target_id']:25} {state:15} {pid:8} {port:6} {age:10} {lease}")
     except Exception as e:
         _handle_error(e, ctx)
 
@@ -326,6 +363,8 @@ def connect_cmd(ctx: Ctx, model, machine, detach):
         dep = reg.deployment_for_target(target)
         if not dep or dep["state"] != "READY":
             raise ModelctlError(code="E_PREFLIGHT_FAILED", message=f"target {target} not READY", target=target)
+        from .tunnel import TunnelManager
+
         tm = TunnelManager(reg)
         ssh = resolved.get("ssh", {})
         res = tm.connect(target_id=target, machine_id=machine, ssh_host=ssh.get("host", "localhost"), ssh_user=ssh.get("user"), ssh_port=ssh.get("port"), remote_port=resolved.get("port", 8000), trace_id=ctx.trace_id)
@@ -341,6 +380,8 @@ def disconnect_cmd(ctx: Ctx, model, machine):
     target = f"{model}@{machine}" if model and machine else None
     try:
         _, reg = _load_config_pair(ctx)
+        from .tunnel import TunnelManager
+
         tm = TunnelManager(reg)
         res = tm.disconnect(target_id=target, machine_id=machine)
         _ok(res, ctx)
@@ -355,6 +396,8 @@ def endpoint_cmd(ctx: Ctx, model, machine):
     target = f"{model}@{machine}"
     try:
         _, reg = _load_config_pair(ctx)
+        from .tunnel import TunnelManager
+
         tm = TunnelManager(reg)
         res = tm.endpoint(target_id=target)
         if not res.get("ok"):
@@ -375,60 +418,14 @@ def inventory():
 def inv_sync(ctx: Ctx, machine, deep_hash):
     try:
         cfg, reg = _load_config_pair(ctx)
-        machines = [machine] if machine else list_machines(cfg)
-        total_found = 0
-        for mid in machines:
-            m = cfg.get("machines", {}).get(mid)
-            if not m:
-                raise ModelctlError(code="E_MACHINE_NOT_FOUND", message=f"machine {mid} not found", machine=mid)
-            roots = m.get("inventory", {}).get("roots", [])
-            # For local simulation, we scan local roots if they exist on this host
-            # For remote, we would SSH; here we simulate by scanning local if roots are local paths
-            found = scan_local_roots(roots)
-            # Also handle declared targets: ensure artifacts for declared targets are recorded
-            targets = [tid for tid, t in cfg.get("targets", {}).items() if t["machine"] == mid]
-            for tid in targets:
-                t = cfg["targets"][tid]
-                apath = t["artifact"]["path"]
-                # Try to find in scan results
-                match = next((f for f in found if f["canonical_path"] == apath), None)
-                artifact_id = f"{mid}:{apath}"
-                model_alias = t["model"]
-                if match:
-                    reg.upsert_artifact(artifact_id, mid, model_alias, apath, "safetensors", match["size_bytes"], match["fingerprint"], "AVAILABLE")
-                    reg.add_observation(artifact_id, 1, match["size_bytes"], match["fingerprint"], probe_version="1.5", error_code=None)
-                    total_found += 1
-                else:
-                    # Check if path exists locally (for demo)
-                    exists = Path(apath).exists() and Path(apath).is_dir() and (Path(apath) / "config.json").exists()
-                    if exists:
-                        # compute fingerprint on the fly
-                        listing = []
-                        for p in Path(apath).iterdir():
-                            if p.is_file():
-                                st = p.stat()
-                                listing.append({"relative": p.name, "size": st.st_size, "mtime_ns": st.st_mtime_ns})
-                        from .inventory.fingerprint import fingerprint_from_listing
+        from .inventory.sync import sync_machine
 
-                        fp = fingerprint_from_listing(apath, listing)
-                        size = sum(x["size"] for x in listing)
-                        reg.upsert_artifact(artifact_id, mid, model_alias, apath, "safetensors", size, fp, "AVAILABLE")
-                        reg.add_observation(artifact_id, 1, size, fp, probe_version="1.5")
-                        total_found += 1
-                    else:
-                        # record missing but don't delete history; add observation missing
-                        reg.upsert_artifact(artifact_id, mid, model_alias, apath, None, None, None, "MISSING")
-                        reg.add_observation(artifact_id, 0, None, None, probe_version="1.5", error_code="E_ARTIFACT_MISSING")
-            reg.upsert_machine(mid, last_probe_status="OK")
-            reg.add_event("INVENTORY_PROBE_STARTED", machine_id=mid, result="ok", details={"roots": roots})
-            for tid in targets:
-                artifact_id = f"{mid}:{cfg['targets'][tid]['artifact']['path']}"
-                art = reg.get_artifact(artifact_id)
-                if art and art["current_status"] == "AVAILABLE":
-                    reg.add_event("INVENTORY_ARTIFACT_FOUND", target_id=tid, machine_id=mid, details={"path": art["canonical_path"]})
-                else:
-                    reg.add_event("INVENTORY_ARTIFACT_MISSING", target_id=tid, machine_id=mid, details={"path": cfg['targets'][tid]['artifact']['path']})
-        _ok({"ok": True, "machines": machines, "verified": total_found}, ctx)
+        machines = [machine] if machine else list_machines(cfg)
+        results = []
+        for mid in machines:
+            res = sync_machine(registry=reg, config=cfg, machine_id=mid, deep_hash=deep_hash)
+            results.append(res)
+        _ok({"ok": True, "machines": machines, "results": results, "verified": sum(r["verified"] for r in results)}, ctx)
     except Exception as e:
         _handle_error(e, ctx)
 
@@ -449,7 +446,9 @@ def inv_list(ctx: Ctx, machine, model_filter):
             click.echo(f"{'MODEL':12} {'MACHINE':10} {'STATUS':12} {'PATH':40} {'LAST VERIFIED'}")
             for a in arts:
                 last = a.get("last_seen_at", "")[:19] if a.get("last_seen_at") else "-"
-                click.echo(f"{a.get('model_alias','-'):12} {a['machine_id']:10} {a['current_status']:12} {a['canonical_path']:40} {last}")
+                model_alias = a.get("model_alias") or "-"
+                status = a.get("current_status") or "-"
+                click.echo(f"{model_alias:12} {a['machine_id']:10} {status:12} {a['canonical_path']:40} {last}")
     except Exception as e:
         _handle_error(e, ctx)
 
@@ -674,6 +673,8 @@ def gpu_reservations(ctx: Ctx):
 def gpu_reconcile(ctx: Ctx):
     try:
         cfg, reg = _load_config_pair(ctx)
+        from .lifecycle.reconcile import reconcile
+
         data = reconcile(registry=reg, config=cfg, machine=None, fix_safe=False)
         _ok(data, ctx)
     except Exception as e:
@@ -729,6 +730,8 @@ def events_cmd(ctx: Ctx, machine, target, limit):
 def reconcile_cmd(ctx: Ctx, machine, fix_safe):
     try:
         cfg, reg = _load_config_pair(ctx)
+        from .lifecycle.reconcile import reconcile
+
         data = reconcile(registry=reg, config=cfg, machine=machine, fix_safe=fix_safe)
         _ok(data, ctx)
     except Exception as e:
@@ -760,6 +763,8 @@ def gc_cmd(ctx: Ctx, machine):
                 except Exception:
                     pass
         # dead tunnels
+        from .lifecycle.reconcile import reconcile
+
         rec = reconcile(registry=reg, config={"machines": {}, "models": {}, "targets": {}}, machine=machine, fix_safe=True)
         _ok({"ok": True, "removed_generated": removed, "reconcile": rec}, ctx)
     except Exception as e:
@@ -772,6 +777,8 @@ def gc_cmd(ctx: Ctx, machine):
 def doctor_cmd(ctx: Ctx, machine, target):
     try:
         cfg, reg = _load_config_pair(ctx)
+        from .diagnostics import doctor as doctor_fn
+
         data = doctor_fn(registry=reg, config=cfg, machine=machine, target=target)
         _ok(data, ctx)
     except Exception as e:
@@ -794,141 +801,13 @@ def delegate_run(ctx: Ctx, role, task_file, bin_, shadow, no_cache):
     bin_ = bin_ or role
     try:
         cfg, reg = _load_config_pair(ctx)
+        from .delegation.runner import run_delegate_task
+        from .delegation.task_contract import load_task_file
+
         task = load_task_file(task_file)
         task["role"] = role
-        delegation_policy.validate_task_contract(task)
-        # budget check
-        ok, reason = check_budget(registry=reg, config=cfg)
-        if not ok:
-            raise ModelctlError(code="E_DELEGATION_BUDGET_EXCEEDED", message=reason)
-        # routing
-        selected = deterministic_select(registry=reg, requested_bin=bin_, task_class=task.get("task_class"))
-        # privacy check (simplified)
-        data_class = task.get("data_class", "INTERNAL")
-        max_allowed = "INTERNAL"
-        # try to get policy for model_ref
-        # for now, allow INTERNAL/PUBLIC only
-        from .privacy.classification import allows_cloud
-
-        if not allows_cloud(data_class, max_allowed):
-            raise ModelctlError(code="E_DELEGATION_PRIVACY_DENIED", message=f"data class {data_class} not allowed for cloud delegation")
-        # workspace isolation
-        from pathlib import Path
-        import tempfile, hashlib
-
-        workdir = Path(tempfile.mkdtemp(prefix="modelctl-wt-"))
-        # For worker-read, staged; for driver, worktree (simplified: use staging dir)
-        # Capture run
-        run_id = f"dlg_{uuid.uuid4().hex[:12]}"
-        caller = "codex"
-        task_class = task.get("task_class", task.get("objective", "unknown")[:30])
-        workspace_mode = "isolated_worktree" if role == "driver" else "staged_or_worktree"
-        reg.insert_delegate_run(run_id, caller, bin_, selected["model_ref"], task_class, workspace_mode, "RUNNING", parent_trace_id=ctx.trace_id)
-        # Invoke opencode adapter
-        from .delegation.adapters.opencode import OpenCodeAdapter
-        from .workspace.scope import enforce_scope
-        from .workspace.cleanup import cleanup_path, verify_clean
-
-        adapter = OpenCodeAdapter(executable=cfg.get("delegation", {}).get("backend", {}).get("executable", "opencode"))
-        # Check policy lock stale
-        lock_path = Path(".modelctl/delegation.lock")
-        if lock_path.exists():
-            try:
-                lock = json.loads(lock_path.read_text())
-                # check digest drift (simplified)
-                pass
-            except Exception:
-                pass
-        # Build prompt (never include secrets; task is already redacted)
-        prompt = task.get("objective") or task.get("prompt") or json.dumps(task)[:4000]
-        # Ensure no shell injection via prompt - we pass as argv, not shell, so safe
-        agent_profile = task.get("agent_profile") or ("modelctl-driver" if role == "driver" else "modelctl-worker-read")
-        if agent_profile not in delegation_policy.ALLOWED_AGENTS:
-            raise ModelctlError(code="E_DELEGATION_POLICY_DENIED", message=f"agent {agent_profile} not allowed")
-        # Check opencode available
-        ok_avail, detail = adapter.check_available()
-        if not ok_avail:
-            # For simulation without opencode, we simulate success with mock output
-            # This allows offline testing and calibration
-            mock_diff = "# mock diff for testing\n"
-            changed = task.get("allowed_write_paths", [])[:1] or []
-            # simulate validation
-            validation = {"scope": "passed", "status": "passed", "commands": []}
-            reg.update_delegate_run(run_id, state="SUCCEEDED", finished_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(), validation_status="passed", observed_cost=0.001)
-            reg.add_budget(run_id, 0.001, selected["model_ref"])
-            # cleanup
-            cleanup_path(workdir)
-            if not verify_clean(workdir):
-                raise ModelctlError(code="E_WORKTREE_CLEANUP_FAILED", message="worktree cleanup failed")
-            from .delegation.result_contract import make_result_envelope
-
-            envelope = make_result_envelope(run_id=run_id, caller=caller, role=role, selected_model=selected["model_ref"], task_class=task_class, workspace={"mode": workspace_mode, "base_commit": "mock", "changed_paths": changed}, validation=validation, usage={"cost_usd": 0.001, "latency_ms": 10})
-            _ok(envelope, ctx)
-            return
-        # Real invocation
-        try:
-            result = adapter.run(model_ref=selected["model_ref"], agent_profile=agent_profile, task_prompt=prompt, workdir=workdir, timeout_s=task.get("timeout_s") or cfg.get("delegation", {}).get("roles", {}).get(role, {}).get("default_timeout_s", 600))
-            # After run, capture diff (for worktree) - here workdir is staging, so we list changed files via adapter output parsing
-            # Simplified: try to parse changed paths from opencode output if any; else assume none
-            changed_paths = []
-            try:
-                # try to extract from result parsed
-                parsed = result.get("parsed", {})
-                if isinstance(parsed, dict) and "changed_paths" in parsed:
-                    changed_paths = parsed["changed_paths"]
-            except Exception:
-                pass
-            # enforce scope
-            allowed = task.get("allowed_write_paths")
-            if changed_paths:
-                ok_scope, oos = enforce_scope(changed_paths, allowed)
-                if not ok_scope:
-                    reg.update_delegate_run(run_id, state="FAILED", validation_status="out_of_scope")
-                    raise ModelctlError(code="E_DELEGATE_OUT_OF_SCOPE_CHANGE", message=f"out of scope: {oos}", details={"changed": changed_paths, "allowed": allowed})
-                # patch size
-                diff_text = result.get("stdout", "")[:10000]
-                max_lines = cfg.get("delegation", {}).get("roles", {}).get(role, {}).get("max_patch_lines", 1500)
-                from .delegation.validation import check_patch_size
-
-                if not check_patch_size(diff_text, max_lines):
-                    reg.update_delegate_run(run_id, state="FAILED", validation_status="patch_too_large")
-                    raise ModelctlError(code="E_DELEGATE_VALIDATION_FAILED", message="patch too large")
-                # run declared tests if any
-                validation_cmds = task.get("validation") or []
-                if validation_cmds:
-                    from .delegation.validation import run_validation
-
-                    val = run_validation(workdir=workdir, commands=[c if isinstance(c, list) else c.split() for c in validation_cmds])
-                    if val["status"] != "passed":
-                        reg.update_delegate_run(run_id, state="FAILED", validation_status="failed")
-                        raise ModelctlError(code="E_DELEGATE_VALIDATION_FAILED", message="validation failed", details=val)
-                    validation = val
-                else:
-                    validation = {"scope": "passed", "status": "passed", "commands": []}
-            else:
-                validation = {"scope": "passed", "status": "passed", "commands": []}
-            reg.update_delegate_run(run_id, state="SUCCEEDED", finished_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(), validation_status="passed", observed_cost=0.003)
-            reg.add_budget(run_id, 0.003, selected["model_ref"])
-            # cleanup
-            from .workspace.cleanup import cleanup_path as cp2, verify_clean as vc2
-
-            cp2(workdir)
-            if not vc2(workdir):
-                raise ModelctlError(code="E_WORKTREE_CLEANUP_FAILED", message="cleanup failed")
-            from .delegation.result_contract import make_result_envelope
-
-            envelope = make_result_envelope(run_id=run_id, caller=caller, role=role, selected_model=selected["model_ref"], task_class=task_class, workspace={"mode": workspace_mode, "base_commit": "unknown", "changed_paths": changed_paths}, validation=validation, usage={"cost_usd": 0.003, "latency_ms": result.get("latency_ms", 0)})
-            _ok(envelope, ctx)
-        except Exception:
-            try:
-                reg.update_delegate_run(run_id, state="FAILED", validation_status="internal_error")
-            except Exception:
-                pass
-            try:
-                cleanup_path(workdir)
-            except Exception:
-                pass
-            raise
+        envelope = run_delegate_task(registry=reg, config=cfg, task=task, role=role, bin_=bin_, trace_id=ctx.trace_id, task_file=task_file)
+        _ok(envelope, ctx)
     except Exception as e:
         _handle_error(e, ctx)
 
@@ -941,23 +820,31 @@ def delegate_batch(ctx: Ctx, role, tasks_dir):
         from pathlib import Path
 
         cfg, reg = _load_config_pair(ctx)
+        from .delegation.runner import run_delegate_task
+        from .delegation.task_contract import load_task_file
+
         tasks_path = Path(tasks_dir)
         if not tasks_path.is_dir():
             raise ModelctlError(code="E_CONFIG_INVALID", message=f"tasks-dir not found: {tasks_dir}")
         task_files = sorted(tasks_path.glob("*.json"))
         if not task_files:
             raise ModelctlError(code="E_CONFIG_INVALID", message=f"no task files in {tasks_dir}")
-        # fan-out up to max_parallel_worker/driver per config, but run sequentially for v1 (concurrency simulation)
-        max_parallel = cfg.get("delegation", {}).get("roles", {}).get(role, {}).get("max_parallel", 4)
+        max_parallel = int(cfg.get("delegation", {}).get("roles", {}).get(role, {}).get("max_parallel", 4))
         results = []
+        failed = 0
         for tf in task_files[:max_parallel]:
-            # invoke delegate run logic via subprocess call to self? For v1, we just record mock success
-            run_id = f"dlg_{uuid.uuid4().hex[:8]}"
-            task = load_task_file(tf)
-            reg.insert_delegate_run(run_id, "codex", role, "opencode-go/muse-spark-1.2-contributor", task.get("task_class", "batch"), "staged_or_worktree", "SUCCEEDED")
-            reg.update_delegate_run(run_id, state="SUCCEEDED", finished_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(), validation_status="passed", observed_cost=0.001)
-            results.append({"task_file": str(tf), "run_id": run_id, "ok": True})
-        _ok({"ok": True, "role": role, "batch_size": len(results), "results": results}, ctx)
+            try:
+                task = load_task_file(tf)
+                task["role"] = role
+                envelope = run_delegate_task(registry=reg, config=cfg, task=task, role=role, bin_=role, trace_id=ctx.trace_id, task_file=str(tf))
+                results.append({"task_file": str(tf), "run_id": envelope["run_id"], "ok": True})
+            except ModelctlError as e:
+                failed += 1
+                results.append({"task_file": str(tf), "ok": False, "code": e.code, "message": e.message})
+            except Exception as e:
+                failed += 1
+                results.append({"task_file": str(tf), "ok": False, "code": "E_INTERNAL", "message": str(e)[:300]})
+        _ok({"ok": failed == 0, "role": role, "batch_size": len(results), "failed": failed, "results": results}, ctx)
     except Exception as e:
         _handle_error(e, ctx)
 
@@ -1002,15 +889,10 @@ def delegate_status(ctx: Ctx, run_id):
 def delegate_cancel(ctx: Ctx, run_id):
     try:
         _, reg = _load_config_pair(ctx)
-        r = reg.get_delegate_run(run_id)
-        if not r:
-            raise ModelctlError(code="E_INTERNAL", message=f"run not found: {run_id}")
-        if r["state"] in ("SUCCEEDED", "FAILED", "CANCELLED"):
-            _ok({"ok": True, "run_id": run_id, "state": r["state"], "idempotent": True}, ctx)
-            return
-        # attempt to kill owned process group (simulation: just mark cancelled)
-        reg.update_delegate_run(run_id, state="CANCELLED", finished_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat())
-        _ok({"ok": True, "run_id": run_id, "state": "CANCELLED"}, ctx)
+        from .delegation.runner import cancel_delegate_run
+
+        res = cancel_delegate_run(registry=reg, run_id=run_id)
+        _ok(res, ctx)
     except Exception as e:
         _handle_error(e, ctx)
 
@@ -1048,6 +930,8 @@ def delegates():
 def delegates_sync(ctx: Ctx):
     try:
         _, reg = _load_config_pair(ctx)
+        from .delegation.catalog import Catalog
+
         cat = Catalog(reg)
         res = cat.sync()
         _ok(res, ctx)
@@ -1099,11 +983,16 @@ def delegates_doctor(ctx: Ctx):
         ok, detail = adapter.check_available()
         version = adapter.version()
         catalog = reg.list_delegate_models()
-        has_default = any(m["model_ref"] == "opencode-go/muse-spark-1.2-contributor" and m["availability_status"] == "AVAILABLE" for m in catalog)
+        from .delegation.catalog import DEFAULT_MODELS
+
+        def _available(ref: str) -> bool:
+            return any(m["model_ref"] == ref and m["availability_status"] == "AVAILABLE" for m in catalog)
+
         checks = [
             {"check": "opencode_executable", "ok": ok, "detail": detail},
             {"check": "opencode_version", "ok": version is not None, "detail": version or "unknown"},
-            {"check": "muse_available", "ok": has_default, "detail": "opencode-go/muse-spark-1.2-contributor"},
+            {"check": "driver_model_available", "ok": _available(DEFAULT_MODELS["driver"]), "detail": DEFAULT_MODELS["driver"]},
+            {"check": "worker_model_available", "ok": _available(DEFAULT_MODELS["worker"]), "detail": DEFAULT_MODELS["worker"]},
             {"check": "catalog_freshness", "ok": len(catalog) > 0, "detail": f"{len(catalog)} models"},
             {"check": "provider_allowlist", "ok": True, "detail": str(cfg.get("delegation", {}).get("execution", {}).get("provider_allowlist", ["opencode-go"]))},
             {"check": "pure_capability", "ok": True, "detail": "--pure supported"},
@@ -1115,8 +1004,9 @@ def delegates_doctor(ctx: Ctx):
             "opencode_version": version or "unknown",
             "catalog_digest": hashlib.sha256(json.dumps([m["model_ref"] for m in catalog], sort_keys=True).encode()).hexdigest()[:12],
             "brain_authority": cfg.get("delegation", {}).get("brain", {}).get("owner", "codex"),
-            "driver_model_ref": "opencode-go/muse-spark-1.2-contributor",
-            "worker_model_ref": "opencode-go/muse-spark-1.2-contributor",
+            "driver_model_ref": DEFAULT_MODELS["driver"],
+            "worker_model_ref": DEFAULT_MODELS["worker"],
+            "default_variant": "max",
             "checked_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         }
         # write lock
@@ -1141,7 +1031,7 @@ def delegates_doctor(ctx: Ctx):
 @pass_ctx
 def delegates_broker(ctx: Ctx, action):
     try:
-        # optional warm broker per spec §52; local simulation
+        # optional warm broker per spec §52; not implemented
         broker_state = STATE_ROOT / "broker.json"
         if action == "status":
             if broker_state.exists():
@@ -1150,14 +1040,7 @@ def delegates_broker(ctx: Ctx, action):
             else:
                 _ok({"ok": True, "broker": None, "status": "stopped"}, ctx)
         elif action == "start":
-            data = {"port": 18123, "bind": "127.0.0.1", "status": "running", "pid": os.getpid()}
-            broker_state.parent.mkdir(parents=True, exist_ok=True)
-            broker_state.write_text(json.dumps(data))
-            try:
-                broker_state.chmod(0o600)
-            except Exception:
-                pass
-            _ok({"ok": True, "broker": data, "message": "broker started (loopback only, generated password)"}, ctx)
+            raise ModelctlError(code="E_DELEGATION_POLICY_DENIED", message="warm opencode broker is not implemented; refusing to fake a running broker")
         elif action == "stop":
             if broker_state.exists():
                 broker_state.unlink()
@@ -1195,15 +1078,11 @@ def queue_drain(ctx: Ctx):
 @pass_ctx
 def queue_retry(ctx: Ctx, run_id):
     try:
-        _, reg = _load_config_pair(ctx)
-        r = reg.get_delegate_run(run_id)
-        if not r:
-            raise ModelctlError(code="E_INTERNAL", message=f"run not found: {run_id}")
-        if r["state"] != "FAILED":
-            raise ModelctlError(code="E_DELEGATION_POLICY_DENIED", message="only failed runs can be retried")
-        new_id = f"dlg_{uuid.uuid4().hex[:8]}"
-        reg.insert_delegate_run(new_id, r["caller"], r["requested_bin"], r["selected_model_ref"], r["task_class"], r["workspace_mode"], "RUNNING")
-        _ok({"ok": True, "new_run_id": new_id, "from": run_id}, ctx)
+        cfg, reg = _load_config_pair(ctx)
+        from .delegation.runner import retry_delegate_run
+
+        envelope = retry_delegate_run(registry=reg, config=cfg, run_id=run_id, trace_id=ctx.trace_id)
+        _ok({"ok": True, "new_run_id": envelope["run_id"], "from": run_id, "envelope": envelope}, ctx)
     except Exception as e:
         _handle_error(e, ctx)
 

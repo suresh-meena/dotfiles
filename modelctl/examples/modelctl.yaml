@@ -48,7 +48,7 @@ targets:
 delegation:
   enabled: true
   brain: { owner: codex, final_authority: true }
-  backend: { type: opencode, executable: opencode, provider: opencode-go, model: opencode-go/muse-spark-1.2-contributor }
+  backend: { type: opencode, executable: opencode, provider: opencode-go }
   roles:
     driver: { max_parallel: 3, max_files_read: 80, max_files_write: 20, max_patch_lines: 1500, default_timeout_s: 1800, workspace: isolated_worktree, validation: strong }
     worker: { max_parallel: 12, max_files_read: 20, max_files_write: 5, max_patch_lines: 300, default_timeout_s: 600, workspace: staged_or_worktree, validation: deterministic }

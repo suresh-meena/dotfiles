@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-import time
 import uuid
 from typing import Any
 
 from ..errors import ModelctlError
-from ..inventory.registry import Registry
+from ..inventory.registry import Registry, utc_now
 from ..events import EventLog
-from ..gpu.reservations import release_gpus
-from ..gpu.nvml import query_via_nvidia_smi
+from ..gpu.reservations import release_for_owner
+from ..runtime import pid_alive
+from .procs import terminate_verified
+
+
+def _gpu_uuids(machine_id: str, gpus: list[int]) -> list[str]:
+    return [f"{machine_id}-gpu-{i}" for i in gpus]
 
 
 def stop_target(*, registry: Registry, config: dict[str, Any], target_id: str, force: bool = False, trace_id: str | None = None) -> dict[str, Any]:
@@ -18,88 +22,70 @@ def stop_target(*, registry: Registry, config: dict[str, Any], target_id: str, f
 
     from ..config.resolver import resolve_target, target_digest
 
-    # If config missing target, still try to find deployment by target_id
+    resolved = None
     try:
         resolved = resolve_target(config, target_id)
         machine_id = resolved["machine"]
         digest = target_digest(resolved)
-        gpus = resolved.get("gpus", [])
-        gpu_uuids = [f"{machine_id}-gpu-{i}" for i in gpus]
+        gpu_uuids = _gpu_uuids(machine_id, resolved.get("gpus", []))
+        graceful = float(resolved.get("graceful_stop_timeout_s", 30))
+        kill_t = float(resolved.get("kill_timeout_s", 15))
     except ModelctlError as e:
-        if e.code == "E_TARGET_NOT_FOUND":
-            # try to find deployment directly
-            dep = registry.deployment_for_target(target_id)
-            if not dep:
-                raise
-            machine_id = dep["machine_id"]
-            digest = dep["config_digest"]
-            gpu_uuids = []
-            resolved = None  # type: ignore
-        else:
+        if e.code != "E_TARGET_NOT_FOUND":
             raise
+        dep = registry.deployment_for_target(target_id)
+        if not dep:
+            raise
+        machine_id = dep["machine_id"]
+        digest = dep["config_digest"]
+        gpu_uuids = []
+        graceful = 30.0
+        kill_t = 15.0
 
     dep = registry.deployment_for_target(target_id)
-    if not dep:
-        # already stopped - idempotent
-        return {"ok": True, "target": target_id, "state": "STOPPED", "idempotent": True, "trace_id": trace_id}
-    if dep["state"] in ("STOPPED",):
-        return {"ok": True, "target": target_id, "state": "STOPPED", "idempotent": True, "trace_id": trace_id}
+    if not dep or dep["state"] == "STOPPED":
+        return {"ok": True, "target": target_id, "state": "STOPPED", "idempotent": True, "trace_id": trace_id, "simulation": True, "backend": "local-simulation"}
     if dep["state"] == "LEAK_SUSPECTED" and not force:
-        raise ModelctlError(code="E_LEAK_SUSPECTED", message=f"deployment {dep['deployment_id']} is LEAK_SUSPECTED; use --force to escalate or investigate via doctor", target=target_id)
+        raise ModelctlError(code="E_LEAK_SUSPECTED", message=f"deployment {dep['deployment_id']} is LEAK_SUSPECTED; use --force to re-attempt termination or investigate via doctor", target=target_id)
 
     dep_id = dep["deployment_id"]
-    # spec §10.2 stop sequence (simplified local simulation)
-    # 1. mark DRAINING
-    registry.upsert_deployment(dep_id, target_id, machine_id, digest, dep["artifact_id"], dep.get("artifact_fingerprint"), "DRAINING", dep["supervisor_unit"])
-    # 2. stop accepting new connections (no-op local)
-    # 3. request graceful supervisor stop (simulate)
-    time.sleep(0.02)
-    # 4. wait graceful_stop_timeout_s
-    # 5. inspect owned cgroup (simulate empty)
-    # 6-10. SIGTERM/SIGKILL escalation (simulate)
-    # 11. verify cgroup empty (simulate)
-    # 12. query GPU compute processes
-    gpu_state = query_via_nvidia_smi()
-    # Check if any deployment-owned GPU processes remain (simulation: check if any gpus have compute processes)
-    # For local simulation without real GPU, we assume no owned processes remain unless we detect real GPU processes.
-    # If backend is none, we consider success.
-    # If we do have GPU processes, we need ownership proof - we cannot prove foreign, so we treat as leak if we can't verify.
-    owned_remaining = False
-    if gpu_state.get("backend") != "none":
-        # If there are compute processes on reserved GPUs, check if any belong to deployment
-        # Without PID tracking, we conservatively assume if any GPU has processes and we had reservations, it's suspect.
-        # For now, if backend is nvml and we have reservations, we could inspect but we lack PID mapping, so we assume success if no processes listed.
-        for gpu in gpu_state.get("gpus", []):
-            if gpu.get("compute_processes"):
-                # if we reserved this GPU, and there's any process, we cannot prove it's ours, so LEAK_SUSPECTED
-                # But to avoid false positives on desktops with Xorg, we only consider if gpu uuid matches reserved
-                # Simplify: if any process exists and we had gpu_uuids, mark suspect
-                if gpu_uuids:
-                    owned_remaining = True
-                    break
+    # 1. mark DRAINING (stop accepting new connections is a no-op for the fake runtime)
+    registry.upsert_deployment(dep_id, target_id, machine_id, digest, dep["artifact_id"], dep.get("artifact_fingerprint"), "DRAINING", dep["supervisor_unit"], server_pid=dep.get("server_pid"), port=dep.get("port"), lease_expires_at=dep.get("lease_expires_at"))
 
-    if owned_remaining and not force:
-        registry.upsert_deployment(dep_id, target_id, machine_id, digest, dep["artifact_id"], dep.get("artifact_fingerprint"), "LEAK_SUSPECTED", dep["supervisor_unit"])
-        events.emit("LEAK_SUSPECTED", target_id=target_id, deployment_id=dep_id, machine_id=machine_id, result="leak", trace_id=trace_id)
-        raise ModelctlError(code="E_LEAK_SUSPECTED", message="deployment-owned GPU process still present after stop; reservation retained", target=target_id, machine=machine_id)
+    # 2. terminate with mandatory verification (SIGTERM -> SIGKILL -> verify)
+    if not pid_alive(dep.get("server_pid")):
+        # process already gone; port must still be free to consider it verified
+        from ..runtime import port_busy
 
-    # 13. verify no deployment-owned PID remains -> success
-    # 14. release GPU reservation
-    if gpu_uuids:
-        release_gpus(gpu_uuids)
-    # 15. mark STOPPED
-    from datetime import datetime, timezone
+        port_free = dep.get("port") is None or not port_busy("127.0.0.1", dep["port"])
+        term = {
+            "ok": port_free,
+            "detail": "pid not alive (already stopped)" if port_free else "pid gone but port still occupied",
+            "pid": dep.get("server_pid"),
+            "group_gone": True,
+            "port_free": port_free,
+        }
+    else:
+        term = terminate_verified(dep, graceful_timeout_s=graceful, kill_timeout_s=kill_t)
 
-    now = datetime.now(timezone.utc).isoformat()
-    registry.upsert_deployment(dep_id, target_id, machine_id, digest, dep["artifact_id"], dep.get("artifact_fingerprint"), "STOPPED", dep["supervisor_unit"], stopped_at=now)
-    # need to update stopped_at properly (upsert does COALESCE for stopped_at? we already inserted; need direct update)
-    import sqlite3
+    if not term["ok"]:
+        _mark_leak(registry, events, dep_id, target_id, machine_id, digest, dep, trace_id)
+        raise ModelctlError(code="E_LEAK_SUSPECTED", message=f"could not verify termination of {dep_id}: {term['detail']}; reservation retained", target=target_id, machine=machine_id)
 
-    registry.conn().execute("UPDATE deployments SET state='STOPPED', stopped_at=? WHERE deployment_id=?", (now, dep_id))
-    registry.conn().commit()
-    events.emit("SERVICE_STOPPED", target_id=target_id, deployment_id=dep_id, machine_id=machine_id, trace_id=trace_id)
-    events.emit("GPU_RELEASE_VERIFIED", target_id=target_id, deployment_id=dep_id, machine_id=machine_id, trace_id=trace_id)
+    # 3. release GPU reservations owned by this deployment
+    released = release_for_owner(gpu_uuids, dep_id)
+    # 4. mark STOPPED
+    now = utc_now()
+    conn = registry.conn()
+    conn.execute("UPDATE deployments SET state='STOPPED', stopped_at=? WHERE deployment_id=?", (now, dep_id))
+    conn.commit()
+    events.emit("SERVICE_STOPPED", target_id=target_id, deployment_id=dep_id, machine_id=machine_id, result="terminated", details=term, trace_id=trace_id)
+    events.emit("GPU_RELEASE_VERIFIED", target_id=target_id, deployment_id=dep_id, machine_id=machine_id, result="ok", details={"released": released}, trace_id=trace_id)
     events.emit("DEPLOYMENT_STOPPED", target_id=target_id, deployment_id=dep_id, machine_id=machine_id, result="stopped", trace_id=trace_id)
 
-    # 16. close tunnels (handled by caller)
-    return {"ok": True, "target": target_id, "deployment_id": dep_id, "state": "STOPPED", "trace_id": trace_id}
+    return {"ok": True, "target": target_id, "deployment_id": dep_id, "state": "STOPPED", "pid": dep.get("server_pid"), "trace_id": trace_id, "simulation": True, "backend": "local-simulation"}
+
+
+def _mark_leak(registry: Registry, events: EventLog, dep_id: str, target_id: str, machine_id: str, digest: str, dep: dict[str, Any], trace_id: str) -> None:
+    registry.upsert_deployment(dep_id, target_id, machine_id, digest, dep["artifact_id"], dep.get("artifact_fingerprint"), "LEAK_SUSPECTED", dep["supervisor_unit"], server_pid=dep.get("server_pid"), port=dep.get("port"), lease_expires_at=dep.get("lease_expires_at"))
+    events.emit("LEAK_SUSPECTED", target_id=target_id, deployment_id=dep_id, machine_id=machine_id, result="leak", trace_id=trace_id)

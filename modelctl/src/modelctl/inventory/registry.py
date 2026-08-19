@@ -114,11 +114,11 @@ class Registry:
         return out
 
     # deployments
-    def upsert_deployment(self, deployment_id: str, target_id: str, machine_id: str, config_digest: str, artifact_id: str, fingerprint: str | None, state: str, unit: str, started_at: str | None = None, ready_at: str | None = None, stopped_at: str | None = None) -> None:
+    def upsert_deployment(self, deployment_id: str, target_id: str, machine_id: str, config_digest: str, artifact_id: str, fingerprint: str | None, state: str, unit: str, started_at: str | None = None, ready_at: str | None = None, stopped_at: str | None = None, server_pid: int | None = None, port: int | None = None, lease_expires_at: str | None = None) -> None:
         self._conn.execute(
-            "INSERT INTO deployments(deployment_id, target_id, machine_id, config_digest, artifact_id, artifact_fingerprint, state, supervisor_unit, started_at, ready_at, stopped_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(deployment_id) DO UPDATE SET state=excluded.state, ready_at=COALESCE(excluded.ready_at, deployments.ready_at), stopped_at=COALESCE(excluded.stopped_at, deployments.stopped_at), supervisor_unit=excluded.supervisor_unit",
-            (deployment_id, target_id, machine_id, config_digest, artifact_id, fingerprint, state, unit, started_at or utc_now(), ready_at, stopped_at),
+            "INSERT INTO deployments(deployment_id, target_id, machine_id, config_digest, artifact_id, artifact_fingerprint, state, supervisor_unit, started_at, ready_at, stopped_at, server_pid, port, lease_expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(deployment_id) DO UPDATE SET state=excluded.state, ready_at=COALESCE(excluded.ready_at, deployments.ready_at), stopped_at=COALESCE(excluded.stopped_at, deployments.stopped_at), supervisor_unit=excluded.supervisor_unit, server_pid=excluded.server_pid, port=excluded.port, lease_expires_at=COALESCE(excluded.lease_expires_at, deployments.lease_expires_at)",
+            (deployment_id, target_id, machine_id, config_digest, artifact_id, fingerprint, state, unit, started_at or utc_now(), ready_at, stopped_at, server_pid, port, lease_expires_at),
         )
 
     def get_deployment(self, deployment_id: str) -> dict[str, Any] | None:
@@ -192,14 +192,14 @@ class Registry:
         return dict(row) if row else None
 
     # delegate runs
-    def insert_delegate_run(self, run_id: str, caller: str, requested_bin: str, selected_model_ref: str, task_class: str, workspace_mode: str, state: str, parent_trace_id: str | None = None) -> None:
+    def insert_delegate_run(self, run_id: str, caller: str, requested_bin: str, selected_model_ref: str, task_class: str, workspace_mode: str, state: str, parent_trace_id: str | None = None, task_json: str | None = None, process_pid: int | None = None) -> None:
         now = utc_now()
         self._conn.execute(
-            "INSERT INTO delegate_runs(run_id, parent_trace_id, caller, requested_bin, selected_model_ref, task_class, workspace_mode, started_at, state) VALUES(?,?,?,?,?,?,?,?,?)",
-            (run_id, parent_trace_id, caller, requested_bin, selected_model_ref, task_class, workspace_mode, now, state),
+            "INSERT INTO delegate_runs(run_id, parent_trace_id, caller, requested_bin, selected_model_ref, task_class, workspace_mode, started_at, state, task_json, process_pid) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (run_id, parent_trace_id, caller, requested_bin, selected_model_ref, task_class, workspace_mode, now, state, task_json, process_pid),
         )
 
-    def update_delegate_run(self, run_id: str, state: str | None = None, finished_at: str | None = None, validation_status: str | None = None, observed_cost: float | None = None) -> None:
+    def update_delegate_run(self, run_id: str, state: str | None = None, finished_at: str | None = None, validation_status: str | None = None, observed_cost: float | None = None, process_pid: int | None = None) -> None:
         fields = []
         params: list[Any] = []
         if state:
@@ -214,6 +214,9 @@ class Registry:
         if observed_cost is not None:
             fields.append("observed_cost=?")
             params.append(observed_cost)
+        if process_pid is not None:
+            fields.append("process_pid=?")
+            params.append(process_pid)
         if not fields:
             return
         params.append(run_id)

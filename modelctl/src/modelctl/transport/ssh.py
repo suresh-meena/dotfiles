@@ -7,7 +7,13 @@ from typing import Any
 
 
 class SSHTransport:
-    """OpenSSH argv-safe transport. Never constructs shell from agent text."""
+    """OpenSSH argv-safe transport. Never constructs shell from agent text.
+
+    Note: OpenSSH joins the given argv with spaces and the remote host
+    re-parses it through its login shell. To keep remote shell interpretation
+    inert we locally quote every argument (see escape_arg) before handing the
+    vector to ssh.
+    """
 
     def __init__(self, host: str, user: str | None = None, port: int | None = None):
         self.host = host
@@ -23,8 +29,9 @@ class SSHTransport:
         return cmd
 
     def run(self, argv: list[str], *, timeout: int = 30, input_data: bytes | None = None) -> subprocess.CompletedProcess:
-        # Strict argv encoding: each arg is passed as separate argv entry, no shell
-        full = self._base() + ["--"] + argv
+        # No `--` separator (invalid for OpenSSH). Each argument is shell-quoted
+        # locally so the remote shell cannot reinterpret metacharacters.
+        full = self._base() + [self.escape_arg(a) for a in argv]
         return subprocess.run(full, input=input_data, timeout=timeout, capture_output=True)
 
     def run_posix(self, command_argv: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:

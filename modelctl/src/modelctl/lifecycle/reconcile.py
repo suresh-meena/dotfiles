@@ -1,73 +1,85 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any
 
-from ..inventory.registry import Registry
+from ..inventory.registry import Registry, utc_now
+from ..gpu.reservations import cleanup_stale
 from ..gpu.nvml import query_via_nvidia_smi
+from .procs import deployment_live, lease_expired
 
 
 def reconcile(*, registry: Registry, config: dict[str, Any], machine: str | None = None, fix_safe: bool = False) -> dict[str, Any]:
-    """Compare local DB, remote supervisor (simulated), GPU state. Safe repairs only with fix_safe."""
+    """Compare local DB state against live processes, leases and GPU
+    reservations. Safe repairs only with fix_safe."""
     deployments = registry.list_deployments(machine=machine)
-    gpu_state = query_via_nvidia_smi()
     events: list[dict[str, Any]] = []
     fixes: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
 
     for dep in deployments:
-        target_id = dep["target_id"]
+        dep_id = dep["deployment_id"]
         state = dep["state"]
-        # Simulate remote supervisor check: for local simulation, we assume supervisor inactive if deployment is STOPPED, active otherwise
-        # In real remote, we'd SSH and check systemd unit.
-        # For reconciliation, we detect stale states:
-        # - if state is STARTING but we are past timeout, mark FAILED_START
-        # - if state is READY but no GPU reservation (check lock files), mark RECONCILE_REQUIRED
-        # - if state is LEAK_SUSPECTED, keep
-        if state == "STARTING":
-            # if older than 30m assume failed
-            from datetime import datetime, timezone
 
-            try:
-                ts = datetime.fromisoformat(dep["started_at"]).timestamp() if dep.get("started_at") else 0
-                if time.time() - ts > 1800 and fix_safe:
-                    registry.conn().execute("UPDATE deployments SET state='FAILED_START' WHERE deployment_id=?", (dep["deployment_id"],))
-                    registry.conn().commit()
-                    fixes.append({"deployment_id": dep["deployment_id"], "from": "STARTING", "to": "FAILED_START", "reason": "startup timeout"})
-                elif time.time() - ts > 1800:
-                    issues.append({"deployment_id": dep["deployment_id"], "state": state, "issue": "stale STARTING beyond timeout"})
-            except Exception:
-                pass
-        elif state == "READY":
-            # check artifact fingerprint drift
-            artifact_id = dep["artifact_id"]
-            art = registry.get_artifact(artifact_id)
-            if art and art.get("manifest_fingerprint") and dep.get("artifact_fingerprint") and art["manifest_fingerprint"] != dep["artifact_fingerprint"]:
+        if state in ("READY", "STARTING", "DRAINING", "STOPPING"):
+            live = deployment_live(dep)
+            if not live and state == "READY":
+                # live-state drift: recorded READY but no process/port
                 if fix_safe:
-                    registry.conn().execute("UPDATE deployments SET state='DRIFTED' WHERE deployment_id=?", (dep["deployment_id"],))
-                    registry.conn().commit()
-                    fixes.append({"deployment_id": dep["deployment_id"], "to": "DRIFTED", "reason": "artifact fingerprint changed"})
+                    conn = registry.conn()
+                    conn.execute("UPDATE deployments SET state='STOPPED', stopped_at=? WHERE deployment_id=?", (utc_now(), dep_id))
+                    conn.commit()
+                    fixes.append({"deployment_id": dep_id, "from": state, "to": "STOPPED", "reason": "no live process"})
                 else:
-                    issues.append({"deployment_id": dep["deployment_id"], "issue": "ARTIFACT_CHANGED"})
-        elif state == "LEAK_SUSPECTED":
-            issues.append({"deployment_id": dep["deployment_id"], "issue": "LEAK_SUSPECTED requires manual investigation"})
+                    issues.append({"deployment_id": dep_id, "state": state, "issue": "recorded READY but no live process/port"})
+            elif not live and state == "STARTING":
+                if fix_safe:
+                    conn = registry.conn()
+                    conn.execute("UPDATE deployments SET state='FAILED_START' WHERE deployment_id=?", (dep_id,))
+                    conn.commit()
+                    fixes.append({"deployment_id": dep_id, "from": "STARTING", "to": "FAILED_START", "reason": "server process gone"})
+                else:
+                    issues.append({"deployment_id": dep_id, "state": state, "issue": "STARTING but server process not alive"})
 
-    # Check stale tunnels (pid not alive)
+        # lease expiry
+        if state in ("READY", "STARTING") and lease_expired(dep):
+            if fix_safe:
+                if dep["target_id"] in config.get("targets", {}):
+                    from .stop import stop_target
+
+                    try:
+                        stop_target(registry=registry, config=config, target_id=dep["target_id"], force=False)
+                        fixes.append({"deployment_id": dep_id, "from": state, "to": "STOPPED", "reason": "lease expired"})
+                    except Exception as e:
+                        issues.append({"deployment_id": dep_id, "state": state, "issue": f"lease expired but stop failed: {str(e)[:200]}"})
+                else:
+                    issues.append({"deployment_id": dep_id, "state": state, "issue": "lease expired (no config to stop cleanly)"})
+            else:
+                issues.append({"deployment_id": dep_id, "state": state, "issue": "lease expired"})
+
+        if state == "LEAK_SUSPECTED":
+            issues.append({"deployment_id": dep_id, "issue": "LEAK_SUSPECTED requires manual investigation"})
+
+    # stale tunnels (pid not alive)
     tunnels = registry.list_tunnels()
     for t in tunnels:
         pid = t.get("pid")
         if pid:
-            try:
-                import os
+            from ..runtime import pid_alive
 
-                os.kill(pid, 0)
-            except ProcessLookupError:
+            if not pid_alive(pid):
                 if fix_safe:
                     registry.delete_tunnel(t["tunnel_id"])
                     fixes.append({"tunnel_id": t["tunnel_id"], "action": "removed stale tunnel"})
                 else:
                     issues.append({"tunnel_id": t["tunnel_id"], "issue": "stale tunnel PID"})
-            except PermissionError:
-                pass
 
+    # stale GPU reservations (dead owner or aged in-flight)
+    if fix_safe:
+        removed = cleanup_stale(max_age_s=300)
+        for r in removed:
+            fixes.append({"gpu_uuid": r["gpu_uuid"], "action": "removed stale reservation", "owner": r.get("owner")})
+
+    gpu_state = query_via_nvidia_smi()
     return {"ok": True, "machine": machine, "checked": len(deployments), "fixes": fixes, "issues": issues, "gpu_backend": gpu_state.get("backend")}

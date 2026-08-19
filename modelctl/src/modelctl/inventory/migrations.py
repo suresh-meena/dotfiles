@@ -50,7 +50,10 @@ CREATE TABLE IF NOT EXISTS deployments(
   supervisor_unit TEXT,
   started_at TEXT,
   ready_at TEXT,
-  stopped_at TEXT
+  stopped_at TEXT,
+  server_pid INTEGER,
+  port INTEGER,
+  lease_expires_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events(
@@ -100,7 +103,9 @@ CREATE TABLE IF NOT EXISTS delegate_runs(
   state TEXT NOT NULL,
   observed_cost REAL,
   validation_status TEXT,
-  escalation_parent_run_id TEXT
+  escalation_parent_run_id TEXT,
+  task_json TEXT,
+  process_pid INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS budget_ledger(
@@ -140,6 +145,17 @@ CREATE TABLE IF NOT EXISTS delegation_locks(
 """
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _ensure_column(conn, "deployments", "server_pid", "INTEGER")
+    _ensure_column(conn, "deployments", "port", "INTEGER")
+    _ensure_column(conn, "deployments", "lease_expires_at", "TEXT")
+    _ensure_column(conn, "delegate_runs", "task_json", "TEXT")
+    _ensure_column(conn, "delegate_runs", "process_pid", "INTEGER")
     conn.commit()

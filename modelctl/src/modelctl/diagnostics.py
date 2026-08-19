@@ -74,7 +74,15 @@ def doctor(*, registry: Registry, config: dict[str, Any], machine: str | None = 
             add(f"target:{target}", False, "no deployment found", "warning")
         else:
             for d in deps:
-                add(f"target:{target}:{d['deployment_id']}", d["state"] == "READY", f"state={d['state']}")
+                from .lifecycle.procs import deployment_live, lease_expired
+
+                live = deployment_live(d)
+                detail = f"state={d['state']} live={live}"
+                if d["state"] == "READY" and not live:
+                    detail += " (recorded READY but no live process)"
+                if lease_expired(d):
+                    detail += " lease=expired"
+                add(f"target:{target}:{d['deployment_id']}", d["state"] == "READY" and live, detail)
 
     # remote loopback policy
     for tid, t in config.get("targets", {}).items():
@@ -92,7 +100,10 @@ def doctor(*, registry: Registry, config: dict[str, Any], machine: str | None = 
 
     reservations = list_reservations()
     for r in reservations:
-        add(f"reservation:{r['gpu_uuid']}", False, f"held by {r['owner']}", "warning")
+        if r.get("stale"):
+            add(f"reservation:{r['gpu_uuid']}", False, f"stale reservation (owner={r['owner']} pid={r['pid']})", "warning")
+        elif r.get("owner"):
+            add(f"reservation:{r['gpu_uuid']}", True, f"held by {r['owner']} (pid={r['pid']})", "info")
 
     # owned residual GPU processes already via LEAK_SUSPECTED
 

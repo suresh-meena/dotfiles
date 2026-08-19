@@ -4,6 +4,11 @@ from typing import Any
 
 from ..inventory.registry import Registry
 from ..errors import ModelctlError
+from .catalog import DEFAULT_MODELS
+
+
+def _default_ref(bin_: str) -> str:
+    return DEFAULT_MODELS.get(bin_, "opencode-go/deepseek-v4-flash")
 
 
 def choose_role(task: dict[str, Any]) -> str:
@@ -24,10 +29,10 @@ def deterministic_select(*, registry: Registry, requested_bin: str, task_class: 
         raise ModelctlError(code="E_DELEGATION_BUDGET_EXCEEDED", message="budget hard limit exceeded", details={"bin": requested_bin})
 
     candidates = registry.list_delegate_models(bin_=requested_bin)
-    # Also consider driver alias for default model (single model serves both bins)
+    # Also consider the per-bin default model (single model serves the bin)
     if not candidates:
-        # fallback: try to get default model regardless of bin
-        default = registry.get_delegate_model("opencode-go/muse-spark-1.2-contributor")
+        # fallback: try to get the bin's default model regardless of bin
+        default = registry.get_delegate_model(_default_ref(requested_bin))
         if default and default["enabled"] and default["availability_status"] == "AVAILABLE":
             candidates = [default]
         else:
@@ -46,9 +51,9 @@ def deterministic_select(*, registry: Registry, requested_bin: str, task_class: 
         # privacy stale check would be here; simplified
         eligible.append(c)
 
-    # If still empty, try generic default
+    # If still empty, try the bin default
     if not eligible:
-        default = registry.get_delegate_model("opencode-go/muse-spark-1.2-contributor")
+        default = registry.get_delegate_model(_default_ref(requested_bin))
         if default and default["availability_status"] == "AVAILABLE":
             # treat as eligible regardless of bin
             eligible = [default]
