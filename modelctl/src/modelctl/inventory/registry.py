@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,13 +12,17 @@ from .migrations import migrate
 DEFAULT_DB = Path.home() / ".local" / "state" / "modelctl" / "modelctl.db"
 
 
+def default_db() -> Path:
+    return Path(os.environ.get("MODELCTL_DB") or DEFAULT_DB)
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 class Registry:
     def __init__(self, db_path: Path | None = None):
-        self.db_path = Path(db_path) if db_path else DEFAULT_DB
+        self.db_path = Path(db_path) if db_path else default_db()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         # ensure mode 0700 for state dir, 0600 for file (best effort)
         try:

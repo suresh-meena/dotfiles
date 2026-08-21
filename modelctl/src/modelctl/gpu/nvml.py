@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import subprocess
-import json
 from typing import Any
 
 
@@ -44,18 +43,6 @@ def query_via_nvidia_smi() -> dict[str, Any]:
             parts = [p.strip() for p in line.split(",")]
             if len(parts) >= 5:
                 gpus.append({"index": int(parts[0]), "uuid": parts[1], "total_memory_mib": int(parts[2]), "used_memory_mib": int(parts[3]), "free_memory_mib": int(parts[4]), "compute_processes": []})
-        # also query compute processes via csv
-        try:
-            cp2 = subprocess.run(
-                ["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader,nounits"],
-                capture_output=True,
-                timeout=5,
-            )
-            if cp2.returncode == 0:
-                # attach generically (no per-GPU mapping in fallback)
-                pass
-        except Exception:
-            pass
         return {"backend": "nvidia-smi-fallback", "gpus": gpus, "warning": "nvidia-smi output not guaranteed stable; prefer NVML"}
     except FileNotFoundError:
         return {"backend": "none", "gpus": [], "error": "nvidia-smi not found and pynvml unavailable"}

@@ -6,11 +6,9 @@ import socket
 import subprocess
 import time
 import uuid
-from pathlib import Path
 from typing import Any
 
 from .inventory.registry import Registry
-from .transport.ssh import SSHTransport
 
 
 def find_free_port() -> int:

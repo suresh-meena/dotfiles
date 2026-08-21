@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import shlex
 import subprocess
-from pathlib import Path
-from typing import Any
 
 
 class SSHTransport:
@@ -33,12 +31,6 @@ class SSHTransport:
         # locally so the remote shell cannot reinterpret metacharacters.
         full = self._base() + [self.escape_arg(a) for a in argv]
         return subprocess.run(full, input=input_data, timeout=timeout, capture_output=True)
-
-    def run_posix(self, command_argv: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
-        """Execute POSIX command argv on remote without shell interpolation."""
-        # We intentionally do not use `ssh host 'bash -c ...'`; we pass argv vector via ssh exec channel.
-        # For remotely executed helpers that need shell, the helper itself is argv[0] and args are encoded.
-        return self.run(command_argv, timeout=timeout)
 
     def check_reachable(self, timeout: int = 10) -> tuple[bool, str]:
         try:

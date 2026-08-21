@@ -6,9 +6,10 @@ import socket
 import subprocess
 import sys
 import json
-import time
 from pathlib import Path
 from typing import Any
+
+import psutil
 
 # Capability matrix per spec §12.2 (simplified)
 SUPPORTED = {
@@ -88,7 +89,6 @@ class RuntimeAdapter:
         url = f"http://{host}:{port}/health"
         try:
             with urllib.request.urlopen(url, timeout=timeout) as r:
-                body = r.read().decode()
                 # vLLM health returns 200 when healthy, 503 if engine dead per spec
                 return r.status == 200
         except urllib.error.HTTPError as e:
@@ -171,21 +171,40 @@ def pid_alive(pid: int | None) -> bool:
         return False
 
 
+def _group_has_live_member(pgid: int) -> bool:
+    """True when any non-zombie process belongs to the group.
+
+    A zombie member is already dead (signals are no-ops on it); requiring its
+    reap by an external parent would make verified termination impossible
+    whenever the spawner stays alive. Unscannable members fail closed.
+    """
+    for proc in psutil.process_iter(attrs=["status"]):
+        try:
+            if os.getpgid(proc.pid) != pgid:
+                continue
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+        if proc.info.get("status") != psutil.STATUS_ZOMBIE:
+            return True
+    return False
+
+
 def process_group_gone(pid: int | None) -> bool:
     """True only when the whole process group is proven gone.
 
     Any error other than ProcessLookupError (e.g. EPERM, EINVAL) means we
     cannot prove the group is gone, so we fail closed and report alive.
+    Group members that are zombies count as gone: they are already dead.
     """
     if not pid or pid <= 0:
         return True
     try:
         os.killpg(pid, 0)
-        return False
     except ProcessLookupError:
         return True
     except Exception:
         return False
+    return not _group_has_live_member(pid)
 
 
 def kill_group(pid: int | None, sig: int = signal.SIGTERM) -> bool:

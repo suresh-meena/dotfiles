@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import json
-import shutil
-import subprocess
-from pathlib import Path
 from typing import Any
 
 from .inventory.registry import Registry
@@ -107,8 +103,6 @@ def doctor(*, registry: Registry, config: dict[str, Any], machine: str | None = 
 
     # owned residual GPU processes already via LEAK_SUSPECTED
 
-    ok_all = all(c["ok"] or c["level"] in ("info", "warning") for c in checks)
-    # But errors make not ok
     has_error = any(not c["ok"] and c["level"] == "error" for c in checks)
     return {"ok": not has_error, "checks": checks, "summary": f"{len([c for c in checks if c['ok']])}/{len(checks)} checks passed"}
 

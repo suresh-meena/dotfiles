@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
 
 DATA_CLASSES = {"PUBLIC", "INTERNAL", "CONFIDENTIAL", "SECRET", "UNKNOWN"}
 ORDER = {"PUBLIC": 0, "INTERNAL": 1, "CONFIDENTIAL": 2, "SECRET": 3, "UNKNOWN": 999}

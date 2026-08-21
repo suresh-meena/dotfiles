@@ -22,19 +22,3 @@ def load_task_file(path: str | Path) -> dict[str, Any]:
         raise ValueError(f"task file must be JSON object: {p}")
     return data
 
-
-def validate_write_scope(*, changed_paths: list[str], allowed: list[str] | None) -> bool:
-    if allowed is None:
-        return False
-    # canonicalize: resolve symlinks and .. ; for v1 we use posix norm and check prefix
-    import posixpath
-
-    def canon(p: str) -> str:
-        return posixpath.normpath(p)
-
-    allowed_canon = [canon(a.rstrip("/")) for a in allowed]
-    for cp in changed_paths:
-        c = canon(cp)
-        if not any(c == a or c.startswith(a + "/") for a in allowed_canon):
-            return False
-    return True

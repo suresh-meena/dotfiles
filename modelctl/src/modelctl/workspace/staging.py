@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Any
 
 
 def create_staging(*, base: Path, files: list[str], dest: Path) -> Path:

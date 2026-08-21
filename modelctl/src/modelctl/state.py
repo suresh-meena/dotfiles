@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
+import os
 from pathlib import Path
-from typing import Any
 
-STATE_ROOT = Path.home() / ".local" / "state" / "modelctl"
+STATE_ROOT = Path(os.environ.get("MODELCTL_STATE_ROOT") or Path.home() / ".local" / "state" / "modelctl")
 
 
 def ensure_state_dirs(mode: int = 0o700) -> None:
@@ -15,12 +14,6 @@ def ensure_state_dirs(mode: int = 0o700) -> None:
             p.chmod(mode)
         except Exception:
             pass
-
-
-def deployment_dir(deployment_id: str) -> Path:
-    # sanitize
-    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in deployment_id)
-    return STATE_ROOT / "deployments" / safe
 
 
 def lock_path(kind: str, name: str) -> Path:

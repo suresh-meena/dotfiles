@@ -5,7 +5,6 @@ import os
 import signal
 import subprocess
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -14,15 +13,19 @@ class OpenCodeAdapter:
     def __init__(self, executable: str = "opencode", provider: str = "opencode-go"):
         self.executable = executable
         self.provider = provider
+        self._available: tuple[bool, str] | None = None
 
     def check_available(self) -> tuple[bool, str]:
+        if self._available is not None:
+            return self._available
         try:
             cp = subprocess.run([self.executable, "--help"], capture_output=True, timeout=5)
-            return cp.returncode == 0, "available" if cp.returncode == 0 else cp.stderr.decode()[:300]
+            self._available = (cp.returncode == 0, "available" if cp.returncode == 0 else cp.stderr.decode()[:300])
         except FileNotFoundError:
-            return False, "opencode not found"
+            self._available = (False, "opencode not found")
         except Exception as e:
-            return False, str(e)[:300]
+            self._available = (False, str(e)[:300])
+        return self._available
 
     def version(self) -> str | None:
         try:
@@ -142,23 +145,3 @@ class OpenCodeAdapter:
             from ...errors import ModelctlError
 
             raise ModelctlError(code="E_DELEGATE_TIMEOUT", message=f"opencode run timed out after {timeout_s}s", details={"latency_ms": latency_ms})
-
-    def build_argv(self, *, model_ref: str, agent_profile: str, workdir: Path, prompt: str, variant: str | None = "max") -> list[str]:
-        # helper for testing / dry-run
-        argv = [
-            self.executable,
-            "--pure",
-            "run",
-            "--model",
-            model_ref,
-            "--agent",
-            agent_profile,
-            "--format",
-            "json",
-            "--dir",
-            str(workdir),
-        ]
-        if variant:
-            argv += ["--variant", variant]
-        argv.append(prompt)
-        return argv

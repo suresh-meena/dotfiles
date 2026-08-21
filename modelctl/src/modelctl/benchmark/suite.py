@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
 
 
 def delegation_efficiency(baseline: float, describe: float, review: float) -> float:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import Any
 
 from ..errors import ModelctlError
 
@@ -45,11 +44,11 @@ def remove_worktree(*, repo_root: Path, dest: Path) -> None:
 
 def capture_diff(worktree: Path) -> tuple[str, list[str]]:
     cp = subprocess.run(["git", "diff", "--name-only"], cwd=str(worktree), capture_output=True, text=True, timeout=10)
-    files = [l.strip() for l in cp.stdout.splitlines() if l.strip()]
+    files = [x.strip() for x in cp.stdout.splitlines() if x.strip()]
     cp2 = subprocess.run(["git", "diff"], cwd=str(worktree), capture_output=True, text=True, timeout=10)
     # also untracked
     cp3 = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"], cwd=str(worktree), capture_output=True, text=True, timeout=10)
-    untracked = [l.strip() for l in cp3.stdout.splitlines() if l.strip()]
+    untracked = [x.strip() for x in cp3.stdout.splitlines() if x.strip()]
     all_files = files + untracked
     # get full diff including untracked via git diff
     diff = cp2.stdout

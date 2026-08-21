@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime
 from typing import Any
 
 from ..config.resolver import resolve_target, target_digest

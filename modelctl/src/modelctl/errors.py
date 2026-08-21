@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -133,23 +132,3 @@ class ModelctlError(Exception):
         d["suggested_action"] = _SUGGESTED_ACTIONS.get(self.code, "modelctl doctor")
         return d
 
-
-def e_internal(msg: str, *, trace_id: str | None = None, details: dict[str, Any] | None = None) -> ModelctlError:
-    return ModelctlError(
-        code="E_INTERNAL",
-        message=msg,
-        retryable=False,
-        trace_id=trace_id or uuid.uuid4().hex[:12],
-        details=details,
-    )
-
-
-def is_retryable(code: str) -> bool:
-    return code in {
-        "E_SSH_UNREACHABLE",
-        "E_START_TIMEOUT",
-        "E_HEALTH_FAILED",
-        "E_DELEGATE_PROVIDER_FAILURE",
-        "E_DELEGATE_RATE_LIMITED",
-        "E_GPU_STATE_UNKNOWN",
-    }

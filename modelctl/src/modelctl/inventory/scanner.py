@@ -84,14 +84,6 @@ def validate_path_inside_roots(path: str, roots: list[str]) -> bool:
     return False
 
 
-def remote_scan_command(roots: list[str]) -> list[str]:
-    """Return argv for remote scan helper (POSIX). The actual remote invocation is via SSH transport with strict argv encoding."""
-    # We emit a python snippet that walks only declared roots; no shell interpolation.
-    # The SSH adapter will execute this as `python3 -c '<snippet>'` with argv vector, not shell.
-    # For now return the marker for transport layer.
-    return ["python3", "-c", f"import os,json,hashlib;roots={json.dumps(roots)};print(json.dumps({{'roots':roots}}))"]
-
-
 # Remote scan snippet executed as `python3 -c <snippet>` on the remote host.
 # Constraints (belt and suspenders on top of argv quoting): single-quoted
 # python strings only, and no $, backtick, backslash, or semicolon anywhere

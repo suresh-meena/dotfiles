@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import time
-from datetime import datetime, timezone
 from typing import Any
 
 from ..inventory.registry import Registry, utc_now
@@ -14,7 +12,6 @@ def reconcile(*, registry: Registry, config: dict[str, Any], machine: str | None
     """Compare local DB state against live processes, leases and GPU
     reservations. Safe repairs only with fix_safe."""
     deployments = registry.list_deployments(machine=machine)
-    events: list[dict[str, Any]] = []
     fixes: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
 
