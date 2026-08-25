@@ -1,6 +1,6 @@
 ---
 name: modelctl
-description: Deterministic model control for remote vLLM (SSH + systemd) and delegated opencode execution via opencode run (driver → deepseek-v4-flash, worker → hy3 by default; override per task/CLI/config with any catalog-enabled model). Use when starting/inspecting/connecting to a local model, checking which machine has a model, or dispatching bounded driver/worker tasks as subagents instead of spending brain tokens. If a delegated run fails, do the work yourself rather than stopping.
+description: Deterministic model control for remote vLLM (SSH + systemd) and delegated opencode execution via opencode run (driver → deepseek-v4-flash, worker → hy3 by default; override per task/CLI/config with ANY model from an allowlisted provider — auto-admitted, no sync/assign needed). Use when starting/inspecting/connecting to a local model, checking which machine has a model, or dispatching bounded driver/worker tasks as subagents instead of spending brain tokens. If a delegated run fails, do the work yourself rather than stopping.
 ---
 
 # modelctl — Model Control & Delegation Skill
@@ -71,6 +71,7 @@ modelctl ps|events|reconcile|doctor|gc --json
 # delegation
 modelctl delegates sync|list|doctor --json   # doctor emits .modelctl/delegation.lock
 modelctl delegates assign <ref> --bin worker|driver [--enable|--disable]  # route a catalog model to a bin
+modelctl delegates admit <provider/id> --json  # admit any allowlisted-provider model, no bin needed
 modelctl delegate run --role worker|driver --task-file .modelctl/tasks/T1.json [--model provider/id] --json
 modelctl delegate batch --role worker --tasks-dir .modelctl/tasks/search/ [--model provider/id] --json
 modelctl delegate status|history|cancel --json
@@ -97,6 +98,6 @@ low judgment + repetitive/parallel → worker (opencode-go/hy3)
 low judgment + large bounded spec  → driver (opencode-go/deepseek-v4-flash)
 ```
 
-Model selection precedence: task file `model_ref` > `delegate run --model` > config `delegation.roles.<role>.model` > bin default. An explicit model must exist in the catalog, be enabled and AVAILABLE — otherwise the run fails closed (`E_DELEGATE_MODEL_UNAVAILABLE` / `E_DELEGATION_POLICY_DENIED`), never silently falls back. To use a catalog-discovered model, first route it: `delegates assign <ref> --bin worker`.
+Model selection precedence: task file `model_ref` > `delegate run --model` > config `delegation.roles.<role>.model` > bin default. An **explicit** model request is flexible: any `provider/id` under an allowlisted provider (`delegation.execution.provider_allowlist`, default `[opencode-go]`) is usable without prior sync or assignment — unknown models are auto-admitted (enabled + AVAILABLE, audited) and unclassified-disabled models are enabled by the request itself. Still fail-closed, never silent fallback: non-allowlisted provider → `E_DELEGATION_POLICY_DENIED`; operator-disabled (`assign --disable`) or UNAVAILABLE model → refused. Implicit bin routing stays strictly classified. To pre-admit or route for implicit use: `delegates admit <ref>` / `delegates assign <ref> --bin worker`.
 
 Before writing a task file, read **SKILL-REFERENCE.md** (next to this file) for the full task contract schema, result envelope spec, and workspace containment rules. For delegation, construct a minimal context package (task spec + declared files + validation contract), not the whole conversation.

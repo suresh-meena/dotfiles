@@ -79,7 +79,7 @@ def _preflight(registry: Registry, config: dict[str, Any], task: dict[str, Any],
     if not ok_budget:
         raise ModelctlError(code="E_DELEGATION_BUDGET_EXCEEDED", message=reason)
 
-    selected = deterministic_select(registry=registry, requested_bin=bin_, task_class=task.get("task_class"), requested_model=explicit)
+    selected = deterministic_select(registry=registry, requested_bin=bin_, task_class=task.get("task_class"), requested_model=explicit, config=config)
 
     data_class = str(task.get("data_class", "INTERNAL")).upper()
     max_allowed = str(task.get("max_data_class", "INTERNAL")).upper()

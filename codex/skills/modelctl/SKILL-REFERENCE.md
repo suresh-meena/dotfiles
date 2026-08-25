@@ -21,7 +21,7 @@ Deep reference for dispatching delegate runs. Read when writing task files or in
 Field semantics:
 
 - `objective` — sent to the model verbatim as the prompt. Make it self-contained; the rest of the contract is enforced by modelctl, not shown to the model.
-- `model_ref` — optional explicit model override (`"provider/id"`). Precedence: task `model_ref` > CLI `--model` > config `delegation.roles.<role>.model` > bin default. Must be enabled + AVAILABLE in the catalog or the run fails closed.
+- `model_ref` — optional explicit model override (`"provider/id"`). Precedence: task `model_ref` > CLI `--model` > config `delegation.roles.<role>.model` > bin default. Flexible admission: any model under an allowlisted provider (`delegation.execution.provider_allowlist`, default `[opencode-go]`) is usable without prior sync/assign; unknown models are auto-admitted enabled + AVAILABLE. Fail-closed only for non-allowlisted providers, operator-disabled models, and UNAVAILABLE models.
 - `inputs.paths` — files/dirs the worker may read. Stage only what is declared.
 - `allowed_write_paths` — `[]` for read-only workers. Drivers declare explicit paths; canonicalized, symlink-safe, relative to the isolated workspace.
 - `validation` — exact argv lists (e.g. `[["pytest", "-q", "tests/config"]]`). Run inside the isolated workspace after the run; all must exit 0.
@@ -85,8 +85,10 @@ workers cannot recursively delegate
 ## Model catalog & overrides
 
 - `modelctl delegates sync` — refresh catalog from `opencode models`; discovered models land as `unclassified` + disabled.
-- `modelctl delegates assign <ref> --bin worker|driver [--enable|--disable]` — route a model to a bin so it becomes eligible for that bin's default routing.
-- Explicit requests (task `model_ref` / CLI `--model`) bypass bin routing but still require the model to be enabled + AVAILABLE; failures are fail-closed, never silent fallbacks.
+- Explicit requests (`task model_ref` / CLI `--model`) are flexible: any allowlisted-provider model works immediately — unknown models are auto-admitted (audited), unclassified-disabled ones are enabled by the request. No sync/assign dance needed for one-off use.
+- `modelctl delegates admit <provider/id>` — pre-admit a model without bin assignment (same allowlist policy).
+- `modelctl delegates assign <ref> --bin worker|driver [--enable|--disable]` — route a model to a bin for implicit/default routing, or deliberately disable it (explicit requests to an operator-disabled model then fail closed with `E_DELEGATION_POLICY_DENIED`).
+- Non-allowlisted providers fail closed (`E_DELEGATION_POLICY_DENIED`); extend via `delegation.execution.provider_allowlist`.
 - `queue retry` re-runs with the original run's selected model.
 
 ## Budget & privacy

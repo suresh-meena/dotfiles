@@ -25,15 +25,51 @@ def test_explicit_model_wins_even_across_bins(reg):
     assert sel["model_ref"] == "opencode-go/deepseek-v4-flash"
 
 
-def test_unknown_model_fails_closed(reg):
+def test_unknown_model_fails_closed_for_non_allowlisted_provider(reg):
     with pytest.raises(ModelctlError) as e:
-        deterministic_select(registry=reg, requested_bin="worker", requested_model="opencode-go/nope")
-    assert e.value.code == "E_DELEGATE_MODEL_UNAVAILABLE"
+        deterministic_select(
+            registry=reg, requested_bin="worker", requested_model="unlisted-provider/nope"
+        )
+    assert e.value.code == "E_DELEGATION_POLICY_DENIED"
 
 
-def test_disabled_model_refused(reg):
+def test_unknown_model_auto_admitted_for_allowlisted_provider(reg):
+    sel = deterministic_select(
+        registry=reg, requested_bin="worker", requested_model="opencode-go/brand-new"
+    )
+    assert sel["model_ref"] == "opencode-go/brand-new"
+    stored = reg.get_delegate_model("opencode-go/brand-new")
+    assert stored["enabled"] and stored["availability_status"] == "AVAILABLE"
+
+
+def test_provider_allowlist_respected_from_config(reg):
+    cfg = {"delegation": {"execution": {"provider_allowlist": ["opencode-go"]}}}
     with pytest.raises(ModelctlError) as e:
-        deterministic_select(registry=reg, requested_bin="worker", requested_model="opencode-go/other")
+        deterministic_select(
+            registry=reg, requested_bin="worker", requested_model="other-prov/m1", config=cfg
+        )
+    assert e.value.code == "E_DELEGATION_POLICY_DENIED"
+    cfg_open = {"delegation": {"execution": {"provider_allowlist": ["opencode-go", "other-prov"]}}}
+    sel = deterministic_select(
+        registry=reg, requested_bin="driver", requested_model="other-prov/m1", config=cfg_open
+    )
+    assert sel["model_ref"] == "other-prov/m1"
+
+
+def test_unclassified_disabled_enabled_by_explicit_request(reg):
+    sel = deterministic_select(
+        registry=reg, requested_bin="worker", requested_model="opencode-go/other"
+    )
+    assert sel["model_ref"] == "opencode-go/other"
+    stored = reg.get_delegate_model("opencode-go/other")
+    assert stored["enabled"]
+
+
+def test_deliberately_disabled_classified_model_still_refused(tmp_path):
+    r = Registry(db_path=tmp_path / "d.db")
+    r.upsert_delegate_model("opencode-go/optout", "opencode-go", "optout", "worker", False, "AVAILABLE")
+    with pytest.raises(ModelctlError) as e:
+        deterministic_select(registry=r, requested_bin="worker", requested_model="opencode-go/optout")
     assert e.value.code == "E_DELEGATION_POLICY_DENIED"
 
 
@@ -65,3 +101,21 @@ def test_cli_assign_and_list(run):
 
     listed = parse_json(run("delegates", "list", "--bin", "worker"))["models"]
     assert any(m["model_ref"] == "opencode-go/x" and m["enabled"] for m in listed)
+
+
+def test_cli_admit_unknown_model(run):
+    data = parse_json(run("delegates", "admit", "opencode-go/fresh-model"))
+    assert data["ok"] is True
+    assert data["model_ref"] == "opencode-go/fresh-model"
+    assert data["enabled"] is True
+
+    from modelctl.inventory.registry import default_db
+
+    reg = Registry(db_path=default_db())
+    stored = reg.get_delegate_model("opencode-go/fresh-model")
+    assert stored and stored["enabled"] and stored["availability_status"] == "AVAILABLE"
+
+
+def test_cli_admit_rejects_non_allowlisted_provider(run):
+    res = run("delegates", "admit", "rogue-provider/m1", expect_success=False)
+    assert parse_json(res)["code"] == "E_DELEGATION_POLICY_DENIED"

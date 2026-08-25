@@ -14,6 +14,7 @@ from ..delegation.adapters.opencode import OpenCodeAdapter
 from ..delegation.catalog import DEFAULT_MODELS, Catalog
 from ..delegation.config import DelegationCfg
 from ..delegation.runner import cancel_delegate_run, retry_delegate_run, run_delegate_task
+from ..delegation.router import deterministic_select
 from ..delegation.task_contract import load_task_file
 from ..errors import ModelctlError
 from ..state import STATE_ROOT
@@ -29,7 +30,7 @@ def delegate():
 @click.option("--role", required=True, type=click.Choice(["worker", "driver"]))
 @click.option("--task-file", required=True, type=str)
 @click.option("--bin", "bin_", required=False, help="alias for role")
-@click.option("--model", "model_ref", required=False, help="override model (provider/id); must be enabled in catalog")
+@click.option("--model", "model_ref", required=False, help="override model (provider/id); allowlisted providers auto-admit")
 @click.option("--shadow", is_flag=True)
 @click.option("--no-cache", is_flag=True)
 @pass_ctx
@@ -47,7 +48,7 @@ def delegate_run(ctx: Ctx, role, task_file, bin_, model_ref, shadow, no_cache):
 @delegate.command("batch")
 @click.option("--role", required=True, type=click.Choice(["worker", "driver"]))
 @click.option("--tasks-dir", required=True, type=str)
-@click.option("--model", "model_ref", required=False, help="override model for every task in the batch")
+@click.option("--model", "model_ref", required=False, help="override model for every task in the batch; allowlisted providers auto-admit")
 @pass_ctx
 def delegate_batch(ctx: Ctx, role, tasks_dir, model_ref):
     try:
@@ -293,6 +294,28 @@ def delegates_assign(ctx: Ctx, model_ref, bin_, enable):
         provider = m["provider_id"]
         reg.upsert_delegate_model(model_ref, provider, m["model_id"], bin_, enable, m["availability_status"], json.loads(m["metadata_json"]) if m["metadata_json"] else None)
         emit({"ok": True, "model_ref": model_ref, "bin": bin_, "enabled": enable}, ctx)
+    except Exception as e:
+        handle_error(e, ctx)
+
+
+@delegates.command("admit")
+@click.argument("model_ref", required=True)
+@pass_ctx
+def delegates_admit(ctx: Ctx, model_ref):
+    """Admit any provider/id model into the catalog without bin assignment.
+
+    Provider must be in delegation.execution.provider_allowlist; the model is
+    registered enabled + AVAILABLE and immediately usable via --model /
+    task model_ref."""
+    try:
+        cfg, reg = load_pair(ctx)
+        m = deterministic_select(
+            registry=reg, requested_bin="worker", requested_model=model_ref, config=cfg
+        )
+        emit(
+            {"ok": True, "model_ref": m["model_ref"], "bin": m["bin"], "enabled": bool(m["enabled"]), "admitted": True},
+            ctx,
+        )
     except Exception as e:
         handle_error(e, ctx)
 
