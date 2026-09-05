@@ -21,17 +21,47 @@ class TunnelManager:
     def __init__(self, registry: Registry):
         self.registry = registry
 
-    def connect(self, *, target_id: str, machine_id: str, ssh_host: str, ssh_user: str | None, ssh_port: int | None, remote_port: int, trace_id: str | None = None) -> dict[str, Any]:
+    def connect(self, *, target_id: str, machine_id: str, ssh_host: str, ssh_user: str | None, ssh_port: int | None, remote_port: int, local_port: int | None = None, ssh_password_file: str | None = None, trace_id: str | None = None) -> dict[str, Any]:
         trace_id = trace_id or uuid.uuid4().hex[:8]
         # Check existing tunnel
         existing = [t for t in self.registry.list_tunnels() if t["target_id"] == target_id and t["state"] == "ACTIVE"]
+        for t in existing[:]:
+            if t.get("pid"):
+                try:
+                    os.kill(t["pid"], 0)
+                except ProcessLookupError:
+                    self.registry.delete_tunnel(t["tunnel_id"])
+                    existing.remove(t)
         if existing:
             t = existing[0]
-            return {"ok": True, "target": target_id, "local": f"http://127.0.0.1:{t['local_port']}/v1", "local_port": t["local_port"], "remote_port": t["remote_port"], "tunnel_id": t["tunnel_id"], "idempotent": True, "trace_id": trace_id}
-        local_port = find_free_port()
+            if local_port is None or t["local_port"] == local_port:
+                return {"ok": True, "target": target_id, "local": f"http://127.0.0.1:{t['local_port']}/v1", "local_port": t["local_port"], "remote_port": t["remote_port"], "tunnel_id": t["tunnel_id"], "idempotent": True, "trace_id": trace_id}
+            # A changed explicit port is a configuration change. Replace only
+            # this target's tunnel so callers do not keep using a stale port.
+            self.disconnect(target_id=target_id)
+        if local_port is not None:
+            if isinstance(local_port, bool) or not isinstance(local_port, int) or not 1 <= local_port <= 65535:
+                from .errors import ModelctlError
+
+                raise ModelctlError(code="E_CONFIG_INVALID", message="tunnel local_port must be an integer between 1 and 65535", target=target_id)
+            conflict = next((t for t in self.registry.list_tunnels() if t["state"] == "ACTIVE" and t["local_port"] == local_port), None)
+            if conflict:
+                from .errors import ModelctlError
+
+                raise ModelctlError(code="E_TUNNEL_FAILED", message=f"local tunnel port {local_port} is already owned by {conflict['target_id']}", target=target_id, machine=machine_id)
+        else:
+            local_port = find_free_port()
         tunnel_id = f"tun-{uuid.uuid4().hex[:8]}"
         # Start SSH tunnel: ssh -N -L local:127.0.0.1:remote host
-        ssh_cmd = ["ssh", "-N", "-L", f"{local_port}:127.0.0.1:{remote_port}"]
+        ssh_cmd: list[str] = []
+        if ssh_password_file:
+            from pathlib import Path as _P
+
+            pw = _P(str(ssh_password_file)).expanduser()
+            if not pw.is_file():
+                raise RuntimeError(f"ssh password_file not found: {pw}")
+            ssh_cmd += ["sshpass", "-f", str(pw)]
+        ssh_cmd += ["ssh", "-N", "-o", "StrictHostKeyChecking=accept-new", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=15", "-L", f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}"]
         if ssh_port:
             ssh_cmd += ["-p", str(ssh_port)]
         ssh_cmd.append(f"{ssh_user}@{ssh_host}" if ssh_user else ssh_host)

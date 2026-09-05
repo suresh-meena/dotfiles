@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# One lifecycle owner for Qwen, including automatic tunnel recovery.
+set -euo pipefail
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ctl() { modelctl --json --non-interactive "$@" qwen38 --machine rtx3090; }
+healthy() { curl --fail --silent --max-time 5 http://127.0.0.1:8000/health >/dev/null; }
+case "${1:-status}" in
+  maintain)
+    while true; do
+      if ! healthy; then
+        ctl start && ctl connect || exit 1
+      fi
+      sleep 15
+    done
+    ;;
+  start)
+    ctl start
+    systemctl --user start qwen38-tunnel.service
+    for ((i=0; i<30; i++)); do
+      if healthy; then echo 'Qwen ready: qwen38/qwen38'; exit 0; fi
+      sleep 1
+    done
+    exit 1
+    ;;
+  stop)
+    systemctl --user stop qwen38-tunnel.service
+    ctl disconnect
+    ctl stop
+    ;;
+  restart)
+    systemctl --user stop qwen38-tunnel.service
+    ctl disconnect
+    ctl restart
+    systemctl --user start qwen38-tunnel.service
+    ;;
+  status) ctl status ;;
+  logs) ctl logs ;;
+  *) echo 'Usage: qwen38-session {start|stop|restart|status|logs}' >&2; exit 2 ;;
+esac

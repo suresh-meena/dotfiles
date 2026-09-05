@@ -39,6 +39,7 @@ targets:
     artifact: { path: /models/Qwen2.5-72B-Instruct, require_observed: true }
     gpus: [0, 1, 2, 3]
     lifecycle: { mode: persistent }
+    tunnel: { local_port: 18000 }
     vllm:
       tensor_parallel_size: 4
       max_model_len: 32768

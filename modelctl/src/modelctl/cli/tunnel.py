@@ -24,7 +24,7 @@ def connect_cmd(ctx: Ctx, model, machine, detach):
         if not dep or dep["state"] != "READY":
             raise ModelctlError(code="E_PREFLIGHT_FAILED", message=f"target {target} not READY", target=target)
         ssh = resolved.get("ssh", {})
-        res = TunnelManager(reg).connect(target_id=target, machine_id=machine, ssh_host=ssh.get("host", "localhost"), ssh_user=ssh.get("user"), ssh_port=ssh.get("port"), remote_port=resolved.get("port", 8000), trace_id=ctx.trace_id)
+        res = TunnelManager(reg).connect(target_id=target, machine_id=machine, ssh_host=ssh.get("host", "localhost"), ssh_user=ssh.get("user"), ssh_port=ssh.get("port"), remote_port=resolved.get("port", 8000), local_port=resolved.get("tunnel", {}).get("local_port"), ssh_password_file=ssh.get("password_file"), trace_id=ctx.trace_id)
         emit(res, ctx)
     except Exception as e:
         handle_error(e, ctx)

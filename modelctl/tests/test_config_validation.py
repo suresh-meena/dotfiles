@@ -102,3 +102,15 @@ def test_unknown_target_field():
     cfg = base_config()
     cfg["targets"]["qwen-72b@gpu-a"]["vllm_extra"] = True
     expect_error(cfg, "E_CONFIG_UNKNOWN_FIELD")
+
+
+def test_target_tunnel_local_port():
+    cfg = base_config()
+    cfg["targets"]["qwen-72b@gpu-a"]["tunnel"] = {"local_port": 18000}
+    validate_config(cfg)
+
+
+def test_target_tunnel_local_port_range():
+    cfg = base_config()
+    cfg["targets"]["qwen-72b@gpu-a"]["tunnel"] = {"local_port": 0}
+    expect_error(cfg, "E_CONFIG_INVALID")

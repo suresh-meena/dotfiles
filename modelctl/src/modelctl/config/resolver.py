@@ -36,6 +36,7 @@ def resolve_target(config: dict[str, Any], target_id: str) -> dict[str, Any]:
         "gpus": list(t.get("gpus", [])),
         "lifecycle": {**defaults.get("lifecycle", {}), **t.get("lifecycle", {})},
         "security": {**defaults.get("security", {}), **t.get("security", {})},
+        "tunnel": dict(t.get("tunnel", {})),
         "bind_host": defaults.get("bind_host", "127.0.0.1"),
         "startup_timeout_s": defaults.get("startup_timeout_s", 1200),
         "graceful_stop_timeout_s": defaults.get("graceful_stop_timeout_s", 30),

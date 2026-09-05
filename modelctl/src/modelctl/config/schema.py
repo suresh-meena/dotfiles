@@ -8,14 +8,15 @@ from ..errors import ModelctlError
 KNOWN_TOP = {"version", "defaults", "machines", "models", "targets", "delegation", "budget", "cache"}
 KNOWN_DEFAULTS = {"startup_timeout_s", "graceful_stop_timeout_s", "kill_timeout_s", "cleanup_verify_timeout_s", "bind_host", "access", "lifecycle", "security", "port", "gpu_memory_utilization"}
 KNOWN_MACHINE = {"ssh", "supervisor", "inventory", "runtime", "gpu", "defaults"}
-KNOWN_SSH = {"host", "user", "port"}
+KNOWN_SSH = {"host", "user", "port", "password_file"}
 KNOWN_INVENTORY = {"roots", "max_age_before_start_s", "auto_refresh_before_start"}
 KNOWN_RUNTIME = {"type", "activate", "image"}
 KNOWN_GPU = {"sharing", "require_same_user_for_foreign_processes"}
-KNOWN_TARGET = {"model", "machine", "artifact", "gpus", "lifecycle", "security", "vllm"}
+KNOWN_TARGET = {"model", "machine", "artifact", "gpus", "lifecycle", "security", "tunnel", "vllm"}
 KNOWN_ARTIFACT = {"path", "require_observed"}
 KNOWN_LIFECYCLE = {"mode", "ttl_s", "lease_grace_s"}
 KNOWN_SECURITY = {"allow_remote_exposure", "network_policy", "request_logging", "output_logging", "state_file_mode", "state_dir_mode"}
+KNOWN_TUNNEL = {"local_port"}
 KNOWN_VLLM = {"tensor_parallel_size", "max_model_len", "gpu_memory_utilization", "dtype", "extra_args"}
 
 SECRET_KEYS = {"api_key", "hf_token", "secret", "token", "password"}
@@ -134,6 +135,11 @@ def _validate_targets(raw: dict[str, Any], models: dict[str, Any], machines: dic
                     raise _invalid(f"targets.{tid}.vllm.tensor_parallel_size exceeds gpus count")
         # references
         if t.get("model") not in models:
+        if "tunnel" in t:
+            _reject_unknown(f"targets.{tid}.tunnel", t["tunnel"], KNOWN_TUNNEL)
+            local_port = t["tunnel"].get("local_port")
+            if local_port is not None and (not isinstance(local_port, int) or isinstance(local_port, bool) or not 1 <= local_port <= 65535):
+                raise _invalid(f"targets.{tid}.tunnel.local_port must be an integer between 1 and 65535")
             raise ModelctlError(code="E_MODEL_NOT_FOUND", message=f"target {tid} references unknown model {t.get('model')}")
         if t.get("machine") not in machines:
             raise ModelctlError(code="E_MACHINE_NOT_FOUND", message=f"target {tid} references unknown machine {t.get('machine')}")

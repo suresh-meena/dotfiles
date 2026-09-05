@@ -1,0 +1,22 @@
+{
+  "provider": {
+    "qwen38": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Qwen3.8-27B",
+      "options": { "baseURL": "http://127.0.0.1:8000/v1", "apiKey": "dummy" },
+      "models": {
+        "qwen38": {
+          "name": "Qwen3.8-27B INT8-W8A16 MTP",
+          "limit": { "context": 98304, "output": 4096 },
+          "reasoning": true,
+          "tool_call": true,
+          "options": { "chat_template_kwargs": { "enable_thinking": false, "preserve_thinking": false } },
+          "variants": {
+            "fast": { "chat_template_kwargs": { "enable_thinking": false, "preserve_thinking": false } },
+            "thinking": { "chat_template_kwargs": { "enable_thinking": true, "preserve_thinking": true } }
+          }
+        }
+      }
+    }
+  }
+}

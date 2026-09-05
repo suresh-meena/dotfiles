@@ -1,0 +1,14 @@
+[Unit]
+Description=Keep Qwen available to OpenCode through modelctl
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=%h/.local/bin/qwen38-session maintain
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=20
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

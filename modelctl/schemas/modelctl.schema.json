@@ -54,7 +54,8 @@
               "properties": {
                 "host": { "type": "string", "minLength": 1 },
                 "user": { "type": "string" },
-                "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+                "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                "password_file": { "type": "string" }
               }
             },
             "supervisor": { "type": "string", "enum": ["systemd-user"] },
@@ -144,6 +145,13 @@
               "properties": {
                 "allow_remote_exposure": { "type": "boolean" },
                 "network_policy": { "type": "string" }
+              }
+            },
+            "tunnel": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "local_port": { "type": "integer", "minimum": 1, "maximum": 65535 }
               }
             },
             "vllm": {
