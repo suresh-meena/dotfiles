@@ -587,7 +587,7 @@ const cardValues = (content) =>
   assert.match(busy, /GPU 0 · /, "card names gpu by index");
   assert.match(busy, /busy/, "backend availability badge busy");
   assert.match(busy, /75\.0%/, "utilization fraction rendered directly");
-  assert.match(busy, /3\.0 GiB free \/ 11\.0 GiB/, "free vram emphasised");
+  assert.match(busy, /8\.0 \/ 11\.0 GiB \(72\.7%\)/, "vram shown as used/total with fill");
   assert.match(busy, /2 compute procs/, "compute process count");
   assert.match(busy, /owners: /, "owners listed when known");
   assert.match(busy, /65 °C/, "temperature");

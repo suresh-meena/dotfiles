@@ -714,18 +714,16 @@
         ),
       ),
     );
-    const vramFree =
-      _number(gpu.vram_total) && _number(gpu.vram_used)
-        ? Math.max(gpu.vram_total - gpu.vram_used, 0)
-        : null;
+    const vramPair =
+      _number(gpu.vram_total) && gpu.vram_total > 0 && _number(gpu.vram_used);
     card.append(
       meterRow(
         "vram",
         meter(
-          _number(gpu.vram_total) && gpu.vram_total > 0 && _number(gpu.vram_used)
-            ? gpu.vram_used / gpu.vram_total
-            : null,
-          `${_bytes(vramFree)} free / ${_bytes(gpu.vram_total)}`,
+          vramPair ? gpu.vram_used / gpu.vram_total : null,
+          vramPair
+            ? `${_pair(gpu.vram_used, gpu.vram_total)} (${_pctOf(gpu.vram_used, gpu.vram_total)})`
+            : UNKNOWN,
         ),
       ),
     );
