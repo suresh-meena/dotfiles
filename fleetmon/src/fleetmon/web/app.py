@@ -38,6 +38,12 @@ BASIC_USERNAME = "fleetmon"
 MAX_QUERY_WORKERS = 2
 MAX_QUERY_PENDING = 32
 ROOT = Path(__file__).parent
+PAGE_TITLES = {
+    "overview": "Overview",
+    "jobs": "Jobs",
+    "hub-status": "Hub Status",
+    "idle-gpus": "Idle GPUs",
+}
 
 
 def _invoke(source: Any, name: str, **kwargs: Any) -> Any:
@@ -521,6 +527,6 @@ def create_app(
     async def page(page: str = "overview"):
         if page not in {"overview", "jobs", "hub-status", "idle-gpus"}:
             raise HTTPException(404, "page not found")
-        return _html_page(page, page.replace("-", " ").title())
+        return _html_page(page, PAGE_TITLES[page])
 
     return app

@@ -54,6 +54,20 @@
     }
     return unit === 0 ? `${v.toFixed(0)} ${units[0]}` : `${size.toFixed(1)} ${units[unit]}`;
   }
+  // "used / total" in the total's unit — one unit instead of three tokens.
+  function _pair(used, total) {
+    if (!_number(used) || !_number(total) || total <= 0) return UNKNOWN;
+    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let unit = 0;
+    let size = total;
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024;
+      unit += 1;
+    }
+    const scale = 1024 ** unit;
+    const fmt = (value) => (unit === 0 ? value.toFixed(0) : (value / scale).toFixed(1));
+    return `${fmt(used)} / ${fmt(total)} ${units[unit]}`;
+  }
   function _pct(fraction) {
     return _number(fraction) ? `${(fraction * 100).toFixed(1)}%` : UNKNOWN;
   }
@@ -402,6 +416,11 @@
       ? sample.ram_used / sample.ram_total
       : null;
   }
+  function ramLabel(sample, withPct) {
+    if (!_number(sample.ram_used) || !_number(sample.ram_total)) return UNKNOWN;
+    const pair = _pair(sample.ram_used, sample.ram_total);
+    return withPct ? `${pair} (${_pctOf(sample.ram_used, sample.ram_total)})` : pair;
+  }
 
   // ---- summary cards ----
   function card(label, value, tone) {
@@ -469,7 +488,10 @@
     return false;
   }
   function gpuSummary(host, counts) {
-    if (_number(host.gpu_count) && host.gpu_count === 0) return "no GPUs";
+    if (_number(host.gpu_count) && host.gpu_count === 0) {
+      const none = el("span", "gpu-none", "no GPUs");
+      return {node: none, raw: ""};
+    }
     const entry = counts.get(host.target);
     if (!entry) return {text: UNKNOWN, raw: ""};
     const wrap = el("span", "gpu-sum");
@@ -501,7 +523,7 @@
       {label: "host"},
       {label: "state"},
       {label: "gpus"},
-      {label: "receive age", num: true},
+      {label: "age", num: true},
       {label: "cpu", num: true},
       {label: "cpu history"},
       {label: "load (1m)", num: true},
@@ -520,22 +542,27 @@
         token(host.state),
         gpuSummary(host, counts),
         num(_age(host.last_received), _ageRaw(host.last_received)),
-        {node: meter(host.cpu_busy, _pct(host.cpu_busy)), raw: host.cpu_busy},
-        spark ? {node: sparkline(spark), raw: ""} : DASH,
+        {node: meter(host.cpu_busy, _pct(host.cpu_busy)), raw: host.cpu_busy},        spark ? {node: sparkline(spark), raw: ""} : DASH,
         num(_cores(host.load1), host.load1),
         {
-          node: meter(
-            ramFraction(host),
-            `${_bytes(host.ram_used)} / ${_bytes(host.ram_total)} (${_pctOf(host.ram_used, host.ram_total)})`,
-          ),
+          node: meter(ramFraction(host), ramLabel(host)),
           raw: ramFraction(host),
         },
-        num(
-          rootDisk(host.root_total, host.root_free),
-          _number(host.root_total) && _number(host.root_free)
-            ? host.root_total - host.root_free
-            : "",
-        ),
+        {
+          node: meter(
+            diskFraction(host),
+            _pair(
+              _number(host.root_total) && _number(host.root_free)
+                ? host.root_total - host.root_free
+                : null,
+              host.root_total,
+            ),
+          ),
+          raw:
+            _number(host.root_total) && _number(host.root_free)
+              ? host.root_total - host.root_free
+              : "",
+        },
         {
           node: meter(
             _number(host.gpu_utilization) ? host.gpu_utilization : null,
@@ -544,12 +571,17 @@
           ),
           raw: host.gpu_utilization,
         },
-        num(
-          host.gpu_count
-            ? `${_bytes(host.gpu_vram_used)} / ${_bytes(host.gpu_vram_total)}`
-            : DASH,
-          host.gpu_vram_used,
-        ),
+        {
+          node: meter(
+            _number(host.gpu_vram_used) &&
+              _number(host.gpu_vram_total) &&
+              host.gpu_vram_total > 0
+              ? host.gpu_vram_used / host.gpu_vram_total
+              : null,
+            host.gpu_count ? _pair(host.gpu_vram_used, host.gpu_vram_total) : DASH,
+          ),
+          raw: host.gpu_vram_used,
+        },
         host.last_error ? token(host.last_error) : DASH,
       ]);
     });
@@ -742,13 +774,7 @@
     const sample = latest || {};
     const panel = el("div", "meters");
     panel.append(meterBox("cpu", sample.cpu_busy, _pct(sample.cpu_busy)));
-    panel.append(
-      meterBox(
-        "ram",
-        ramFraction(sample),
-        `${_bytes(sample.ram_used)} / ${_bytes(sample.ram_total)}`,
-      ),
-    );
+    panel.append(meterBox("ram", ramFraction(sample), ramLabel(sample, true)));
     panel.append(
       meterBox(
         "disk",
@@ -804,7 +830,7 @@
     const search = el("input", "search");
     search.type = "search";
     search.id = "workload-search";
-    search.placeholder = "search workloads (user, name, pid)";
+    search.placeholder = "search workloads";
     search.setAttribute("aria-label", "Search workloads by user, name, or pid");
     search.value = ui.search;
     search.addEventListener("input", () => {
@@ -1161,6 +1187,19 @@
   }
 
   // ---- jobs ----
+  // Scheduler states are uppercase and can carry a suffix ("CANCELLED by 100056").
+  function jobStateToken(state) {
+    const text = typeof state === "string" && state ? state : UNKNOWN;
+    const cls = text.startsWith("CANCELLED")
+      ? "st-muted"
+      : {COMPLETED: "st-ok", RUNNING: "st-busy", PENDING: "st-partial", FAILED: "st-bad"}[
+          text
+        ] || "st-muted";
+    const span = el("span", `st ${cls}`, text);
+    span.dataset.raw = text;
+    return span;
+  }
+
   function renderJobs(rows) {
     clear();
     const list = rowsOf(rows);
@@ -1184,12 +1223,13 @@
         num(_text(job.job_id), job.job_id),
         _text(job.array_task_id),
         _text(job.step_id),
-        _text(job.state),
+        jobStateToken(job.state),
         num(_clock(job.updated_at), job.updated_at),
       ]);
     });
     tbody.applySavedSort();
     content.append(tbody.parentNode);
+    note(`showing ${list.length} jobs — bounded, latest first`);
   }
 
   // ---- hub status ----
@@ -1249,7 +1289,7 @@
   const PALETTE = ["c1", "c2", "c3", "c4", "c5"];
   const CHART_COLORS = {cpu: "c1", ram: "c2", disk: "c3"};
   const X_LABELS = 4;
-  const SPARK = {w: 90, h: 22};
+  const SPARK = {w: 64, h: 22};
   const CHARTS = [
     ["cpu", "cpu"],
     ["ram", "ram used"],
@@ -1369,12 +1409,18 @@
 
   function chartFigure(title, chartSeries) {
     const fig = el("figure", "chart");
-    const caption = el("figcaption", null, `${title} `);
-    chartSeries.forEach((item, index) => {
-      const label = el("span", "series", item.label);
-      label.prepend(el("span", `swatch ${seriesColor(item.chart, index)}`));
-      caption.append(label);
-    });
+    const caption = el(
+      "figcaption",
+      null,
+      chartSeries.length > 1 ? `${title} ` : title,
+    );
+    if (chartSeries.length > 1) {
+      chartSeries.forEach((item, index) => {
+        const label = el("span", "series", item.label);
+        label.prepend(el("span", `swatch ${seriesColor(item.chart, index)}`));
+        caption.append(label);
+      });
+    }
     fig.append(caption);
     let x0 = Infinity;
     let x1 = -Infinity;

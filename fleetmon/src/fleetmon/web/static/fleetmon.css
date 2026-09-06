@@ -48,7 +48,6 @@ header button {
 nav {
   background: #eceef0;
   border-right: 1px solid #d3d8dd;
-  min-height: 100vh;
   padding: 0.6rem 0.75rem 1.2rem;
   display: flex;
   flex-direction: column;
@@ -96,10 +95,13 @@ nav a.active {
 }
 .nav-hosts a .st {
   font-size: 0.72rem;
+  white-space: nowrap;
 }
 body {
   display: grid;
   grid-template-columns: 210px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 100vh;
 }
 @media (max-width: 899px) {
   body {
@@ -162,7 +164,7 @@ body {
   text-overflow: ellipsis;
 }
 td .meter-track {
-  width: 72px;
+  width: 44px;
   height: 8px;
 }
 .meters {
@@ -193,8 +195,6 @@ td .meter-track {
 }
 
 main {
-  max-width: 1240px;
-  margin: auto;
   padding: 0.7rem 0.9rem 1.4rem;
 }
 h2 {
@@ -353,6 +353,18 @@ h3 {
   flex: 1 1 120px;
   width: auto;
 }
+.gpu-meter .meter-value {
+  flex: none;
+}
+.gpu-sum {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+.gpu-none {
+  white-space: nowrap;
+}
 .gpu-procs {
   font-size: 0.78rem;
   color: #454d58;
@@ -397,8 +409,8 @@ h3 {
   gap: 0.4rem 0.9rem;
   margin: 0.25rem 0 0.45rem;
 }
-.toolbar input,
-.filters input {
+.toolbar input:not([type="checkbox"]),
+.filters input:not([type="checkbox"]) {
   font: inherit;
   font-size: 0.85rem;
   padding: 0.2rem 0.45rem;
@@ -675,3 +687,17 @@ svg.spark {
 .chart-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)); gap:12px; }
 .chart-grid figure { min-width:0; margin:0; }
 .chart-grid svg { width:100%; height:auto; }
+
+/* Cap content width and center it on very wide screens without breaking the
+   grid item's stretch (auto margins on main made short pages float and
+   narrow tables shrink-wrap). */
+main > * {
+  max-width: 1240px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Wide tables scroll inside the content instead of the page. */
+#content {
+  overflow-x: auto;
+}
