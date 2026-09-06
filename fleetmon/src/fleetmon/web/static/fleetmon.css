@@ -1,0 +1,677 @@
+/* Fleetmon — one small, flat stylesheet. Muted neutrals plus a few semantic
+   status colors used only as a secondary cue next to explicit text tokens.
+   Series palette: c1 blue (CPU), c2 green (RAM), c3 amber (disk),
+   c4 red, c5 gray; per-GPU lines cycle c1..c5. */
+
+:root {
+  font: 14px/1.45 system-ui, sans-serif;
+  color: #1c2128;
+  background: #f4f5f6;
+  --c1: #4a7dbd;
+  --c2: #3d9970;
+  --c3: #b8860b;
+  --c4: #a04b4b;
+  --c5: #6b7280;
+}
+body {
+  margin: 0;
+}
+header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.45rem 0.9rem;
+  background: #20262e;
+  color: #e8eaed;
+}
+.brand-link {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #e8eaed;
+  text-decoration: none;
+}
+header button {
+  font: inherit;
+  color: #e8eaed;
+  background: transparent;
+  border: 1px solid #4a525d;
+  padding: 0 0.5rem;
+  cursor: pointer;
+}
+@media (min-width: 900px) {
+  header button {
+    display: none;
+  }
+}
+nav {
+  background: #eceef0;
+  border-right: 1px solid #d3d8dd;
+  min-height: 100vh;
+  padding: 0.6rem 0.75rem 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+nav .nav-heading {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7280;
+  margin: 0.7rem 0 0.2rem;
+}
+nav ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+nav a {
+  color: #1c2128;
+  text-decoration: none;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.18rem 0.45rem;
+  border-left: 2px solid transparent;
+}
+nav a:hover,
+nav a:focus {
+  background: #dfe3e7;
+}
+nav a.active {
+  border-left-color: var(--c1);
+  background: #e2e7ec;
+  font-weight: 600;
+}
+.sb-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nav-hosts a .st {
+  font-size: 0.72rem;
+}
+body {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+}
+@media (max-width: 899px) {
+  body {
+    grid-template-columns: 1fr;
+  }
+  nav {
+    min-height: 0;
+    border-right: none;
+    border-bottom: 1px solid #d3d8dd;
+    display: none;
+  }
+  nav.open {
+    display: flex;
+  }
+  .nav-hosts {
+    max-height: 40vh;
+    overflow-y: auto;
+  }
+}
+/* btop-style meters: flat threshold fills; text label always present. */
+.meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+.meter-track {
+  flex: none;
+  width: 96px;
+  height: 10px;
+  background: #e2e5e9;
+  overflow: hidden;
+}
+.meter-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+}
+.meter-fill.ok {
+  background: var(--c2);
+}
+.meter-fill.warn {
+  background: var(--c3);
+}
+.meter-fill.high {
+  background: var(--c4);
+}
+.meter-fill.neutral {
+  background: var(--c1);
+}
+.meter-fill.unknown {
+  background: transparent;
+}
+.meter-value {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  color: #454d58;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+td .meter-track {
+  width: 72px;
+  height: 8px;
+}
+.meters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1.6rem;
+  margin: 0.1rem 0 0.5rem;
+}
+.meter-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 200px;
+}
+.meter-box .meter-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7280;
+}
+.meter-box .meter-track {
+  width: 260px;
+  height: 14px;
+}
+.meter-box .meter-value {
+  font-size: 0.85rem;
+}
+
+main {
+  max-width: 1240px;
+  margin: auto;
+  padding: 0.7rem 0.9rem 1.4rem;
+}
+h2 {
+  font-size: 1rem;
+  margin: 0.15rem 0 0.3rem;
+}
+h3 {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #454d58;
+  margin: 1rem 0 0.25rem;
+}
+#status {
+  margin: 0.1rem 0;
+  color: #5b6470;
+}
+#status.error {
+  color: #a12622;
+}
+.note {
+  color: #5b6470;
+}
+.legend {
+  margin: 0.1rem 0 0.7rem;
+  font-size: 0.76rem;
+  color: #5b6470;
+}
+
+/* Summary cards: big value, small label; color only reinforces the text. */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.5rem;
+  margin: 0.2rem 0 0.6rem;
+}
+.card {
+  background: #fff;
+  border: 1px solid #e2e6ea;
+  padding: 0.4rem 0.6rem 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+.card-value {
+  font-size: 1.45rem;
+  font-weight: 650;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card.tone-ok .card-value {
+  color: #1a7f37;
+}
+.card.tone-bad .card-value {
+  color: #a12622;
+}
+.card.tone-busy .card-value {
+  color: var(--c1);
+}
+.card.tone-stale .card-value {
+  color: #9a6700;
+}
+.card-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7280;
+}
+
+/* Compact host health/freshness bar and the prominent issues panel. */
+.host-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem 0.7rem;
+  margin: 0.1rem 0 0.4rem;
+}
+.host-name {
+  font-weight: 650;
+}
+.sample-age {
+  color: #5b6470;
+  font-size: 0.8rem;
+}
+.issues {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  border: 1px solid #e3c8c8;
+  border-left: 3px solid #a12622;
+  background: #fdf7f7;
+  padding: 0.4rem 0.6rem;
+  margin: 0.2rem 0 0.6rem;
+}
+.issues .issue {
+  color: #a12622;
+  font-size: 0.85rem;
+}
+.issues.none {
+  border-color: #e2e6ea;
+  border-left-color: #1a7f37;
+  background: #fff;
+}
+.issues.none .issue-ok {
+  color: #1a7f37;
+  font-size: 0.85rem;
+}
+
+/* GPU cards: responsive grid; every field stays on-screen at desktop width. */
+.gpu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 0.6rem;
+  margin: 0.2rem 0 0.8rem;
+}
+.gpu-card {
+  background: #fff;
+  border: 1px solid #e2e6ea;
+  padding: 0.5rem 0.65rem 0.45rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.gpu-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.gpu-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gpu-meter {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.gpu-meter .meter-label {
+  flex: none;
+  width: 5.2rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6b7280;
+}
+.gpu-meter .meter-track {
+  flex: 1 1 120px;
+  width: auto;
+}
+.gpu-procs {
+  font-size: 0.78rem;
+  color: #454d58;
+  overflow-wrap: anywhere;
+}
+.gpu-error {
+  font-size: 0.78rem;
+  color: #a12622;
+  overflow-wrap: anywhere;
+}
+.badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid;
+  white-space: nowrap;
+}
+.badge-idle {
+  color: #1a7f37;
+  border-color: #1a7f37;
+}
+.badge-busy {
+  color: var(--c1);
+  border-color: var(--c1);
+}
+.badge-stale {
+  color: #9a6700;
+  border-color: #9a6700;
+}
+.st-busy {
+  color: var(--c1);
+}
+
+/* Search/filter toolbars (workloads, idle GPU filters). */
+.toolbar,
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.9rem;
+  margin: 0.25rem 0 0.45rem;
+}
+.toolbar input,
+.filters input {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid #c8ced4;
+  background: #fff;
+  color: inherit;
+  min-width: 10rem;
+}
+.filters input[type="number"] {
+  min-width: 6rem;
+  width: 7rem;
+}
+.toolbar .toggle,
+.filters .toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.more-btn {
+  font: inherit;
+  font-size: 0.8rem;
+  background: #fff;
+  border: 1px solid #c8ced4;
+  padding: 0.15rem 0.7rem;
+  cursor: pointer;
+  margin: 0 0 0.4rem;
+}
+.more-btn:hover {
+  background: #f2f4f6;
+}
+
+/* Collapsed long-tail sections; native details/summary keyboard support. */
+details.disclosure {
+  margin: 0.3rem 0 0.6rem;
+}
+details.disclosure > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #454d58;
+  padding: 0.2rem 0;
+}
+details.disclosure > summary:hover {
+  color: #1c2128;
+}
+details.disclosure[open] > summary {
+  margin-bottom: 0.25rem;
+}
+
+/* Per-host GPU availability summary in the overview table. */
+.gpu-sum {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+/* Compact tables; numerals right-aligned with tabular figures. */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.2rem 0 0.9rem;
+  background: #fff;
+  font-variant-numeric: tabular-nums;
+}
+th,
+td {
+  padding: 0.2rem 0.55rem;
+  border-bottom: 1px solid #e2e6ea;
+  text-align: left;
+  font-size: 0.82rem;
+}
+thead th {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #454d58;
+  background: #eceef0;
+  border-bottom: 1px solid #d3d8dd;
+  white-space: nowrap;
+}
+thead th[data-kind] {
+  cursor: pointer;
+}
+thead th[data-kind]:focus {
+  outline: 2px solid var(--c1);
+  outline-offset: -2px;
+}
+tbody tr:hover {
+  background: #f7f9fa;
+}
+td.num,
+th.num {
+  text-align: right;
+  white-space: nowrap;
+}
+.kv {
+  max-width: 34rem;
+}
+.kv th {
+  width: 11rem;
+  color: #454d58;
+  font-weight: 400;
+}
+tbody tr:hover .st {
+  background: transparent;
+}
+
+/* State tokens: the text is the cue, color only reinforces it. */
+.st-ok {
+  color: #1a7f37;
+}
+.st-partial {
+  color: #9a6700;
+}
+.st-stale {
+  color: #5b6470;
+}
+.st-bad {
+  color: #a12622;
+}
+.st-muted {
+  color: #8b929b;
+}
+
+/* Bounded SVG chart cards: solid strokes, flat 10% area fills, light grid.
+   No gradients, glow, or animation; hover is a crosshair plus one tooltip. */
+figure {
+  margin: 0.4rem 0 1rem;
+  padding: 0.45rem 0.55rem 0.3rem;
+  background: #fff;
+  border: 1px solid #e2e6ea;
+}
+figure.chart {
+  min-height: 200px;
+  position: relative;
+}
+figcaption {
+  font-size: 0.76rem;
+  color: #454d58;
+  margin-bottom: 0.15rem;
+}
+figcaption .series {
+  margin-right: 0.8rem;
+}
+.swatch {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0;
+  border-top: 2px solid;
+  margin-right: 0.3rem;
+  vertical-align: 0.15rem;
+}
+svg {
+  display: block;
+  font: 9px ui-monospace, monospace;
+}
+svg text {
+  fill: #8b929b;
+}
+svg .grid {
+  stroke: #e8e8e8;
+  stroke-width: 1;
+}
+svg .line {
+  fill: none;
+}
+svg .area {
+  stroke: none;
+  fill-opacity: 0.1;
+}
+svg .crosshair {
+  stroke: #8b929b;
+  stroke-width: 1;
+}
+svg .overlay {
+  fill: transparent;
+}
+.c1 {
+  border-color: var(--c1);
+  stroke: var(--c1);
+  fill: var(--c1);
+}
+.c2 {
+  border-color: var(--c2);
+  stroke: var(--c2);
+  fill: var(--c2);
+}
+.c3 {
+  border-color: var(--c3);
+  stroke: var(--c3);
+  fill: var(--c3);
+}
+.c4 {
+  border-color: var(--c4);
+  stroke: var(--c4);
+  fill: var(--c4);
+}
+.c5 {
+  border-color: var(--c5);
+  stroke: var(--c5);
+  fill: var(--c5);
+}
+.tip {
+  display: none;
+  position: absolute;
+  background: #fff;
+  border: 1px solid #ccc;
+  padding: 0.2rem 0.35rem;
+  font: 11px/1.5 ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  color: #1c2128;
+  pointer-events: none;
+  z-index: 2;
+  white-space: nowrap;
+}
+.tip.on {
+  display: block;
+}
+.tip .t {
+  color: #5b6470;
+}
+
+/* Compact range switcher above the chart group; active range bold. */
+.ranges {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.35rem 0 0.4rem;
+}
+.ranges button {
+  font: inherit;
+  font-size: 0.78rem;
+  background: none;
+  border: none;
+  padding: 0;
+  color: #454d58;
+  cursor: pointer;
+}
+.ranges button[aria-pressed="true"] {
+  font-weight: 700;
+  text-decoration: underline;
+  color: #1c2128;
+}
+
+/* Overview sparkline column: 90x22 CPU line, blue with 10% area fill. */
+svg.spark {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+@media (max-width: 600px) {
+  nav {
+    display: none;
+    flex-direction: column;
+  }
+  nav.open {
+    display: flex;
+  }
+  .kv {
+    max-width: none;
+  }
+  .gpu-grid {
+    grid-template-columns: 1fr;
+  }
+  .cards {
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  }
+  .gpu-meter .meter-label {
+    width: 4.4rem;
+  }
+}
+
+.chart-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)); gap:12px; }
+.chart-grid figure { min-width:0; margin:0; }
+.chart-grid svg { width:100%; height:auto; }

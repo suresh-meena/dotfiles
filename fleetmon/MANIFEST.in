@@ -1,0 +1,7 @@
+include PLAN(4).md
+include LICENSE
+include requirements-helper.lock
+include requirements-hub.lock
+include packaging/fleetmon-hub.service
+include scripts/install-helper
+include scripts/install-hub

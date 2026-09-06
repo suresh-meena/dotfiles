@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""Build the reproducible, versioned fleetmon helper wheel (local, offline).
+
+Determinism contract:
+  * the version comes from pyproject.toml and must equal
+    src/fleetmon/__init__.py `__version__` (single source of truth with a
+    drift guard, never hardcoded here);
+  * helper dependencies are pinned exactly from requirements-helper.lock;
+  * fixed zip member timestamps (SOURCE_DATE_EPOCH, default
+    2000-01-01T00:00:00Z), fixed member order, fixed zip metadata, no
+    build-path leakage anywhere in the wheel;
+  * building twice with the same interpreter yields byte-identical wheels
+    (covered by tests/test_installers.py);
+  * the SHA-256 is printed and recorded in the uncommitted
+    <wheel>.sha256 sidecar. dist/ is gitignored; never commit a wheel or a
+    hash. Consumers verify an artifact with --check before transfer.
+
+The wheel contains only the helper-relevant subset
+(fleetmon/__init__.py, fleetmon/protocol.py, fleetmon/snapshot.py plus a
+console script). Hub-only modules and hub-only dependencies are never
+included: the helper installs psutil/nvidia-ml-py only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import os
+import re
+import sys
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+DEFAULT_SOURCE = Path(__file__).resolve().parents[1]
+WHEEL_TAG = "py3-none-any"
+GENERATOR = "fleetmon-helper-wheel 1.0"
+FIXED_EPOCH = 946684800  # 2000-01-01T00:00:00Z (zip-safe, above 1980)
+HELPER_MODULES = (
+    "fleetmon/__init__.py",
+    "fleetmon/protocol.py",
+    "fleetmon/snapshot.py",
+)
+CONSOLE_SCRIPTS = ("fleetmon-snapshot = fleetmon.snapshot:main",)
+EPOCH_TIME = (2000, 1, 1, 0, 0, 0)
+WHEEL_NAME = re.compile(r"fleetmon-.+-py3-none-any\.whl")
+WHEEL_VERSION = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._+-]*[A-Za-z0-9])?")
+HEX64 = re.compile(r"[0-9a-f]{64}")
+SOURCE_EPOCH = re.compile(r"[0-9]{1,12}")
+
+
+class BuildError(Exception):
+    """Local build/configuration failure (exit code 2)."""
+
+
+def pyproject_field(text: str, key: str) -> str:
+    match = re.search(rf'(?m)^{key} = "([^"]+)"$', text)
+    if not match:
+        raise BuildError(f"pyproject.toml has no {key} field")
+    return match.group(1)
+
+
+def read_version(source: Path) -> str:
+    text = (source / "pyproject.toml").read_text(encoding="utf-8")
+    version = pyproject_field(text, "version")
+    init = (source / "src" / "fleetmon" / "__init__.py").read_text(encoding="utf-8")
+    match = re.search(r'(?m)^__version__ = "([^"]+)"$', init)
+    if not match or match.group(1) != version:
+        raise BuildError(
+            "pyproject.toml version and src/fleetmon/__init__.py __version__ "
+            f"disagree ({version} vs {match.group(1) if match else '<missing>'})"
+        )
+    if not WHEEL_VERSION.fullmatch(version):
+        raise BuildError(f"pyproject version is not a normalized version subset: {version}")
+    return version
+
+
+def locked_dependencies(source: Path) -> list[str]:
+    pins: list[str] = []
+    for raw in (source / "requirements-helper.lock").read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, separator, pin = line.partition("==")
+        if not separator:
+            continue
+        pins.append(f"{name}=={pin}")
+    if not pins:
+        raise BuildError("requirements-helper.lock has no exact pins")
+    return sorted(pins)
+
+
+def metadata_text(
+    version: str, summary: str, requires_python: str, dependencies: list[str]
+) -> str:
+    lines = [
+        "Metadata-Version: 2.1",
+        "Name: fleetmon",
+        f"Version: {version}",
+        f"Summary: {summary}",
+        f"Requires-Python: {requires_python}",
+    ]
+    lines.extend(f"Requires-Dist: {dependency}" for dependency in dependencies)
+    return "\n".join(lines) + "\n"
+
+
+def wheel_text() -> str:
+    return (
+        "Wheel-Version: 1.0\n"
+        f"Generator: {GENERATOR}\n"
+        "Root-Is-Purelib: true\n"
+        f"Tag: {WHEEL_TAG}\n"
+    )
+
+
+def entry_points_text() -> str:
+    return "[console_scripts]\n" + "\n".join(CONSOLE_SCRIPTS) + "\n"
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1048576), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def data_sha256(data: bytes) -> str:
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(data).digest())
+    return encoded.rstrip(b"=").decode("ascii")
+
+
+def build_members(
+    source: Path, version: str, summary: str, requires_python: str, dependencies: list[str]
+) -> list[tuple[str, bytes]]:
+    members: list[tuple[str, bytes]] = []
+    for module in sorted(HELPER_MODULES):
+        path = source / "src" / module
+        if not path.is_file():
+            raise BuildError(f"helper module is missing from the source tree: {module}")
+        members.append((module, path.read_bytes()))
+    dist = f"fleetmon-{version}.dist-info"
+    members.append((f"{dist}/METADATA", metadata_text(version, summary, requires_python, dependencies).encode("utf-8")))
+    members.append((f"{dist}/WHEEL", wheel_text().encode("utf-8")))
+    members.append((f"{dist}/entry_points.txt", entry_points_text().encode("utf-8")))
+    record_lines = [f"{name},sha256={data_sha256(data)},{len(data)}" for name, data in members]
+    record_lines.append(f"{dist}/RECORD,,")
+    members.append((f"{dist}/RECORD", ("\n".join(record_lines) + "\n").encode("utf-8")))
+    return members
+
+
+def write_wheel(path: Path, members: list[tuple[str, bytes]], epoch_time: tuple[int, int, int, int, int, int]) -> None:
+    with zipfile.ZipFile(
+        path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+    ) as archive:
+        for name, data in members:
+            info = zipfile.ZipInfo(name, date_time=epoch_time)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.create_version = 20
+            info.extract_version = 20
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, data)
+
+
+def resolved_epoch() -> tuple[int, tuple[int, int, int, int, int, int]]:
+    raw = os.environ.get("SOURCE_DATE_EPOCH")
+    if raw is None:
+        return FIXED_EPOCH, EPOCH_TIME
+    if not SOURCE_EPOCH.fullmatch(raw):
+        raise BuildError(f"SOURCE_DATE_EPOCH must be a non-negative integer: {raw}")
+    epoch = int(raw)
+    stamp = datetime.fromtimestamp(epoch, tz=timezone.utc)
+    if stamp.year < 1980:
+        raise BuildError("SOURCE_DATE_EPOCH is below the 1980 zip timestamp floor")
+    return epoch, (stamp.year, stamp.month, stamp.day, stamp.hour, stamp.minute, stamp.second)
+
+
+def build_wheel(source: Path, out: Path) -> tuple[Path, str]:
+    text = (source / "pyproject.toml").read_text(encoding="utf-8")
+    version = read_version(source)
+    summary = pyproject_field(text, "description")
+    requires_python = pyproject_field(text, "requires-python")
+    dependencies = locked_dependencies(source)
+    members = build_members(source, version, summary, requires_python, dependencies)
+    out.mkdir(parents=True, exist_ok=True)
+    wheel = out / f"fleetmon-{version}-{WHEEL_TAG}.whl"
+    _, epoch_time = resolved_epoch()
+    write_wheel(wheel, members, epoch_time)
+    actual = sha256_file(wheel)
+    sidecar = Path(f"{wheel}.sha256")
+    sidecar.write_text(f"{actual}  {wheel.name}\n", encoding="utf-8")
+    return wheel, actual
+
+
+def check_wheel(wheel: Path, expect: str | None, source: Path) -> int:
+    if not WHEEL_NAME.fullmatch(wheel.name):
+        raise BuildError(
+            f"wheel filename must match fleetmon-<version>-py3-none-any.whl: {wheel}"
+        )
+    wheel_version = wheel.name[len("fleetmon-") : -len(f"-{WHEEL_TAG}.whl")]
+    pyproject_version = read_version(source)
+    if wheel_version != pyproject_version:
+        raise BuildError(
+            f"wheel version {wheel_version} does not match pyproject version "
+            f"{pyproject_version}: {wheel}"
+        )
+    recorded = expect
+    sidecar = Path(f"{wheel}.sha256")
+    if recorded is None and sidecar.is_file():
+        recorded = sidecar.read_text(encoding="utf-8").split()[0]
+    if recorded is None:
+        raise BuildError(f"no recorded sha256: pass --expect-sha256 or {sidecar}")
+    recorded = recorded.lower()
+    if not HEX64.fullmatch(recorded):
+        raise BuildError(f"recorded sha256 must be 64 hex characters: {recorded}")
+    if not wheel.is_file():
+        raise BuildError(f"wheel artifact is missing: {wheel}")
+    actual = sha256_file(wheel)
+    if actual != recorded:
+        print(f"check failed: {wheel}", file=sys.stderr)
+        print(f"expected sha256: {recorded}", file=sys.stderr)
+        print(f"actual   sha256: {actual}", file=sys.stderr)
+        return 1
+    print(f"check ok: {wheel}")
+    print(f"sha256: {actual}")
+    return 0
+
+
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="build-helper-wheel",
+        description="Build the reproducible fleetmon helper wheel and record its SHA-256.",
+    )
+    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE, help="project root")
+    parser.add_argument("--out", type=Path, default=None, help="output directory (default <source>/dist)")
+    parser.add_argument(
+        "--check",
+        type=Path,
+        default=None,
+        metavar="WHEEL",
+        help="verify an existing wheel against a recorded sha256 and exit",
+    )
+    parser.add_argument(
+        "--expect-sha256",
+        default=None,
+        help="recorded sha256 for --check (default: the <wheel>.sha256 sidecar)",
+    )
+    args = parser.parse_args(argv)
+    if args.out is None:
+        args.out = args.source / "dist"
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    try:
+        if args.check is not None:
+            return check_wheel(args.check, args.expect_sha256, args.source)
+        wheel, actual = build_wheel(args.source, args.out)
+    except BuildError as error:
+        print(f"build-helper-wheel: {error}", file=sys.stderr)
+        return 2
+    print(f"wheel: {wheel}")
+    print(f"sha256: {actual}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

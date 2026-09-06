@@ -1,0 +1,583 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- VERIFIED fleetctl CONTRACT (verified locally via --help only, 2026-09-04) ---
+# Every argument shape below was read from the installed fleetctl --help output
+# (read-only local help; no target contact). No other argument shape is used and
+# none may be invented beyond these usages:
+#
+#   fleetctl show [-h] [--json] [--secret] [--sensitive] selector
+#     selector     Target or pool name
+#
+#   fleetctl protocol show [-h] [--json] selector
+#     selector     Protocol name, target name, or pool name
+#
+#   fleetctl sync [-h] [--target SELECTOR] [--delete] [--force]
+#                 [--compress-level N] [--admin] [--route ROUTE]
+#                 [--no-fallback] [--require KEY<OP>VALUE] [--fit] [--all]
+#                 [--tag TAG] [--jobs N] [--dry-run]
+#                 {push,pull} local_path [remote_path]
+#     --target     Target or pool name
+#     remote_path  Remote source or destination path (defaults to
+#                  target/project root); this installer always passes it
+#                  explicitly
+#     The flags are parser-level (usage shows them before {push,pull});
+#     observed precedent (Todo.md 2026-09-04) also accepts
+#     `sync push --target NAME ...`, which is the form this installer uses.
+#
+#   fleetctl exec [-h] [--target SELECTOR_OVERRIDE] [--profile PROFILE]
+#                 [--cwd CWD] [--admin] [--route ROUTE] [--no-fallback]
+#                 [--require KEY<OP>VALUE] [--fit] [--all] [--tag TAG]
+#                 [--jobs N] [--tty] [--dry-run]
+#                 [selector] [argv ...]
+#     --target     Target or pool name (override)
+#     argv         Command to run remotely, introduced by `--`
+#     "Run one argv vector remotely without shell interpretation."
+#
+# `fleetctl exec` IS a general remote-exec verb, so the remote canary steps
+# below are expressed as plain argv vectors through
+# `fleetctl exec --target NAME -- ...` (no shell interpretation, argv arrays
+# only, target strings never interpolated into remote argv). No raw ssh/scp
+# fallback exists anywhere in this script and none is invented: if fleetctl
+# refuses a verb for the resolved role/protocol, that step fails closed with
+# reason remote_step_failed.
+# --- END VERIFIED CONTRACT ---
+
+# Remote helper deployment is fail-closed. --dry-run is read-only planning
+# that performs zero fleetctl invocations (any verb, including local
+# inventory reads) and no network. A real install runs only behind the
+# literal, target-matching authorization flag --i-authorize-target-<NAME>.
+
+usage() {
+  cat >&2 <<'EOF'
+usage: install-helper --dry-run --target NAME [--wheel PATH]
+       install-helper --target NAME --wheel PATH [--expect-sha256 SHA256] --i-authorize-target-NAME
+
+--dry-run performs only local reads: it never invokes fleetctl (any verb,
+including local inventory reads), never opens the network, and writes
+nothing. It validates the target-name shape and, when a wheel is given, the
+local wheel SHA-256, then prints the exact real-mode steps.
+
+A real install is refused unless every one of these holds:
+  * exactly one explicit --target NAME (never a group, pool, --all, default
+    target, or login/bridge/storage/disabled role; the literal name "all" is
+    always refused);
+  * a wheel artifact whose local SHA-256 matches a recorded hash
+    (--expect-sha256 or the <wheel>.sha256 sidecar written by
+    scripts/build-helper-wheel) validated before any transfer;
+  * the literal, loudly-named flag --i-authorize-target-<NAME> matching
+    --target exactly. Any other real-mode invocation refuses immediately,
+    before any fleetctl invocation.
+
+Real mode then:
+  * resolves admission (local reads): fleetctl show --json NAME and
+    fleetctl protocol show --json <protocol> must yield enabled==true, role
+    in {workstation,compute}, and resolved protocol kind==direct;
+  * discovers an existing remote Python 3.10+ interpreter (PATH names
+    python3.10..python3.14 plus the user-local ~/.local/bin shims) and
+    probes it (>=3.10, uid!=0) through fleetctl exec; it never installs or
+    replaces a remote system python;
+  * creates the remote stage and version directories, then transfers the
+    wheel and the helper lock through
+    fleetctl sync push --target NAME <local> <remote_path>;
+  * validates the remote staged wheel SHA-256 against the recorded hash;
+  * stages a versioned user-local venv at its final path
+    <home>/.local/share/fleetmon/helpers/<version>/venv (never moved after
+    creation) and installs only the locked helper dependencies into it;
+  * runs one bounded snapshot canary and validates it locally;
+  * reads the previous helpers/current link, switches it atomically to the
+    verified version, and verifies the switched helper;
+  * rolls back to the previous link on any post-switch failure.
+
+It never uses root, raw ssh/scp, system python, groups, pools, --all, or
+--tag, and it never installs or replaces a remote system python.
+
+Exit codes: 2 usage/local setup, 3 admission/authorization/refusal, 4
+artifact hash mismatch. Every refusal prints "refused: <TOKEN>" first.
+EOF
+}
+
+refuse() {
+  local code=$1 token=$2 message=$3
+  printf 'refused: %s\n' "$token" >&2
+  printf '%s\n' "$message" >&2
+  exit "$code"
+}
+
+dry_run=0
+target_set=0
+target=
+wheel_arg=
+expect_hash=
+authorized_name=
+while (($#)); do
+  case "$1" in
+    --dry-run) dry_run=1 ;;
+    --target)
+      ((target_set == 0)) || { usage; exit 2; }
+      target_set=1
+      shift
+      (($#)) || { usage; exit 2; }
+      target=$1
+      ;;
+    --wheel) shift; (($#)) || { usage; exit 2; }; wheel_arg=$1 ;;
+    --expect-sha256) shift; (($#)) || { usage; exit 2; }; expect_hash=$1 ;;
+    --i-authorize-target-*) authorized_name=${1#--i-authorize-target-} ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage; exit 2 ;;
+  esac
+  shift
+done
+((target_set == 1)) || { usage; exit 2; }
+
+# set -u safety: every artifact-derived value starts empty.
+wheel_hash=
+recorded_hash=
+wheel_name=
+wheel_version=
+
+# Target-name shape: exactly one explicit ASCII-printable name, no leading
+# dash, bounded length, never an all-host selector. This mirrors the
+# _valid_target_argument rules in src/fleetmon/cli.py (no whitespace, no
+# control characters, no leading dash, bounded length) hardened to ASCII
+# printable only, which also rejects non-ASCII whitespace such as NBSP.
+target_bytes=$(printf '%s' "$target" | wc -c)
+if ((target_bytes == 0 || target_bytes > 256)); then
+  refuse 2 target_shape_invalid "target must be non-empty and at most 256 bytes: $target"
+fi
+if [[ "$target" == -* ]]; then
+  refuse 2 target_shape_invalid "target must not start with a dash: $target"
+fi
+if printf '%s' "$target" | LC_ALL=C grep -q '[^!-~]'; then
+  refuse 2 target_shape_invalid "target must be ASCII printable without whitespace or control characters: $target"
+fi
+if [[ "$target" == all ]]; then
+  refuse 2 all_selector_refused "the literal name 'all' is refused; name one explicit target"
+fi
+
+# Artifact resolution, name shape, and local hash validation are local reads
+# performed before anything else; the wheel is optional in --dry-run.
+wheel=
+if [[ -n "$wheel_arg" ]]; then
+  wheel=$wheel_arg
+  if [[ ! -f "$wheel" ]]; then
+    refuse 2 artifact_not_found "wheel artifact is missing: $wheel"
+  fi
+  wheel_name=${wheel##*/}
+  if [[ "$wheel_name" != fleetmon-*-py3-none-any.whl ]]; then
+    refuse 2 artifact_unexpected_name "wheel filename must match fleetmon-<version>-py3-none-any.whl: $wheel"
+  fi
+  wheel_version=${wheel_name#fleetmon-}
+  wheel_version=${wheel_version%-py3-none-any.whl}
+  if [[ -z "$wheel_version" || "$wheel_version" == *[!A-Za-z0-9._+-]* ]]; then
+    refuse 2 artifact_version_invalid "wheel version must be a safe path-arg subset: $wheel_version"
+  fi
+  command -v python3 >/dev/null 2>&1 || refuse 2 python3_unavailable "python3 is required to validate the wheel SHA-256"
+  wheel_hash=$(python3 -c '
+import hashlib, sys
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as handle:
+    for block in iter(lambda: handle.read(1048576), b""):
+        digest.update(block)
+print(digest.hexdigest())
+' "$wheel") || refuse 2 artifact_not_readable "could not read wheel: $wheel"
+  recorded_hash=$expect_hash
+  if [[ -z "$recorded_hash" && -f "$wheel.sha256" ]]; then
+    recorded_hash=$(awk '{print $1; exit}' "$wheel.sha256") || refuse 2 artifact_hash_record_invalid "could not read hash record: $wheel.sha256"
+  fi
+  if [[ -n "$recorded_hash" ]]; then
+    if (( ${#recorded_hash} != 64 )) || printf '%s' "$recorded_hash" | LC_ALL=C grep -q '[^0-9a-fA-F]'; then
+      refuse 2 artifact_hash_record_invalid "recorded SHA-256 must be 64 hex characters"
+    fi
+    recorded_hash=${recorded_hash,,}
+    if [[ "$wheel_hash" != "$recorded_hash" ]]; then
+      refuse 4 artifact_hash_mismatch "wheel SHA-256 $wheel_hash does not match recorded $recorded_hash: $wheel"
+    fi
+    printf 'artifact: %s\n' "$wheel"
+    printf 'sha256: %s (matches recorded)\n' "$wheel_hash"
+  fi
+fi
+
+if ((dry_run)); then
+  # Read-only planning: local reads only. Zero fleetctl invocations of any
+  # verb (local inventory reads included), no network, no writes.
+  printf 'dry-run: read-only planning; performs no fleetctl invocation (any verb), no network, no writes\n'
+  printf 'dry-run: target=%s (explicit single-name shape ok: ASCII printable, no leading dash, <=256 bytes, not an all selector)\n' "$target"
+  if [[ -n "$wheel" ]]; then
+    printf 'dry-run: wheel=%s\n' "$wheel"
+    if [[ -n "$recorded_hash" ]]; then
+      printf 'dry-run: local sha256=%s matches the recorded hash\n' "$wheel_hash"
+    else
+      printf 'dry-run: no recorded hash found; real mode would require --expect-sha256 or %s.sha256\n' "$wheel"
+    fi
+  else
+    printf 'dry-run: real mode would require a wheel artifact (pass --wheel PATH or place one unique wheel in <source>/dist)\n'
+    printf 'dry-run: real mode would require a recorded sha256 (--expect-sha256 HEX or <wheel>.sha256 sidecar) validated before any transfer\n'
+  fi
+  printf 'dry-run: would resolve admission in real mode (local fleetctl reads): fleetctl show --json %s then fleetctl protocol show --json <protocol>\n' "$target"
+  printf 'dry-run: would refuse enabled!=true, role not in {workstation,compute}, or resolved protocol kind!=direct\n'
+  printf 'dry-run: would discover a remote Python 3.10+ interpreter (PATH python3.10..python3.14, ~/.local/bin shims, then python3) and probe it through fleetctl exec (no shell; uid 0 refused)\n'
+  printf 'dry-run: would create the remote stage and version directories, then transfer via fleetctl sync push --target %s <wheel> <stage>/<wheel name> (and the helper lock)\n' "$target"
+  printf 'dry-run: would validate the remote staged wheel sha256 against the recorded hash before install\n'
+  printf 'dry-run: would stage a versioned user-local venv at its final path <home>/.local/share/fleetmon/helpers/<version>/venv via the discovered remote python -m venv (never moved after creation)\n'
+  printf 'dry-run: would install only the locked helper dependencies into the venv via remote pip -r requirements-helper.lock\n'
+  printf 'dry-run: would run one bounded snapshot canary and validate it locally (object, <=256 KiB, schema_version==1, status ok|partial)\n'
+  printf 'dry-run: would read the previous helpers/current link, switch it atomically to the verified version, and verify the switched helper\n'
+  printf 'dry-run: would roll back to the previous link on any post-switch failure\n'
+  printf 'dry-run: would never use root, raw ssh/scp, system python, groups, pools, --all, or --tag\n'
+  exit 0
+fi
+
+# --- Real mode: the authorization gate is the first real-mode step and
+# --- precedes every fleetctl invocation (local inventory reads included).
+if [[ -z "$authorized_name" ]]; then
+  refuse 3 install_requires_explicit_authorization_flag "real helper installation is not enabled: no verified artifact/rollback workflow; rerun with the literal flag --i-authorize-target-$target to authorize exactly this target"
+fi
+if [[ "$authorized_name" != "$target" ]]; then
+  refuse 3 authorization_flag_target_mismatch "authorization flag names target '$authorized_name' but --target is '$target'"
+fi
+if [[ -n "$wheel" && -z "$recorded_hash" ]]; then
+  refuse 2 artifact_hash_record_missing "no recorded sha256 for the wheel; pass --expect-sha256 HEX or create $wheel.sha256 with scripts/build-helper-wheel"
+fi
+if [[ -z "$wheel" ]]; then
+  root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+  shopt -s nullglob
+  wheel_matches=("$root"/dist/fleetmon-*-py3-none-any.whl)
+  shopt -u nullglob
+  if ((${#wheel_matches[@]} == 1)); then
+    wheel=${wheel_matches[0]}
+    reexec_args=(--target "$target" --wheel "$wheel" --i-authorize-target-"$target")
+    if [[ -n "$expect_hash" ]]; then reexec_args+=(--expect-sha256 "$expect_hash"); fi
+    exec "$0" "${reexec_args[@]}"
+  fi
+  refuse 2 artifact_not_found "no unique default wheel in $root/dist (exactly one fleetmon-*-py3-none-any.whl required; pass --wheel PATH)"
+fi
+
+fleetctl=${FLEETCTL:-fleetctl}
+command -v "$fleetctl" >/dev/null 2>&1 || refuse 2 fleetctl_unavailable "fleetctl was not found; refusing helper operation"
+command -v python3 >/dev/null 2>&1 || refuse 2 python3_unavailable "python3 is required to validate fleetctl's JSON admission output"
+
+# Admission (local inventory reads only): enabled role workstation|compute
+# and resolved protocol kind direct. A bridge can also use a direct
+# protocol, so the role itself must be workstation/compute.
+target_json=$("$fleetctl" show --json "$target") || refuse 3 target_not_resolved "fleetctl cannot resolve target: $target"
+admitted_protocol=$(printf '%s\n' "$target_json" | python3 -c '
+import json, sys
+
+try:
+    value = json.load(sys.stdin)
+except (ValueError, AttributeError, TypeError):
+    raise SystemExit(1)
+if not isinstance(value, dict):
+    raise SystemExit(1)
+role = value.get("role")
+enabled = value.get("enabled")
+protocol = value.get("protocol")
+if enabled is not True or role not in {"workstation", "compute"} or not isinstance(protocol, str) or not protocol:
+    raise SystemExit(1)
+print(protocol)
+') || refuse 3 target_not_admitted "target is not an enabled workstation/compute target: $target"
+protocol_json=$("$fleetctl" protocol show --json "$admitted_protocol") || refuse 3 target_not_resolved "fleetctl cannot resolve protocol for target: $target"
+if ! printf '%s\n' "$protocol_json" | python3 -c '
+import json, sys
+
+try:
+    value = json.load(sys.stdin)
+except (ValueError, AttributeError, TypeError):
+    raise SystemExit(1)
+if not isinstance(value, dict) or value.get("kind") != "direct":
+    raise SystemExit(1)
+'; then
+  refuse 3 target_not_admitted "target protocol is not direct: $target"
+fi
+printf 'admission: target=%s protocol=%s kind=direct (enabled workstation|compute)\n' "$target" "$admitted_protocol"
+
+# Lock must exist locally before any transfer.
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+lock_path=$root/requirements-helper.lock
+[[ -f "$lock_path" ]] || refuse 2 artifact_not_found "requirements-helper.lock is missing: $lock_path"
+
+# Step 1a: discover an existing remote Python 3.10+ interpreter (read-only;
+# Fleetmon never installs or replaces a remote system python). PATH names
+# first, then the common user-local shim locations.
+remote_python=$("$fleetctl" exec --target "$target" -- sh -c '
+# fleetmon: find-python
+# A candidate must be >=3.10 AND able to create venvs (ensurepip works;
+# Debian/Ubuntu pythons without the venv package print an error instead).
+# The ~/.local/bin shims are tried before PATH so a working user-local
+# interpreter wins over a crippled system one.
+for candidate in "$HOME/.local/bin/python3.14" "$HOME/.local/bin/python3.13" \
+  "$HOME/.local/bin/python3.12" "$HOME/.local/bin/python3.11" \
+  "$HOME/.local/bin/python3.10" \
+  python3.14 python3.13 python3.12 python3.11 python3.10; do
+  command -v "$candidate" >/dev/null 2>&1 || continue
+  "$candidate" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null || continue
+  "$candidate" -m ensurepip --version >/dev/null 2>&1 || continue
+  "$candidate" -c "import sys; print(sys.executable)"
+  exit 0
+done
+exit 4
+') || finder_status=$?
+case "${finder_status:-0}" in
+  0) ;;
+  4) refuse 3 remote_python_unsupported "no Python 3.10+ interpreter found on target; Fleetmon never installs or replaces system python: $target" ;;
+  *) refuse 3 remote_step_failed "remote interpreter discovery failed for target: $target" ;;
+esac
+if [[ -z "$remote_python" ]] || [[ "$remote_python" =~ [[:space:][:cntrl:]] ]] || [[ "$remote_python" != /* ]]; then
+  refuse 3 remote_step_invalid_output "remote interpreter path is not a single absolute path: $remote_python"
+fi
+
+# Step 1b: probe the discovered interpreter (>=3.10, uid!=0, absolute home).
+probe_json=$("$fleetctl" exec --target "$target" -- "$remote_python" -c '
+# fleetmon: probe
+import json, os, sys
+
+print(json.dumps({
+    "major": sys.version_info[0],
+    "minor": sys.version_info[1],
+    "uid": os.getuid(),
+    "home": os.path.expanduser("~"),
+}))
+') || refuse 3 remote_step_failed "remote python probe failed for target: $target"
+python_status=0
+remote_home=$(printf '%s\n' "$probe_json" | python3 -c '
+import json, sys
+
+try:
+    value = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+if not isinstance(value, dict):
+    raise SystemExit(1)
+major = value.get("major")
+minor = value.get("minor")
+uid = value.get("uid")
+home = value.get("home")
+for number in (major, minor, uid):
+    if not isinstance(number, int) or isinstance(number, bool):
+        raise SystemExit(1)
+if not isinstance(home, str) or not home.startswith("/"):
+    raise SystemExit(1)
+if major < 3 or (major == 3 and minor < 10):
+    raise SystemExit(2)
+if uid == 0:
+    raise SystemExit(3)
+print(home)
+') || python_status=$?
+case "$python_status" in
+  0) ;;
+  2) refuse 3 remote_python_unsupported "remote interpreter is not 3.10+; Fleetmon never installs or replaces system python: $target" ;;
+  3) refuse 3 remote_root_refused "remote uid is 0 (root); helper installation is user-local only: $target" ;;
+  *) refuse 3 remote_step_invalid_output "remote probe output is invalid: $probe_json" ;;
+esac
+printf 'probe: remote python accepted (uid!=0, >=3.10) python=%s home=%s\n' "$remote_python" "$remote_home"
+
+# Step 2: remote stage + version directories (user-local paths built only
+# from the validated wheel version and the probe-validated absolute home).
+stage_dir=$remote_home/.cache/fleetmon/helper-stage-$wheel_version
+stage_wheel=$stage_dir/$wheel_name
+stage_lock=$stage_dir/requirements-helper.lock
+helpers_root=$remote_home/.local/share/fleetmon/helpers
+version_dir=$helpers_root/$wheel_version
+venv_path=$version_dir/venv
+current_link=$helpers_root/current
+if ! "$fleetctl" exec --target "$target" -- "$remote_python" -c '
+# fleetmon: makedirs
+import os, sys
+
+for path in sys.argv[1:]:
+    os.makedirs(path, exist_ok=True)
+' "$stage_dir" "$version_dir"; then
+  refuse 3 remote_step_failed "remote stage/version directory creation failed for target: $target"
+fi
+
+# Step 3: transfer wheel and lock through explicit-target fleetctl sync push
+# only (never raw ssh/scp; remote_path always explicit).
+if ! "$fleetctl" sync push --target "$target" "$wheel" "$stage_wheel"; then
+  refuse 3 remote_step_failed "fleetctl sync push of the wheel failed for target: $target"
+fi
+if ! "$fleetctl" sync push --target "$target" "$lock_path" "$stage_lock"; then
+  refuse 3 remote_step_failed "fleetctl sync push of the helper lock failed for target: $target"
+fi
+printf 'transfer: wheel and lock pushed to %s via fleetctl sync push --target %s\n' "$stage_dir" "$target"
+
+# Step 4: validate the staged wheel hash on the remote before install.
+stage_hash_json=$("$fleetctl" exec --target "$target" -- "$remote_python" -c '
+# fleetmon: stage-hash
+import hashlib, json, sys
+
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as handle:
+    for block in iter(lambda: handle.read(1048576), b""):
+        digest.update(block)
+print(json.dumps({"sha256": digest.hexdigest()}))
+' "$stage_wheel") || refuse 3 remote_step_failed "remote staged wheel hash validation failed for target: $target"
+remote_stage_hash=$(printf '%s\n' "$stage_hash_json" | python3 -c '
+import json, sys
+
+try:
+    value = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+if not isinstance(value, dict):
+    raise SystemExit(1)
+digest = value.get("sha256")
+if not isinstance(digest, str):
+    raise SystemExit(1)
+print(digest)
+') || refuse 3 remote_step_invalid_output "remote staged wheel hash output is invalid: $stage_hash_json"
+if [[ "$remote_stage_hash" != "$wheel_hash" ]]; then
+  refuse 4 remote_stage_hash_mismatch "remote staged wheel sha256 $remote_stage_hash does not match recorded $wheel_hash: $target"
+fi
+printf 'remote artifact: staged wheel sha256 matches recorded %s\n' "$wheel_hash"
+
+# Step 5: versioned user-local venv at its final path (never moved after
+# creation; pip entrypoint shebangs are absolute). Any leftovers from a
+# previous failed install of the same version are removed first; the current
+# link never points at the version being installed.
+if ! "$fleetctl" exec --target "$target" -- "$remote_python" -c '
+# fleetmon: clear-version-dir
+import os, shutil, sys
+
+link, version_dir = sys.argv[1], sys.argv[2]
+if os.path.islink(link) and os.path.realpath(link) == os.path.realpath(version_dir):
+    raise SystemExit(2)
+shutil.rmtree(version_dir, ignore_errors=True)
+' "$current_link" "$version_dir"; then
+  clear_status=$?
+  if [[ "$clear_status" == "2" ]]; then
+    refuse 3 version_dir_is_active "helpers/current already points at version $wheel_version; reinstall would delete the active helper: $target"
+  fi
+  refuse 3 remote_step_failed "clearing the previous failed version directory failed for target: $target"
+fi
+if ! "$fleetctl" exec --target "$target" -- "$remote_python" -m venv "$venv_path"; then
+  refuse 3 remote_step_failed "remote venv creation failed for target: $target"
+fi
+printf 'stage: versioned venv at final path %s\n' "$venv_path"
+
+# Step 6: locked helper dependencies only, then the hash-verified wheel.
+if ! "$fleetctl" exec --target "$target" -- "$venv_path/bin/python" -m pip install --disable-pip-version-check -r "$stage_lock" "$stage_wheel"; then
+  refuse 3 remote_step_failed "remote pip install of the locked helper dependencies failed for target: $target"
+fi
+printf 'install: locked helper dependencies and wheel installed into %s\n' "$venv_path"
+
+# Step 7: one bounded snapshot canary, validated locally (fleetmon's own
+# protocol validation runs inside the helper; this is a bounded sanity gate).
+canary_output=$("$fleetctl" exec --target "$target" -- "$venv_path/bin/fleetmon-snapshot") || refuse 3 remote_step_failed "snapshot canary failed for target: $target"
+if ! printf '%s\n' "$canary_output" | python3 -c '
+import json, sys
+
+raw = sys.stdin.buffer.read()
+if len(raw) > 262144:
+    raise SystemExit(1)
+try:
+    value = json.loads(raw)
+except (ValueError, UnicodeDecodeError):
+    raise SystemExit(1)
+if not isinstance(value, dict):
+    raise SystemExit(1)
+version = value.get("schema_version")
+if isinstance(version, bool) or version != 1:
+    raise SystemExit(1)
+if value.get("status") not in {"ok", "partial"}:
+    raise SystemExit(1)
+if not isinstance(value.get("helper_version"), str):
+    raise SystemExit(1)
+'; then
+  refuse 3 snapshot_canary_invalid "snapshot canary output is not a bounded schema_version==1 document: $target"
+fi
+printf 'canary: one bounded snapshot validated (schema_version==1, status ok|partial, <=256 KiB)\n'
+
+# Step 8: read the previous current link so every post-switch failure can be
+# restored (previous==null means the link did not exist before this install).
+previous_json=$("$fleetctl" exec --target "$target" -- "$remote_python" -c '
+# fleetmon: previous
+import json, os, sys
+
+link = sys.argv[1]
+previous = None
+if os.path.islink(link):
+    previous = os.readlink(link)
+print(json.dumps({"previous": previous}))
+' "$current_link") || refuse 3 remote_step_failed "reading the previous current link failed for target: $target"
+python_status=0
+previous_link=$(printf '%s\n' "$previous_json" | python3 -c '
+import json, sys
+
+try:
+    value = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+if not isinstance(value, dict):
+    raise SystemExit(1)
+previous = value.get("previous")
+if previous is not None and (not isinstance(previous, str) or not previous):
+    raise SystemExit(1)
+print("" if previous is None else previous)
+') || python_status=$?
+((python_status == 0)) || refuse 3 remote_step_invalid_output "previous-link output is invalid: $previous_json"
+
+# Step 9: atomic switch through a temporary symlink plus os.replace.
+if ! "$fleetctl" exec --target "$target" -- "$remote_python" -c '
+# fleetmon: switch
+import os, sys
+
+link, target_path = sys.argv[1], sys.argv[2]
+if os.path.lexists(link) and not os.path.islink(link):
+    raise SystemExit(1)
+tmp = link + ".fleetmon-tmp"
+if os.path.lexists(tmp):
+    os.remove(tmp)
+os.symlink(target_path, tmp)
+os.replace(tmp, link)
+' "$current_link" "$version_dir"; then
+  refuse 3 remote_step_failed "atomic current switch failed for target: $target"
+fi
+printf 'activation: %s -> %s (atomic os.replace)\n' "$current_link" "$version_dir"
+
+# Step 10: verify the switched helper; restore the previous link on failure.
+helper_path=$current_link/venv/bin/fleetmon-snapshot
+if ! "$fleetctl" exec --target "$target" -- "$remote_python" -c '
+# fleetmon: verify
+import os, sys
+
+path = sys.argv[1]
+print("ok" if os.path.isfile(path) and os.access(path, os.X_OK) else "bad")
+raise SystemExit(0 if os.path.isfile(path) and os.access(path, os.X_OK) else 1)
+' "$helper_path"; then
+  rollback_status=0
+  "$fleetctl" exec --target "$target" -- "$remote_python" -c '
+# fleetmon: rollback
+import os, sys
+
+link, previous = sys.argv[1], sys.argv[2]
+tmp = link + ".fleetmon-tmp"
+if os.path.lexists(tmp):
+    os.remove(tmp)
+if previous == "":
+    if os.path.lexists(link):
+        os.remove(link)
+else:
+    os.symlink(previous, tmp)
+    os.replace(tmp, link)
+' "$current_link" "$previous_link" || rollback_status=$?
+  if ((rollback_status == 0)); then
+    refuse 3 switched_helper_failed "switched helper verification failed; rolled back to the previous activation: $target"
+  fi
+  refuse 3 rollback_failed "switched helper verification failed AND rollback failed; inspect $current_link (previous link: '$previous_link')"
+fi
+printf 'verify: %s exists and is executable through the switched current link\n' "$helper_path"
+
+# The staged artifacts are redundant once the venv is verified; the helper
+# stays stateless on the target. Left in place only on failed installs.
+if "$fleetctl" exec --target "$target" -- "$remote_python" -c '
+import shutil, sys
+
+shutil.rmtree(sys.argv[1], ignore_errors=True)
+' "$stage_dir" 2>/dev/null; then
+  printf 'cleanup: staged artifacts removed from %s\n' "$stage_dir"
+fi
+
+printf 'installed: target=%s helper_version=%s wheel=%s\n' "$target" "$wheel_version" "$wheel_name"
+printf 'helper path (record this verified absolute path in hub-local operational state): %s\n' "$helper_path"
+exit 0

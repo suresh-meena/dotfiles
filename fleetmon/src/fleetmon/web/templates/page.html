@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Fleetmon — {{TITLE}}</title>
+    <link rel="stylesheet" href="/static/fleetmon.css">
+  </head>
+  <body data-page="{{PAGE}}" data-target="{{TARGET}}">
+    <header>
+      <a class="brand-link" href="/overview">Fleetmon</a>
+      <button id="menu" aria-label="Toggle navigation">menu</button>
+    </header>
+    <nav id="nav" aria-label="Pages and hosts">
+      <ul class="nav-pages">
+        <li><a href="/overview" data-nav="overview">Overview</a></li>
+        <li><a href="/idle-gpus" data-nav="idle-gpus">Idle GPUs</a></li>
+        <li><a href="/jobs" data-nav="jobs">Jobs</a></li>
+        <li><a href="/hub-status" data-nav="hub-status">Hub health</a></li>
+      </ul>
+      <h2 class="nav-heading">Hosts</h2>
+      <ul id="host-list" class="nav-hosts"></ul>
+    </nav>
+    <main>
+      <h2 id="page-title">{{TITLE}}</h2>
+      <p id="status" role="status">Loading…</p>
+      <noscript>
+        <p class="note">Tables and charts are filled in by the small Fleetmon
+        script; navigation links keep working without it.</p>
+      </noscript>
+      <p class="legend">missing values read “unknown”; absent rows read “—”</p>
+      <section id="content" aria-live="polite"></section>
+    </main>
+    <script src="/static/fleetmon.js"></script>
+  </body>
+</html>

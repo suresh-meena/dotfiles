@@ -1,0 +1,42 @@
+[Unit]
+Description=Fleetmon hub dashboard and poller
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# No systemd readiness notification is used with Type=simple. The hub exposes
+# application-level readiness at /readyz after inventory, DB migration, and the
+# web listener have started.
+WorkingDirectory=%h/.local/share/fleetmon/current
+Environment=HOME=%h
+Environment=PATH=%h/.local/share/fleetmon/current/venv/bin:%h/.local/bin:/usr/bin:/bin
+Environment=FLEETMON_CONFIG=%h/.config/fleetmon/config.toml
+# The authentication token enters only through the environment, sourced here
+# from a mode-0600 env file (e.g. FLEETMON_AUTH_TOKEN=...). Never in TOML or
+# argv. The leading dash keeps a loopback-only install without the file valid.
+EnvironmentFile=-%h/.config/fleetmon/fleetmon.env
+# Alternative: point FLEETMON_AUTH_TOKEN_FILE at a mode-0600 token file.
+Environment=FLEETMON_STATE_DIR=%h/.local/state/fleetmon
+Environment=FLEET_CONFIG_HOME=%h/.config/fleet
+Environment=FLEET_STATE_HOME=%h/.local/state/fleet
+Environment=FLEET_CACHE_HOME=%h/.cache/fleet
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+ExecStart=%h/.local/share/fleetmon/current/venv/bin/fleetmon hub
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/fleetmon %h/.local/state/fleet %h/.cache/fleet
+LimitNOFILE=4096
+
+[Install]
+WantedBy=default.target
