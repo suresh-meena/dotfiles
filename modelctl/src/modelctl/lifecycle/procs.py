@@ -41,6 +41,19 @@ def deployment_live(dep: dict[str, Any], *, require_port: bool = True) -> bool:
     return True
 
 
+def deployment_live_ext(dep: dict[str, Any], remote: Any = None) -> bool:
+    """Liveness dispatch: local pid/port for simulation, remote pid/port via
+    SSH for real machines."""
+    if remote is None:
+        return deployment_live(dep)
+    if not remote.pid_alive(dep.get("server_pid")):
+        return False
+    port = dep.get("port")
+    if port:
+        return remote.port_busy(port)
+    return True
+
+
 def wait_for_termination(pid: int | None, timeout_s: float, port: int | None = None) -> bool:
     deadline = time.time() + timeout_s
     while time.time() < deadline:

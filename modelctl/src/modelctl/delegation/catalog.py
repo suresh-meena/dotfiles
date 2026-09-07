@@ -7,15 +7,15 @@ from typing import Any
 from ..inventory.registry import Registry
 
 
-DEFAULT_PROVIDER = "opencode-go"
-# Per-bin default models: driver → deepseek-v4-flash, worker → hy3
+DEFAULT_PROVIDER = "zai-coding-plan"
+# Per-bin default models: driver → glm-5.3, worker → glm-5.3-flash
 DEFAULT_MODELS = {
-    "driver": f"{DEFAULT_PROVIDER}/deepseek-v4-flash",
-    "worker": f"{DEFAULT_PROVIDER}/hy3",
+    "driver": f"{DEFAULT_PROVIDER}/glm-5.3",
+    "worker": f"{DEFAULT_PROVIDER}/glm-5.3-flash",
 }
 DEFAULT_MODEL_IDS = {
-    "driver": "deepseek-v4-flash",
-    "worker": "hy3",
+    "driver": "glm-5.3",
+    "worker": "glm-5.3-flash",
 }
 
 
@@ -24,7 +24,7 @@ class Catalog:
         self.registry = registry
 
     def sync(self, refresh: bool = True) -> dict[str, Any]:
-        """Sync from `opencode models opencode-go --refresh --verbose` if available, otherwise ensure default exists."""
+        """Sync from `opencode models zai-coding-plan --refresh --verbose` if available, otherwise ensure default exists."""
         # Try to run opencode models
         raw_models: list[dict[str, Any]] = []
         error: str | None = None
@@ -54,7 +54,7 @@ class Catalog:
             error = str(e)[:500]
 
         # Ensure per-bin default models are present as AVAILABLE.
-        # driver → deepseek-v4-flash, worker → hy3 (PK on model_ref).
+        # driver → glm-5.3, worker → glm-5.3-flash (PK on model_ref).
         for bin_, ref in DEFAULT_MODELS.items():
             self.registry.upsert_delegate_model(ref, DEFAULT_PROVIDER, DEFAULT_MODEL_IDS[bin_], bin_, True, "AVAILABLE", {"source": "builtin-default"})
         # For catalog sync, if we found raw_models, upsert them as UNCLASSIFIED disabled

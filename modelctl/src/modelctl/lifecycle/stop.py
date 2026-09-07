@@ -53,7 +53,23 @@ def stop_target(*, registry: Registry, config: dict[str, Any], target_id: str, f
     registry.upsert_deployment(dep_id, target_id, machine_id, digest, dep["artifact_id"], dep.get("artifact_fingerprint"), "DRAINING", dep["supervisor_unit"], server_pid=dep.get("server_pid"), port=dep.get("port"), lease_expires_at=dep.get("lease_expires_at"))
 
     # 2. terminate with mandatory verification (SIGTERM -> SIGKILL -> verify)
-    if not pid_alive(dep.get("server_pid")):
+    from .remote import remote_lifecycle
+
+    rl = remote_lifecycle(config, machine_id)
+    if rl:
+        # real machine: pid/port checks and termination happen over SSH
+        if not rl.pid_alive(dep.get("server_pid")):
+            port_free = dep.get("port") is None or not rl.port_busy(dep["port"])
+            term = {
+                "ok": port_free,
+                "detail": "pid not alive (already stopped)" if port_free else "pid gone but port still occupied",
+                "pid": dep.get("server_pid"),
+                "group_gone": True,
+                "port_free": port_free,
+            }
+        else:
+            term = rl.terminate(dep, graceful_timeout_s=graceful, kill_timeout_s=kill_t)
+    elif not pid_alive(dep.get("server_pid")):
         # process already gone; port must still be free to consider it verified
         from ..runtime import port_busy
 

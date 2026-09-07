@@ -52,7 +52,7 @@ def sync_machine(*, registry: Registry, config: dict[str, Any], machine_id: str,
     if host and "example.internal" not in host:
         from ..transport.ssh import SSHTransport
 
-        t = SSHTransport(host, ssh.get("user"), ssh.get("port"))
+        t = SSHTransport(host, ssh.get("user"), ssh.get("port"), ssh.get("password_file"))
         ok, detail = t.check_reachable(timeout=10)
         if not ok:
             raise ModelctlError(code="E_SSH_UNREACHABLE", message=f"{machine_id}: {detail}", machine=machine_id)

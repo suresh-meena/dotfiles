@@ -38,7 +38,7 @@ def doctor(*, registry: Registry, config: dict[str, Any], machine: str | None = 
             # try ssh reachable
             from .transport.ssh import SSHTransport
 
-            t = SSHTransport(host, ssh.get("user"), ssh.get("port"))
+            t = SSHTransport(host, ssh.get("user"), ssh.get("port"), ssh.get("password_file"))
             ok, detail = t.check_reachable()
             add(f"ssh:{mid}", ok, detail, "error" if not ok else "info")
         # inventory freshness

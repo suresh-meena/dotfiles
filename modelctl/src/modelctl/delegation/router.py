@@ -11,7 +11,7 @@ DEFAULT_PROVIDER_ALLOWLIST = [DEFAULT_PROVIDER]
 
 
 def _default_ref(bin_: str) -> str:
-    return DEFAULT_MODELS.get(bin_, "opencode-go/deepseek-v4-flash")
+    return DEFAULT_MODELS.get(bin_, "zai-coding-plan/glm-5.3")
 
 
 def provider_allowlist(config: dict[str, Any] | None) -> list[str]:

@@ -9,6 +9,49 @@ from pathlib import Path
 from typing import Any
 
 
+def _find_text(obj: Any) -> str | None:
+    """Recursively find the last non-empty 'text' string in a parsed event."""
+    if isinstance(obj, str):
+        return None
+    if isinstance(obj, dict):
+        t = obj.get("text")
+        if isinstance(t, str) and t.strip():
+            return t
+        for v in obj.values():
+            r = _find_text(v)
+            if r:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = _find_text(v)
+            if r:
+                return r
+    return None
+
+
+def _parse_json_output(stdout: str) -> dict[str, Any]:
+    """opencode --format json emits newline-delimited JSON events. Extract
+    event count and the final assistant text; fall back to raw capture."""
+    events: list[dict[str, Any]] = []
+    final_text: str | None = None
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            events.append(obj)
+            t = _find_text(obj)
+            if t:
+                final_text = t
+    if events:
+        return {"events": len(events), "text": final_text, "last_event": events[-1]}
+    return {"raw": stdout[:2000]}
+
+
 class OpenCodeAdapter:
     def __init__(self, executable: str = "opencode", provider: str = "opencode-go"):
         self.executable = executable
@@ -50,12 +93,12 @@ class OpenCodeAdapter:
         timeout_s: int = 600,
         extra_args: list[str] | None = None,
         on_start: Any | None = None,
-        variant: str | None = "max",
+        variant: str | None = None,
     ) -> dict[str, Any]:
         """Invoke `opencode --pure run --model <ref> --agent <profile> --format json --dir <workdir> <prompt>` via argv vector.
 
-        By default the maximum reasoning variant is requested (--variant max,
-        "maximum thinking"); pass variant=None to omit the flag.
+        variant is provider-specific reasoning effort; None (default) omits the
+        flag and uses the model's own default.
         on_start(proc) is invoked with the Popen handle immediately after
         spawn so the caller can record the process pid for later cancellation.
         """
@@ -107,11 +150,7 @@ class OpenCodeAdapter:
         try:
             stdout, stderr = proc.communicate(timeout=timeout_s)
             latency_ms = int((time.time() - start) * 1000)
-            # Try to parse stdout as JSON (opencode --format json should emit JSON events)
-            try:
-                data = json.loads(stdout) if stdout.strip().startswith("{") else {"raw": stdout[:2000]}
-            except Exception:
-                data = {"raw": stdout[:2000], "stderr": stderr[:2000]}
+            data = _parse_json_output(stdout)
             return {
                 "exit_code": proc.returncode,
                 "stdout": stdout,

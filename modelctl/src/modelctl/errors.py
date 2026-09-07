@@ -100,7 +100,7 @@ _SUGGESTED_ACTIONS = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass
 class ModelctlError(Exception):
     code: str
     message: str
@@ -110,9 +110,19 @@ class ModelctlError(Exception):
     details: dict[str, Any] | None = None
     trace_id: str | None = None
 
+    # Effectively immutable, but the interpreter must still be able to attach
+    # __traceback__/__cause__/__context__ (Python 3.14+). A frozen dataclass
+    # Exception breaks pytest.raises and raise-from machinery.
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name.startswith("__") and name.endswith("__") or not getattr(self, "_frozen", False):
+            object.__setattr__(self, name, value)
+            return
+        raise AttributeError(f"cannot assign to field {name!r}")
+
     def __post_init__(self) -> None:
         if self.code not in ERROR_CODES:
             raise ValueError(f"unknown error code: {self.code}")
+        object.__setattr__(self, "_frozen", True)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {

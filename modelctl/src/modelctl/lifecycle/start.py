@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from ..config.resolver import resolve_target, target_digest
@@ -15,7 +16,8 @@ from ..supervisor import unit_name, render_unit, exec_start_for_vllm
 from ..runtime import RuntimeAdapter, port_busy, spawn_local_fake, pid_alive
 from ..gpu.reservations import try_reserve_gpus, update_owner_pid, release_for_owner
 from ..state import STATE_ROOT, ensure_state_dirs
-from .procs import compute_lease_expiry, deployment_live, terminate_verified
+from .procs import compute_lease_expiry, deployment_live, deployment_live_ext, terminate_verified
+from .remote import remote_lifecycle
 
 
 def _gpu_uuids(machine_id: str, gpus: list[int]) -> list[str]:
@@ -147,6 +149,95 @@ def _spawn_and_wait(registry: Registry, resolved: dict[str, Any], dep_id: str, t
     }
 
 
+def _remote_start_and_wait(registry: Registry, rl: Any, resolved: dict[str, Any], dep_id: str, target_id: str, machine_id: str, unit: str, artifact_fp: str | None, digest: str, artifact_id: str, gpu_uuids: list[str], lease_expires_at: str | None, wait: bool, events: EventLog, trace_id: str, cfg_yaml_text: str) -> dict[str, Any]:
+    """Real remote lifecycle over SSH: upload config, launch vLLM detached,
+    then either return immediately with a STARTING guidance message or block
+    until /health + model identity pass (fail-closed READY)."""
+    port = int(resolved.get("port", 8000))
+    served = resolved.get("served_model_name", resolved["model"])
+    activate = (resolved.get("machine_runtime", {}) or {}).get("activate")
+    base = (Path(activate).parent / "modelctl") if activate else Path("/tmp/modelctl")
+    dep_dir = f"{base}/{dep_id.replace(':', '_')}"
+    remote_yaml = f"{dep_dir}/vllm.yaml"
+    remote_log = f"{dep_dir}/vllm.log"
+    script_path = f"{dep_dir}/launch.sh"
+
+    registry.upsert_deployment(dep_id, target_id, machine_id, digest, artifact_id, artifact_fp, "STARTING", unit, port=port, lease_expires_at=lease_expires_at)
+
+    def _fail(code: str, message: str, state: str, result: str, tail: str | None = None) -> ModelctlError:
+        _mark_terminal(registry, dep_id, state)
+        release_for_owner(gpu_uuids, dep_id)
+        details = {"log_tail": (tail or "")[-1500:]} if tail is not None else None
+        events.emit("START_FAILED", target_id=target_id, deployment_id=dep_id, machine_id=machine_id, result=result, details=details, trace_id=trace_id)
+        return ModelctlError(code=code, message=message, target=target_id, machine=machine_id, details=details)
+
+    try:
+        rl.mkdir_p(dep_dir)
+        rl.write_file(remote_yaml, cfg_yaml_text)
+        rl.write_file(script_path, rl.build_launch_script(resolved, remote_yaml, remote_log))
+        pid = rl.launch_detached(script_path, remote_log)
+    except ModelctlError as e:
+        raise _fail("E_START_EXITED", f"remote launch failed: {e.message}", "FAILED_START", "launch_error")
+
+    # sanity: process must survive the first seconds
+    time.sleep(3)
+    if not rl.pid_alive(pid):
+        tail = rl.log_tail(remote_log)
+        raise _fail("E_START_EXITED", f"remote server exited during startup (pid {pid})", "FAILED_START", "process_exited", tail)
+
+    for u in gpu_uuids:
+        update_owner_pid(u, dep_id, pid)
+    registry.upsert_deployment(dep_id, target_id, machine_id, digest, artifact_id, artifact_fp, "STARTING", unit, ready_at=None, server_pid=pid, port=port, lease_expires_at=lease_expires_at)
+    events.emit("SERVICE_STARTED", target_id=target_id, deployment_id=dep_id, machine_id=machine_id, result="spawned", details={"pid": pid, "port": port, "backend": "ssh-remote"}, trace_id=trace_id)
+
+    poll_hint = f"modelctl --json status {target_id}"
+    loading_msg = (
+        f"Everything is working: vLLM was launched on '{machine_id}' (pid {pid}, port {port}) and is now "
+        f"loading the model weights. First readiness usually takes a few minutes. "
+        f"Poll `{poll_hint}` until STATE=READY."
+    )
+    resp: dict[str, Any] = {
+        "ok": True,
+        "target": target_id,
+        "deployment_id": dep_id,
+        "state": "STARTING",
+        "config_digest": digest,
+        "unit": unit,
+        "port": port,
+        "pid": pid,
+        "remote_log": remote_log,
+        "message": loading_msg,
+        "expected_ready_s": int(resolved.get("startup_timeout_s", 1200)),
+        "poll": poll_hint,
+        "trace_id": trace_id,
+        "simulation": False,
+        "backend": "ssh-remote",
+    }
+
+    if wait:
+        deadline = time.time() + float(resolved.get("startup_timeout_s", 1200))
+        ready = False
+        while time.time() < deadline:
+            if not rl.pid_alive(pid):
+                break
+            healthy, identity = rl.health(port, served)
+            if healthy and identity:
+                ready = True
+                break
+            time.sleep(5)
+        if not rl.pid_alive(pid):
+            tail = rl.log_tail(remote_log)
+            raise _fail("E_START_EXITED", f"remote server exited during startup (pid {pid})", "FAILED_START", "process_exited", tail)
+        if not ready:
+            rl.terminate({"server_pid": pid, "port": port}, graceful_timeout_s=15, kill_timeout_s=10)
+            raise _fail("E_HEALTH_FAILED", f"health/identity check failed within {int(resolved.get('startup_timeout_s', 1200))}s", "FAILED_HEALTH", "health_timeout", rl.log_tail(remote_log))
+        registry.upsert_deployment(dep_id, target_id, machine_id, digest, artifact_id, artifact_fp, "READY", unit, ready_at=utc_now(), server_pid=pid, port=port, lease_expires_at=lease_expires_at)
+        events.emit("HEALTH_READY", target_id=target_id, deployment_id=dep_id, machine_id=machine_id, result="ok", trace_id=trace_id)
+        events.emit("DEPLOYMENT_READY", target_id=target_id, deployment_id=dep_id, machine_id=machine_id, result="ready", trace_id=trace_id)
+        resp.update({"state": "READY", "endpoint": f"http://127.0.0.1:{port}/v1", "message": None})
+    return resp
+
+
 def start_target(*, registry: Registry, config: dict[str, Any], target_id: str, replace: bool = False, ttl: str | None = None, wait: bool = True, trace_id: str | None = None) -> dict[str, Any]:
     trace_id = trace_id or uuid.uuid4().hex[:12]
     events = EventLog(registry)
@@ -161,6 +252,7 @@ def start_target(*, registry: Registry, config: dict[str, Any], target_id: str, 
     port = resolved.get("port", 8000)
     host = resolved.get("bind_host", "127.0.0.1")
     gpu_uuids = _gpu_uuids(machine_id, resolved.get("gpus", []))
+    rl = remote_lifecycle(config, machine_id)
 
     _check_inventory(registry, config, resolved, target_id, machine_id)
 
@@ -168,7 +260,7 @@ def start_target(*, registry: Registry, config: dict[str, Any], target_id: str, 
     if existing:
         dep_state = existing["state"]
         if existing["config_digest"] == digest:
-            if dep_state == "READY" and deployment_live(existing):
+            if dep_state == "READY" and deployment_live_ext(existing, rl):
                 if ttl:
                     # extend/reapply the lease on the live deployment
                     conn = registry.conn()
@@ -181,7 +273,8 @@ def start_target(*, registry: Registry, config: dict[str, Any], target_id: str, 
                 _mark_terminal(registry, existing["deployment_id"], "STOPPED", stopped_at=utc_now())
                 release_for_owner(_gpu_uuids(existing.get("machine_id") or machine_id, resolved.get("gpus", [])), existing["deployment_id"])
             elif dep_state == "STARTING":
-                if pid_alive(existing.get("server_pid")):
+                pid_ok = rl.pid_alive(existing.get("server_pid")) if rl else pid_alive(existing.get("server_pid"))
+                if pid_ok:
                     if wait:
                         from .procs import finish_pending_start
 
@@ -212,8 +305,11 @@ def start_target(*, registry: Registry, config: dict[str, Any], target_id: str, 
                 _mark_terminal(registry, existing["deployment_id"], "STOPPED", stopped_at=utc_now())
                 events.emit("DEPLOYMENT_STOPPED", target_id=target_id, deployment_id=existing["deployment_id"], machine_id=machine_id, result="replaced", trace_id=trace_id)
 
-    # port preflight
-    if port_busy(host, port):
+    # port preflight (remote machines: check on the machine itself)
+    if rl:
+        if rl.port_busy(port):
+            raise ModelctlError(code="E_PORT_BUSY", message=f"port {port} on {machine_id} is already in use", target=target_id, machine=machine_id)
+    elif port_busy(host, port):
         raise ModelctlError(code="E_PORT_BUSY", message=f"port {port} on {host} is already in use", target=target_id, machine=machine_id)
 
     nonce = uuid.uuid4().hex[:8]
@@ -249,4 +345,11 @@ def start_target(*, registry: Registry, config: dict[str, Any], target_id: str, 
 
     art = registry.get_artifact(artifact_id)
     lease_expires_at = compute_lease_expiry(ttl)
+    if rl:
+        return _remote_start_and_wait(
+            registry, rl, resolved, dep_id, target_id, machine_id, unit,
+            art.get("manifest_fingerprint") if art else None, digest, artifact_id,
+            gpu_uuids, lease_expires_at, wait, events, trace_id,
+            cfg_yaml.read_text(),
+        )
     return _spawn_and_wait(registry, resolved, dep_id, target_id, machine_id, unit, art.get("manifest_fingerprint") if art else None, digest, artifact_id, gpu_uuids, lease_expires_at, wait, events, trace_id)

@@ -35,10 +35,10 @@ def test_unknown_model_fails_closed_for_non_allowlisted_provider(reg):
 
 def test_unknown_model_auto_admitted_for_allowlisted_provider(reg):
     sel = deterministic_select(
-        registry=reg, requested_bin="worker", requested_model="opencode-go/brand-new"
+        registry=reg, requested_bin="worker", requested_model="zai-coding-plan/brand-new"
     )
-    assert sel["model_ref"] == "opencode-go/brand-new"
-    stored = reg.get_delegate_model("opencode-go/brand-new")
+    assert sel["model_ref"] == "zai-coding-plan/brand-new"
+    stored = reg.get_delegate_model("zai-coding-plan/brand-new")
     assert stored["enabled"] and stored["availability_status"] == "AVAILABLE"
 
 
@@ -104,15 +104,15 @@ def test_cli_assign_and_list(run):
 
 
 def test_cli_admit_unknown_model(run):
-    data = parse_json(run("delegates", "admit", "opencode-go/fresh-model"))
+    data = parse_json(run("delegates", "admit", "zai-coding-plan/fresh-model"))
     assert data["ok"] is True
-    assert data["model_ref"] == "opencode-go/fresh-model"
+    assert data["model_ref"] == "zai-coding-plan/fresh-model"
     assert data["enabled"] is True
 
     from modelctl.inventory.registry import default_db
 
     reg = Registry(db_path=default_db())
-    stored = reg.get_delegate_model("opencode-go/fresh-model")
+    stored = reg.get_delegate_model("zai-coding-plan/fresh-model")
     assert stored and stored["enabled"] and stored["availability_status"] == "AVAILABLE"
 
 

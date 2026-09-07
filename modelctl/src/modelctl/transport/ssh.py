@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+from pathlib import Path
 
 
 class SSHTransport:
@@ -11,16 +12,30 @@ class SSHTransport:
     re-parses it through its login shell. To keep remote shell interpretation
     inert we locally quote every argument (see escape_arg) before handing the
     vector to ssh.
+
+    password_file: optional path to a 0600 file containing only the password.
+    When set, ssh is wrapped with `sshpass -f` (key auth never hits the disk
+    for hosts whose authorized_keys are unreadable). The password never
+    appears in argv or logs.
     """
 
-    def __init__(self, host: str, user: str | None = None, port: int | None = None):
+    def __init__(self, host: str, user: str | None = None, port: int | None = None, password_file: str | None = None):
         self.host = host
         self.user = user
         self.port = port
+        self.password_file = str(Path(password_file).expanduser()) if password_file else None
 
     def _base(self) -> list[str]:
         target = f"{self.user}@{self.host}" if self.user else self.host
-        cmd = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"]
+        cmd: list[str] = []
+        if self.password_file:
+            pw = Path(self.password_file)
+            if not pw.is_file():
+                raise FileNotFoundError(f"ssh password_file not found: {pw}")
+            cmd += ["sshpass", "-f", str(pw)]
+        cmd += ["ssh", "-o", "StrictHostKeyChecking=accept-new"]
+        if not self.password_file:
+            cmd += ["-o", "BatchMode=yes"]  # key-only; password path needs the prompt
         if self.port:
             cmd += ["-p", str(self.port)]
         cmd.append(target)

@@ -1,6 +1,6 @@
 ---
 name: modelctl
-description: Deterministic model control for remote vLLM (SSH + systemd) and delegated opencode execution via opencode run (driver → deepseek-v4-flash, worker → hy3 by default; override per task/CLI/config with ANY model from an allowlisted provider — auto-admitted, no sync/assign needed). Use when starting/inspecting/connecting to a local model, checking which machine has a model, or dispatching bounded driver/worker tasks as subagents instead of spending brain tokens. If a delegated run fails, do the work yourself rather than stopping.
+description: Deterministic model control for remote vLLM (SSH + systemd) and delegated opencode execution via opencode run (brain = you, the primary agent; driver → zai-coding-plan/glm-5.3, worker → zai-coding-plan/glm-5.3-flash by default via the user's z.ai API plan; override per task/CLI/config with any model from an allowlisted provider — auto-admitted, no sync/assign needed). Use when starting/inspecting/connecting to a local model, checking which machine has a model, or dispatching bounded driver/worker tasks as subagents instead of spending brain tokens. If a delegated run fails, do the work yourself rather than stopping.
 ---
 
 # modelctl — Model Control & Delegation Skill
@@ -74,6 +74,7 @@ modelctl delegates assign <ref> --bin worker|driver [--enable|--disable]  # rout
 modelctl delegates admit <provider/id> --json  # admit any allowlisted-provider model, no bin needed
 modelctl delegate run --role worker|driver --task-file .modelctl/tasks/T1.json [--model provider/id] --json
 modelctl delegate batch --role worker --tasks-dir .modelctl/tasks/search/ [--model provider/id] --json
+modelctl delegate graph --file .modelctl/taskgraph.json [--model provider/id] --json
 modelctl delegate status|history|cancel --json
 modelctl queue status|retry <run_id> --json  modelctl budget status|history --json
 ```
@@ -90,14 +91,75 @@ Postconditions: `READY` requires live process + `/health` 200 + `/v1/models` ide
 4. **Supervise, don't trust.** `ok: true` requires scope + patch-size + validation passed. Re-run declared `validation` commands yourself in the real repo before merging.
 5. **Escalate bounded:** worker fail → one driver repair; driver ambiguity → brain. Workers cannot recursively delegate.
 
+## Configurable orchestration
+
+For independent work, use `delegate batch`; for dependent work, use a JSON DAG
+with `task_id`, `role`, `depends_on`, and either the task fields inline or under
+`task`. `delegate graph` validates the entire graph before starting a model:
+duplicate IDs, missing dependencies, cycles, excessive depth/fan-out, and
+invalid roles are refused.
+
+The scheduler is deterministic and bounded by configuration:
+
+```yaml
+delegation:
+  orchestration:
+    max_total_parallel: 12
+    max_task_depth: 1
+    max_task_fanout: 8
+    worker_batch_size: 8
+    fail_fast: true
+    overlap_policy: serialize   # or allow_disjoint for known disjoint writes
+budget:
+  max_parallel_total: 12
+  max_parallel_worker: 12
+  max_parallel_driver: 3
+  max_retry_per_candidate: 1
+```
+
+Independent read-only workers may run in parallel. Shared-project writes are
+serialized by default; failed prerequisites skip their dependents, and
+`fail_fast` prevents new work after a failure. Results are compact summaries
+sorted by `task_id`; raw prompts and completions are never returned by the
+orchestrator. Keep final synthesis, architecture, and acceptance decisions in
+the brain.
+
 Routing heuristic:
 
 ```
 high judgment/ambiguity            → brain (you)
-low judgment + repetitive/parallel → worker (opencode-go/hy3)
-low judgment + large bounded spec  → driver (opencode-go/deepseek-v4-flash)
+low judgment + repetitive/parallel → worker (zai-coding-plan/glm-5.3-flash)
+low judgment + large bounded spec  → driver (zai-coding-plan/glm-5.3)
 ```
 
-Model selection precedence: task file `model_ref` > `delegate run --model` > config `delegation.roles.<role>.model` > bin default. An **explicit** model request is flexible: any `provider/id` under an allowlisted provider (`delegation.execution.provider_allowlist`, default `[opencode-go]`) is usable without prior sync or assignment — unknown models are auto-admitted (enabled + AVAILABLE, audited) and unclassified-disabled models are enabled by the request itself. Still fail-closed, never silent fallback: non-allowlisted provider → `E_DELEGATION_POLICY_DENIED`; operator-disabled (`assign --disable`) or UNAVAILABLE model → refused. Implicit bin routing stays strictly classified. To pre-admit or route for implicit use: `delegates admit <ref>` / `delegates assign <ref> --bin worker`.
+Model selection precedence: task file `model_ref` > `delegate run --model` > config `delegation.roles.<role>.model` > bin default. Config defaults are set in `~/.config/modelctl/config.yaml`: driver → `zai-coding-plan/glm-5.3`, worker → `zai-coding-plan/glm-5.3-flash` (z.ai API plan), allowlist `[zai-coding-plan]`. An **explicit** model request is flexible: any `provider/id` under an allowlisted provider (`delegation.execution.provider_allowlist`, default `[zai-coding-plan]`) is usable without prior sync or assignment — unknown models are auto-admitted (enabled + AVAILABLE, audited) and unclassified-disabled models are enabled by the request itself. Still fail-closed, never silent fallback: non-allowlisted provider → `E_DELEGATION_POLICY_DENIED`; operator-disabled (`assign --disable`) or UNAVAILABLE model → refused. Implicit bin routing stays strictly classified. To pre-admit or route for implicit use: `delegates admit <ref>` / `delegates assign <ref> --bin worker`.
+
+Delegated runs execute in the **real project directory** (the directory `modelctl` was invoked from, or the task's `workdir` field) — edits land in the actual repo, and changed paths are verified via `git status`, not the model's self-report. Set `"isolated": true` in the task file to opt into a throwaway temp worktree (auto-cleaned after the run).
+
+## opencode invocation gotchas (delegation backend)
+
+`delegate run` shells out to `opencode --pure run`. These environment facts cause
+recurring false "model is broken" diagnoses — never rediscover them:
+
+- **Auth lives in `$XDG_DATA_HOME/opencode/auth.json`** (default
+  `~/.local/share/opencode/auth.json`). If `XDG_DATA_HOME` is set to a fresh dir,
+  z.ai/zai-coding-plan credentials are missing and **every** model fails with
+  `Unexpected server error` — this is NOT a model/provider outage. To run isolated,
+  seed auth first:
+  ```bash
+  SANDBOX=$(mktemp -d) && mkdir -p "$SANDBOX/opencode"
+  cp ~/.local/share/opencode/auth.json "$SANDBOX/opencode/auth.json" && chmod 600 "$SANDBOX/opencode/auth.json"
+  XDG_DATA_HOME="$SANDBOX" opencode run --pure -m zai-coding-plan/glm-5.3-flash 'ping'
+  ```
+- **Concurrent `opencode run` processes share the log file**
+  (`~/.local/share/opencode/log/opencode.log`) and can race on it — a
+  "could not open log" error is transient, not fatal. Run one session per data dir.
+- **Diagnose before blaming the model:** on `E_DELEGATE_PROVIDER_FAILURE` /
+  `Unexpected server error`, first verify provider health with a minimal
+  `opencode run --pure -m <model> 'Reply with exactly: OK'` (no XDG overrides).
+  If that succeeds, the failure was environmental (auth/log), not the model.
+- **On `Cannot connect to API`:** test egress in the same shell
+  (`curl -s -o /dev/null -w "%{http_code}" --max-time 8 https://api.z.ai` —
+  any HTTP code means reachable; a timeout means no network/proxy there).
 
 Before writing a task file, read **SKILL-REFERENCE.md** (next to this file) for the full task contract schema, result envelope spec, and workspace containment rules. For delegation, construct a minimal context package (task spec + declared files + validation contract), not the whole conversation.

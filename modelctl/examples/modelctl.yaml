@@ -49,18 +49,31 @@ targets:
 delegation:
   enabled: true
   brain: { owner: codex, final_authority: true }
-  backend: { type: opencode, executable: opencode, provider: opencode-go }
+  backend: { type: opencode, executable: opencode, provider: zai-coding-plan }
   roles:
-    driver: { max_parallel: 3, max_files_read: 80, max_files_write: 20, max_patch_lines: 1500, default_timeout_s: 1800, workspace: isolated_worktree, validation: strong }
-    worker: { max_parallel: 12, max_files_read: 20, max_files_write: 5, max_patch_lines: 300, default_timeout_s: 600, workspace: staged_or_worktree, validation: deterministic }
-  orchestration: { max_total_parallel: 12, max_task_depth: 1, require_structured_results: true, recursive_delegation: false }
-  execution: { pure_mode: true, provider_allowlist: [opencode-go] }
+    driver: { max_parallel: 3, max_files_read: 80, max_files_write: 20, max_patch_lines: 1500, default_timeout_s: 1800, workspace: project_dir, validation: strong }
+    worker: { max_parallel: 12, max_files_read: 20, max_files_write: 5, max_patch_lines: 300, default_timeout_s: 600, workspace: project_dir, validation: deterministic }
+  orchestration:
+    max_total_parallel: 12
+    max_task_depth: 1
+    max_task_fanout: 8
+    worker_batch_size: 8
+    worker_return_tokens: 800
+    driver_return_tokens: 2000
+    aggregate_return_tokens: 4000
+    require_structured_results: true
+    recursive_delegation: false
+    fail_fast: true
+    overlap_policy: serialize
+  execution: { pure_mode: true, provider_allowlist: [zai-coding-plan] }
   validation: { require_diff_capture: true, reject_out_of_scope_changes: true }
 
 budget:
   max_parallel_total: 12
   max_parallel_worker: 12
   max_parallel_driver: 3
+  max_retry_per_candidate: 1
+  max_escalations: 2
   soft_daily_usd: 5
   hard_daily_usd: 10
   go_usage_value: { hard_5h_usd: 12, hard_weekly_usd: 30, hard_monthly_usd: 60 }

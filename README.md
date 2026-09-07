@@ -1,16 +1,24 @@
 # Suresh's dotfiles
 
-This repository keeps the personal machine layer separate from the shared
-fleet tooling.
+This is the single Git repository for Suresh's dotfiles, projects, and skills.
+Every project lives in its own top-level directory; the repository itself uses
+one branch, `main`.
 
 ## Layout
 
-- `shared/fleet-dotfiles/` is the upstream `b-vitamins/dotfiles` repository,
-  tracked as a Git submodule. It contains the shared `fleetctl` tooling,
-  templates, documentation, and Codex skills.
+- `codex/` contains Codex skills maintained in this repository.
+- `fleetmon/` contains the fleet monitoring project.
+- `how-to-ml-paper/` contains the machine-learning paper workflow skill.
+- `modelctl/` contains the model control-plane project and its skill.
+- `shared/fleet-dotfiles/` is the shared fleet tooling, tracked as a Git
+  submodule.
 - `personal/home/` contains this machine's ordinary personal dotfiles. It is
   deliberately ignored so credentials, paths, history, and local overrides do
   not get published.
+
+Do not initialize nested repositories under these project directories. Changes
+to any project are committed to this root repository and pushed to its `origin`
+remote.
 
 Clone the shared component with:
 

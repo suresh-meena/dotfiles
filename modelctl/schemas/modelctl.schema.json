@@ -201,10 +201,11 @@
           "properties": {
             "driver": {
               "type": "object",
-              "additionalProperties": true,
+              "additionalProperties": false,
               "properties": {
                 "backend": { "type": "string" },
                 "model": { "type": "string" },
+                "variant": { "type": "string" },
                 "max_parallel": { "type": "integer", "minimum": 1 },
                 "max_files_read": { "type": "integer", "minimum": 1 },
                 "max_files_write": { "type": "integer", "minimum": 0 },
@@ -216,10 +217,11 @@
             },
             "worker": {
               "type": "object",
-              "additionalProperties": true,
+              "additionalProperties": false,
               "properties": {
                 "backend": { "type": "string" },
                 "model": { "type": "string" },
+                "variant": { "type": "string" },
                 "max_parallel": { "type": "integer", "minimum": 1 },
                 "max_files_read": { "type": "integer", "minimum": 1 },
                 "max_files_write": { "type": "integer", "minimum": 0 },
@@ -231,9 +233,45 @@
             }
           }
         },
-        "orchestration": { "type": "object", "additionalProperties": true },
-        "execution": { "type": "object", "additionalProperties": true },
-        "validation": { "type": "object", "additionalProperties": true }
+        "orchestration": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_total_parallel": { "type": "integer", "minimum": 1 },
+            "max_task_depth": { "type": "integer", "minimum": 0 },
+            "max_task_fanout": { "type": "integer", "minimum": 1 },
+            "worker_batch_size": { "type": "integer", "minimum": 1 },
+            "worker_return_tokens": { "type": "integer", "minimum": 1 },
+            "driver_return_tokens": { "type": "integer", "minimum": 1 },
+            "aggregate_return_tokens": { "type": "integer", "minimum": 1 },
+            "require_structured_results": { "type": "boolean" },
+            "recursive_delegation": { "type": "boolean" },
+            "fail_fast": { "type": "boolean" },
+            "overlap_policy": { "type": "string", "enum": ["serialize", "allow_disjoint"] }
+          }
+        },
+        "execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pure_mode": { "type": "boolean" },
+            "auto_approve": { "type": "boolean" },
+            "auto_update": { "type": "boolean" },
+            "provider_allowlist": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+            "run_timeout_s": { "type": "integer", "minimum": 1 },
+            "graceful_cancel_timeout_s": { "type": "integer", "minimum": 1 },
+            "cleanup_timeout_s": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "validation": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "require_diff_capture": { "type": "boolean" },
+            "reject_out_of_scope_changes": { "type": "boolean" },
+            "run_declared_tests": { "type": "boolean" }
+          }
+        }
       }
     },
     "budget": {
@@ -244,6 +282,8 @@
         "max_parallel_worker": { "type": "integer", "minimum": 1 },
         "max_parallel_driver": { "type": "integer", "minimum": 1 },
         "max_task_fanout": { "type": "integer", "minimum": 1 },
+        "max_retry_per_candidate": { "type": "integer", "minimum": 0 },
+        "max_escalations": { "type": "integer", "minimum": 0 },
         "soft_daily_usd": { "type": "number", "minimum": 0 },
         "hard_daily_usd": { "type": "number", "minimum": 0 },
         "go_usage_value": { "type": "object", "additionalProperties": true }

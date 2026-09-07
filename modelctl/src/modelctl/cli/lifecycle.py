@@ -79,6 +79,7 @@ def restart_cmd(ctx: Ctx, model, machine, replace):
 
 def _status_payload(cfg: dict[str, Any], reg, target: str, model: str) -> dict[str, Any]:
     from ..lifecycle.procs import deployment_live, lease_expired
+    from ..lifecycle.remote import remote_lifecycle
     from ..tunnel import TunnelManager
 
     dep = reg.deployment_for_target(target)
@@ -88,10 +89,43 @@ def _status_payload(cfg: dict[str, Any], reg, target: str, model: str) -> dict[s
         resolved = resolve_target(cfg, target)
     except Exception:
         resolved = None
-    live = deployment_live(dep)
+    served_model = (resolved or {}).get("served_model_name", model)
+    port = dep.get("port") or (resolved or {}).get("port")
+
+    rl = remote_lifecycle(cfg, dep["machine_id"]) if dep.get("machine_id") else None
+    message: str | None = None
+    remote_health: dict[str, Any] | None = None
+    if rl and dep["state"] in ("STARTING", "READY", "DRAINING", "STOPPING"):
+        live = rl.pid_alive(dep.get("server_pid"))
+        healthy = identity = False
+        if live and port:
+            healthy, identity = rl.health(port, served_model)
+        remote_health = {"pid_alive": live, "health_ok": healthy, "identity_ok": identity}
+        if dep["state"] == "STARTING" and live and healthy and identity:
+            # verified: promote to READY (fail-closed postcondition satisfied)
+            from ..events import EventLog
+            from ..inventory.registry import utc_now
+
+            conn = reg.conn()
+            conn.execute("UPDATE deployments SET state='READY', ready_at=? WHERE deployment_id=?", (utc_now(), dep["deployment_id"]))
+            conn.commit()
+            el = EventLog(reg)
+            el.emit("HEALTH_READY", target_id=target, deployment_id=dep["deployment_id"], machine_id=dep["machine_id"], result="ok")
+            el.emit("DEPLOYMENT_READY", target_id=target, deployment_id=dep["deployment_id"], machine_id=dep["machine_id"], result="ready")
+            dep = reg.deployment_for_target(target)
+        elif dep["state"] == "STARTING" and live:
+            message = (
+                f"Everything is working: vLLM (pid {dep.get('server_pid')}) is loading the model weights on "
+                f"'{dep['machine_id']}' — this usually takes a few minutes. Check again shortly; "
+                f"STATE flips to READY once /health and model identity pass."
+            )
+        elif dep["state"] == "READY" and not (healthy and identity):
+            message = "recorded READY but the remote server is not answering health checks — it may have exited; run `modelctl stop` then `start --replace`."
+
+    live = deployment_live(dep) if rl is None else (remote_health or {}).get("pid_alive", False)
     vllm = "unknown"
     if dep["state"] == "READY":
-        vllm = "healthy" if live else "not_running"
+        vllm = "healthy" if (live and (not remote_health or (remote_health["health_ok"] and remote_health["identity_ok"]))) else "not_running"
     elif dep["state"] == "STARTING":
         vllm = "starting"
     elif dep["state"] == "LEAK_SUSPECTED":
@@ -111,9 +145,13 @@ def _status_payload(cfg: dict[str, Any], reg, target: str, model: str) -> dict[s
         "CONFIG_DIGEST": dep["config_digest"],
         "TUNNEL": ep.get("local") if ep.get("ok") else "none",
         "deployment": dep,
-        "simulation": True,
-        "backend": "local-simulation",
+        "simulation": rl is None,
+        "backend": "ssh-remote" if rl else "local-simulation",
     }
+    if message:
+        payload["MESSAGE"] = message
+    if remote_health is not None:
+        payload["REMOTE_HEALTH"] = remote_health
     if lease_expired(dep):
         payload["LEASE"] = "expired"
     if dep.get("server_pid"):

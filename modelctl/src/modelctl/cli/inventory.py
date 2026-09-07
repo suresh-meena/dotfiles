@@ -165,7 +165,7 @@ def machines_probe(ctx: Ctx, machine):
             reg.upsert_machine(machine, last_probe_status="OK")
             emit({"ok": True, "machine": machine, "reachable": True, "simulation": True}, ctx)
             return
-        ok, detail = SSHTransport(host, ssh_cfg.get("user"), ssh_cfg.get("port")).check_reachable()
+        ok, detail = SSHTransport(host, ssh_cfg.get("user"), ssh_cfg.get("port"), ssh_cfg.get("password_file")).check_reachable()
         reg.upsert_machine(machine, last_probe_status="OK" if ok else "UNREACHABLE")
         if not ok:
             raise ModelctlError(code="E_SSH_UNREACHABLE", message=detail, machine=machine)

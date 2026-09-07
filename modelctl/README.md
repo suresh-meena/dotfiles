@@ -3,7 +3,7 @@
 Deterministic control plane for:
 
 - **Local/private inference** — lifecycle for machine-specific vLLM deployments over SSH + `systemd --user`.
-- **Delegated coding** — bounded `opencode run` jobs to `opencode-go/deepseek-v4-flash` (driver) and `opencode-go/hy3` (worker) via role bins (`brain`/`driver`/`worker`), with max-thinking reasoning by default, plus privacy, budget, and validation gates.
+- **Delegated coding** — bounded `opencode run` jobs through configurable `driver` and `worker` roles, with deterministic routing, DAG scheduling, privacy, budget, and validation gates. The example uses `zai-coding-plan/glm-5.3` for drivers and `zai-coding-plan/glm-5.3-flash` for workers.
 
 ```
 target = (model, machine, artifact, runtime profile)
@@ -108,15 +108,41 @@ targets:
     vllm: { tensor_parallel_size: 4, max_model_len: 32768, gpu_memory_utilization: 0.92 }
 delegation:
   enabled: true
-  backend: { type: opencode, executable: opencode, provider: opencode-go }
+  backend: { type: opencode, executable: opencode, provider: zai-coding-plan }
   roles:
-    driver: { model: opencode-go/deepseek-v4-flash, max_parallel: 3, workspace: isolated_worktree }
-    worker: { model: opencode-go/hy3, max_parallel: 12, workspace: staged_or_worktree }
+    driver: { model: zai-coding-plan/glm-5.3, max_parallel: 3, workspace: project_dir }
+    worker: { model: zai-coding-plan/glm-5.3-flash, max_parallel: 12, workspace: project_dir }
+  orchestration:
+    max_total_parallel: 12
+    max_task_depth: 1
+    max_task_fanout: 8
+    worker_batch_size: 8
+    fail_fast: true
+    overlap_policy: serialize
+  execution: { pure_mode: true, provider_allowlist: [zai-coding-plan] }
+  validation: { require_diff_capture: true, reject_out_of_scope_changes: true, run_declared_tests: true }
+budget:
+  max_parallel_total: 12
+  max_parallel_worker: 12
+  max_parallel_driver: 3
+  max_retry_per_candidate: 1
 ```
 
 Strict schema: unknown keys, duplicate aliases, non-absolute artifact paths, TP > GPU count, non-loopback bind without `allow_remote_exposure`, negative timeouts, and literal secrets are rejected.
 
 `modelctl config resolve --target qwen-72b@gpu-a --json` prints canonical resolved target and `config_digest = SHA256(canonical_json)`. The serving port comes from `defaults.port` (or `machines.<alias>.defaults.port`), not the `vllm` block.
+
+The SSH tunnel normally receives a free local port. Pin it per target when a
+client such as OpenCode needs a stable endpoint:
+
+```yaml
+targets:
+  qwen-72b@gpu-a:
+    tunnel: { local_port: 18000 }
+```
+
+`modelctl connect` replaces that target's old tunnel when the configured local
+port changes, and rejects attempts to share a local port between targets.
 
 ## Safety invariants
 
@@ -141,9 +167,11 @@ Strict schema: unknown keys, duplicate aliases, non-absolute artifact paths, TP 
 
 ## Delegation
 
-Both `driver` and `worker` are dispatched via `opencode --pure run`; the driver role uses `opencode-go/deepseek-v4-flash` and the worker role uses `opencode-go/hy3`. They differ by prompt, context, tool profile, write scope, and validation depth. Invocation is `opencode --pure run --model <ref> --agent <profile> --format json --dir <isolated-workspace> "<prompt>"` — argv-safe, never shell-interpolated.
+Both `driver` and `worker` are dispatched via `opencode --pure run`. They differ by prompt, context, tool profile, write scope, and validation depth. Invocation is argv-safe and never shell-interpolated.
 
-Maximum reasoning (`--variant max`) is the default for every delegated run; override by passing `variant=None` in the adapter or a `--variant` extra arg. Delegation is honest: the executable availability check runs **before** any run
+The scheduler runs independent graph nodes concurrently within the configured total and per-role caps. Shared-project write-capable nodes are serialized by default; set `overlap_policy: allow_disjoint` only when declared write paths are known and disjoint. A failed node stops new work when `fail_fast` is enabled, and failed prerequisites skip their dependents. Transient failures can be retried up to `budget.max_retry_per_candidate` times with the same selected model.
+
+Delegation is honest: the executable availability check runs **before** any run
 record is created, so a missing `opencode` yields `E_OPENCODE_NOT_FOUND` with no
 fabricated `RUNNING`/`SUCCEEDED` row. Costs are recorded as `0.0` with
 `cost_estimated: true` when the adapter does not report tokens. The warm broker
@@ -152,7 +180,9 @@ fabricated `RUNNING`/`SUCCEEDED` row. Costs are recorded as `0.0` with
 
 `modelctl delegates doctor` emits `.modelctl/delegation.lock` (opencode version, catalog digest, profile digests). Stale lock blocks execution.
 
-Isolated Git worktree is default for write-capable delegates; `changed_paths ⊆ allowed_write_paths` is enforced (canonicalized, symlink-safe). Process-group containment + verified cleanup on timeout/cancel.
+Runs execute in the project directory by default, with actual changes derived from git and checked against `allowed_write_paths`; set `isolated: true` for a temporary workspace. Process-group containment + verified cleanup on timeout/cancel.
+
+`delegate batch` is a dependency-free graph. `delegate graph` validates task IDs, dependencies, cycles, depth, fan-out, concurrency, and write overlap before executing. Both commands return compact per-node result summaries rather than raw model transcripts.
 
 ## CLI
 

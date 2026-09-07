@@ -18,6 +18,13 @@ KNOWN_LIFECYCLE = {"mode", "ttl_s", "lease_grace_s"}
 KNOWN_SECURITY = {"allow_remote_exposure", "network_policy", "request_logging", "output_logging", "state_file_mode", "state_dir_mode"}
 KNOWN_TUNNEL = {"local_port"}
 KNOWN_VLLM = {"tensor_parallel_size", "max_model_len", "gpu_memory_utilization", "dtype", "extra_args"}
+KNOWN_BRAIN = {"owner", "final_authority", "authority", "labels"}
+KNOWN_BACKEND = {"type", "executable", "provider", "model"}
+KNOWN_ROLE = {"backend", "model", "variant", "max_parallel", "max_files_read", "max_files_write", "max_patch_lines", "default_timeout_s", "workspace", "validation"}
+KNOWN_ORCHESTRATION = {"max_total_parallel", "max_task_depth", "max_task_fanout", "worker_batch_size", "worker_return_tokens", "driver_return_tokens", "aggregate_return_tokens", "require_structured_results", "recursive_delegation", "fail_fast", "overlap_policy"}
+KNOWN_EXECUTION = {"pure_mode", "auto_approve", "auto_update", "provider_allowlist", "run_timeout_s", "graceful_cancel_timeout_s", "cleanup_timeout_s"}
+KNOWN_DELEGATION_VALIDATION = {"require_diff_capture", "reject_out_of_scope_changes", "run_declared_tests"}
+KNOWN_BUDGET = {"max_parallel_total", "max_parallel_worker", "max_parallel_driver", "max_task_fanout", "max_retry_per_candidate", "max_escalations", "soft_daily_usd", "hard_daily_usd", "go_usage_value"}
 
 SECRET_KEYS = {"api_key", "hf_token", "secret", "token", "password"}
 
@@ -128,6 +135,11 @@ def _validate_targets(raw: dict[str, Any], models: dict[str, Any], machines: dic
             _reject_unknown(f"targets.{tid}.security", t["security"], KNOWN_SECURITY)
             if t["security"].get("allow_remote_exposure") is True and not t["security"].get("network_policy"):
                 raise _invalid(f"targets.{tid}.security.allow_remote_exposure requires network_policy")
+        if "tunnel" in t:
+            _reject_unknown(f"targets.{tid}.tunnel", t["tunnel"], KNOWN_TUNNEL)
+            local_port = t["tunnel"].get("local_port")
+            if local_port is not None and (not isinstance(local_port, int) or isinstance(local_port, bool) or not 1 <= local_port <= 65535):
+                raise _invalid(f"targets.{tid}.tunnel.local_port must be an integer between 1 and 65535")
         if "vllm" in t:
             _reject_unknown(f"targets.{tid}.vllm", t["vllm"], KNOWN_VLLM)
             if "tensor_parallel_size" in t["vllm"] and "gpus" in t:
@@ -135,11 +147,6 @@ def _validate_targets(raw: dict[str, Any], models: dict[str, Any], machines: dic
                     raise _invalid(f"targets.{tid}.vllm.tensor_parallel_size exceeds gpus count")
         # references
         if t.get("model") not in models:
-        if "tunnel" in t:
-            _reject_unknown(f"targets.{tid}.tunnel", t["tunnel"], KNOWN_TUNNEL)
-            local_port = t["tunnel"].get("local_port")
-            if local_port is not None and (not isinstance(local_port, int) or isinstance(local_port, bool) or not 1 <= local_port <= 65535):
-                raise _invalid(f"targets.{tid}.tunnel.local_port must be an integer between 1 and 65535")
             raise ModelctlError(code="E_MODEL_NOT_FOUND", message=f"target {tid} references unknown model {t.get('model')}")
         if t.get("machine") not in machines:
             raise ModelctlError(code="E_MACHINE_NOT_FOUND", message=f"target {tid} references unknown machine {t.get('machine')}")
@@ -152,9 +159,108 @@ def _validate_delegation(raw: dict[str, Any]) -> None:
     deleg = raw["delegation"]
     if not isinstance(deleg, dict):
         raise _invalid("delegation must be mapping")
-    # no strict check for unknown keys beyond top known to allow future, but validate enabled type
+    _reject_unknown("delegation", deleg, {"enabled", "brain", "backend", "roles", "orchestration", "execution", "validation"})
     if "enabled" in deleg and not isinstance(deleg["enabled"], bool):
         raise _invalid("delegation.enabled must be boolean")
+    if "brain" in deleg:
+        brain = deleg["brain"]
+        if not isinstance(brain, dict):
+            raise _invalid("delegation.brain must be mapping")
+        _reject_unknown("delegation.brain", brain, KNOWN_BRAIN)
+        if "owner" in brain and brain["owner"] != "codex":
+            raise _invalid("delegation.brain.owner must be codex")
+        if "final_authority" in brain and not isinstance(brain["final_authority"], bool):
+            raise _invalid("delegation.brain.final_authority must be boolean")
+        if "labels" in brain and (not isinstance(brain["labels"], list) or any(not isinstance(x, str) for x in brain["labels"])):
+            raise _invalid("delegation.brain.labels must be a list of strings")
+    if "backend" in deleg:
+        backend = deleg["backend"]
+        if not isinstance(backend, dict):
+            raise _invalid("delegation.backend must be mapping")
+        _reject_unknown("delegation.backend", backend, KNOWN_BACKEND)
+        if "type" in backend and backend["type"] != "opencode":
+            raise _invalid("delegation.backend.type must be opencode")
+    roles = deleg.get("roles", {})
+    if not isinstance(roles, dict):
+        raise _invalid("delegation.roles must be mapping")
+    _reject_unknown("delegation.roles", roles, {"driver", "worker"})
+    for name, role in roles.items():
+        if not isinstance(role, dict):
+            raise _invalid(f"delegation.roles.{name} must be mapping")
+        _reject_unknown(f"delegation.roles.{name}", role, KNOWN_ROLE)
+        for key in ("max_parallel", "max_files_read", "max_patch_lines", "default_timeout_s"):
+            if key in role and (not isinstance(role[key], int) or role[key] <= 0):
+                raise _invalid(f"delegation.roles.{name}.{key} must be a positive integer")
+        if "max_files_write" in role and (not isinstance(role["max_files_write"], int) or role["max_files_write"] < 0):
+            raise _invalid(f"delegation.roles.{name}.max_files_write must be a non-negative integer")
+        if "variant" in role and not isinstance(role["variant"], str):
+            raise _invalid(f"delegation.roles.{name}.variant must be a string")
+        if "model" in role and not isinstance(role["model"], str):
+            raise _invalid(f"delegation.roles.{name}.model must be a string")
+        if "workspace" in role and role["workspace"] not in (
+            "project_dir",
+            "isolated_worktree",
+            "staged_or_worktree",
+        ):
+            raise _invalid(
+                f"delegation.roles.{name}.workspace must be project_dir, isolated_worktree, or staged_or_worktree"
+            )
+
+    orchestration = deleg.get("orchestration", {})
+    if not isinstance(orchestration, dict):
+        raise _invalid("delegation.orchestration must be mapping")
+    _reject_unknown("delegation.orchestration", orchestration, KNOWN_ORCHESTRATION)
+    for key in ("max_total_parallel", "max_task_fanout", "worker_batch_size", "worker_return_tokens", "driver_return_tokens", "aggregate_return_tokens"):
+        if key in orchestration and (not isinstance(orchestration[key], int) or orchestration[key] <= 0):
+            raise _invalid(f"delegation.orchestration.{key} must be a positive integer")
+    if "max_task_depth" in orchestration and (not isinstance(orchestration["max_task_depth"], int) or orchestration["max_task_depth"] < 0):
+        raise _invalid("delegation.orchestration.max_task_depth must be a non-negative integer")
+    for key in ("require_structured_results", "recursive_delegation", "fail_fast"):
+        if key in orchestration and not isinstance(orchestration[key], bool):
+            raise _invalid(f"delegation.orchestration.{key} must be boolean")
+    if orchestration.get("overlap_policy", "serialize") not in ("serialize", "allow_disjoint"):
+        raise _invalid("delegation.orchestration.overlap_policy must be serialize or allow_disjoint")
+
+    execution = deleg.get("execution", {})
+    if not isinstance(execution, dict):
+        raise _invalid("delegation.execution must be mapping")
+    _reject_unknown("delegation.execution", execution, KNOWN_EXECUTION)
+    for key in ("pure_mode", "auto_approve", "auto_update"):
+        if key in execution and not isinstance(execution[key], bool):
+            raise _invalid(f"delegation.execution.{key} must be boolean")
+    if "provider_allowlist" in execution:
+        allowlist = execution["provider_allowlist"]
+        if not isinstance(allowlist, list) or not allowlist or any(not isinstance(x, str) or not x for x in allowlist):
+            raise _invalid("delegation.execution.provider_allowlist must be a non-empty list of strings")
+    for key in ("run_timeout_s", "graceful_cancel_timeout_s", "cleanup_timeout_s"):
+        if key in execution and (not isinstance(execution[key], int) or execution[key] <= 0):
+            raise _invalid(f"delegation.execution.{key} must be a positive integer")
+
+    validation = deleg.get("validation", {})
+    if not isinstance(validation, dict):
+        raise _invalid("delegation.validation must be mapping")
+    _reject_unknown("delegation.validation", validation, KNOWN_DELEGATION_VALIDATION)
+    for key, value in validation.items():
+        if not isinstance(value, bool):
+            raise _invalid(f"delegation.validation.{key} must be boolean")
+
+
+def _validate_budget(raw: dict[str, Any]) -> None:
+    if "budget" not in raw:
+        return
+    budget = raw["budget"]
+    if not isinstance(budget, dict):
+        raise _invalid("budget must be mapping")
+    _reject_unknown("budget", budget, KNOWN_BUDGET)
+    for key in ("max_parallel_total", "max_parallel_worker", "max_parallel_driver", "max_task_fanout"):
+        if key in budget and (not isinstance(budget[key], int) or budget[key] <= 0):
+            raise _invalid(f"budget.{key} must be a positive integer")
+    for key in ("max_retry_per_candidate", "max_escalations"):
+        if key in budget and (not isinstance(budget[key], int) or budget[key] < 0):
+            raise _invalid(f"budget.{key} must be a non-negative integer")
+    for key in ("soft_daily_usd", "hard_daily_usd"):
+        if key in budget and (not isinstance(budget[key], (int, float)) or budget[key] < 0):
+            raise _invalid(f"budget.{key} must be non-negative")
 
 
 def validate_config(raw: dict[str, Any]) -> None:
@@ -168,3 +274,4 @@ def validate_config(raw: dict[str, Any]) -> None:
     _validate_models(raw)
     _validate_targets(raw, raw.get("models", {}), raw.get("machines", {}))
     _validate_delegation(raw)
+    _validate_budget(raw)
