@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://research-kb.local/schemas/capture.schema.json",
+  "title": "Capture operation",
+  "description": "Offline starter contract for one rkb capture operation. The runtime revalidates every request and applies domain, reference, authorization, and concurrency checks that this local schema cannot.",
+  "type": "object",
+  "required": ["op", "payload"],
+  "properties": {
+    "op": { "const": "capture" },
+    "payload": {
+      "type": "object",
+      "required": ["kind", "subkind", "title", "state_json"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "project",
+            "knowledge",
+            "claim",
+            "source",
+            "artifact",
+            "work",
+            "study",
+            "run",
+            "resource",
+            "handoff"
+          ]
+        },
+        "subkind": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "title": { "type": "string", "maxLength": 300 },
+        "body_md": { "type": "string", "maxLength": 2000000 },
+        "state_json": { "type": "object" },
+        "record_state": { "enum": ["draft", "active"] },
+        "occurred_at": { "type": ["string", "null"] },
+        "occurred_at_unknown": { "type": "boolean" },
+        "effective_from": { "type": ["string", "null"] },
+        "effective_to": { "type": ["string", "null"] },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "maxItems": 50
+        },
+        "source_anchor_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "maxItems": 500
+        },
+        "citations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["anchor_id", "role"],
+            "properties": {
+              "anchor_id": { "type": "string", "minLength": 1 },
+              "role": {
+                "enum": ["quote", "paraphrase", "evidence", "formula", "table_value", "figure"]
+              },
+              "note": { "type": ["string", "null"] }
+            },
+            "additionalProperties": false
+          }
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["predicate"],
+            "properties": {
+              "predicate": { "type": "string", "minLength": 1 },
+              "direction": { "enum": ["out", "in"] },
+              "target_ref": {
+                "oneOf": [
+                  { "type": "string", "minLength": 1 },
+                  {
+                    "type": "object",
+                    "required": ["object_id"],
+                    "properties": {
+                      "object_id": { "type": "string", "minLength": 1 },
+                      "revision": { "type": ["integer", "null"], "minimum": 1 }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "pin_mode": { "enum": ["pinned", "tracking"] },
+              "qualifiers": { "type": "object" },
+              "rationale": { "type": ["string", "null"] }
+            },
+            "additionalProperties": false
+          }
+        },
+        "attribution": {
+          "type": "object",
+          "description": "Original speaker/author metadata only. Authenticated identity and review status come from the runtime connection and are rejected here.",
+          "properties": {
+            "original_speaker": { "type": ["string", "null"] },
+            "provenance_category": {
+              "enum": [
+                "source_author_statement",
+                "user_report",
+                "agent_inference",
+                "independently_checked",
+                "adapter_observation"
+              ]
+            },
+            "extraction_agent": { "type": ["string", "null"] },
+            "notes": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        },
+        "unresolved_references": {
+          "type": "array",
+          "description": "Permitted only while record_state is draft; do not invent target identities.",
+          "items": { "type": "object" }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

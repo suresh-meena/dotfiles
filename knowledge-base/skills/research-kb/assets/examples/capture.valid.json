@@ -1,0 +1,25 @@
+{
+  "op": "capture",
+  "payload": {
+    "kind": "knowledge",
+    "subkind": "definition",
+    "title": "Lattice spacing",
+    "record_state": "active",
+    "body_md": "The spacing is fixed by the project convention unless a study declares otherwise.",
+    "state_json": {
+      "subkind": "definition",
+      "meaning": "The physical distance between adjacent grid points used by the numerical protocol.",
+      "symbol": "a",
+      "namespace": "lattice",
+      "units_or_domain": "lattice units",
+      "source_or_convention": "project convention, reviewed at project initialization",
+      "aliases": ["grid spacing"]
+    },
+    "aliases": ["grid spacing"],
+    "attribution": {
+      "provenance_category": "user_report",
+      "original_speaker": "researcher"
+    },
+    "occurred_at_unknown": true
+  }
+}

@@ -1,0 +1,1060 @@
+{
+  "name": "synthetic-project-v1",
+  "description": "Synthetic project used to exercise the runtime and the FTS retrieval gold set. Never import these records into a user project unless the user explicitly requests it.",
+  "record_state_default": "active",
+  "batches": [
+    {
+      "phase": "records",
+      "operations": [
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "definition",
+            "title": "Definition zeta (lattice spacing control parameter)",
+            "state_json": {
+              "subkind": "definition",
+              "meaning": "Synthetic lattice spacing control parameter used by fixture study number 0.",
+              "symbol": "zeta",
+              "namespace": "synthetic",
+              "units_or_domain": "fixture units",
+              "source_or_convention": "synthetic project convention"
+            },
+            "record_state": "active",
+            "aliases": [
+              "def-zeta"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "definition",
+            "title": "Definition eta (discretization error estimator)",
+            "state_json": {
+              "subkind": "definition",
+              "meaning": "Synthetic discretization error estimator used by fixture study number 1.",
+              "symbol": "eta",
+              "namespace": "synthetic",
+              "units_or_domain": "fixture units",
+              "source_or_convention": "synthetic project convention"
+            },
+            "record_state": "active",
+            "aliases": [
+              "def-eta"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "definition",
+            "title": "Definition kappa (finite-volume correction factor)",
+            "state_json": {
+              "subkind": "definition",
+              "meaning": "Synthetic finite-volume correction factor used by fixture study number 2.",
+              "symbol": "kappa",
+              "namespace": "synthetic",
+              "units_or_domain": "fixture units",
+              "source_or_convention": "synthetic project convention"
+            },
+            "record_state": "active",
+            "aliases": [
+              "def-kappa"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "definition",
+            "title": "Definition lambda (cutoff regularization scale)",
+            "state_json": {
+              "subkind": "definition",
+              "meaning": "Synthetic cutoff regularization scale used by fixture study number 3.",
+              "symbol": "lambda",
+              "namespace": "synthetic",
+              "units_or_domain": "fixture units",
+              "source_or_convention": "synthetic project convention"
+            },
+            "record_state": "active",
+            "aliases": [
+              "def-lambda"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "definition",
+            "title": "Definition mu (renormalization reference scale)",
+            "state_json": {
+              "subkind": "definition",
+              "meaning": "Synthetic renormalization reference scale used by fixture study number 4.",
+              "symbol": "mu",
+              "namespace": "synthetic",
+              "units_or_domain": "fixture units",
+              "source_or_convention": "synthetic project convention"
+            },
+            "record_state": "active",
+            "aliases": [
+              "def-mu"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "definition",
+            "title": "Definition nu (correlation length exponent)",
+            "state_json": {
+              "subkind": "definition",
+              "meaning": "Synthetic correlation length exponent used by fixture study number 5.",
+              "symbol": "nu",
+              "namespace": "synthetic",
+              "units_or_domain": "fixture units",
+              "source_or_convention": "synthetic project convention"
+            },
+            "record_state": "active",
+            "aliases": [
+              "def-nu"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "definition",
+            "title": "Definition rho (spectral density normalization)",
+            "state_json": {
+              "subkind": "definition",
+              "meaning": "Synthetic spectral density normalization used by fixture study number 6.",
+              "symbol": "rho",
+              "namespace": "synthetic",
+              "units_or_domain": "fixture units",
+              "source_or_convention": "synthetic project convention"
+            },
+            "record_state": "active",
+            "aliases": [
+              "def-rho"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "definition",
+            "title": "Definition sigma (statistical uncertainty model)",
+            "state_json": {
+              "subkind": "definition",
+              "meaning": "Synthetic statistical uncertainty model used by fixture study number 7.",
+              "symbol": "sigma",
+              "namespace": "synthetic",
+              "units_or_domain": "fixture units",
+              "source_or_convention": "synthetic project convention"
+            },
+            "record_state": "active",
+            "aliases": [
+              "def-sigma"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "definition",
+            "title": "Definition tau (autocorrelation time)",
+            "state_json": {
+              "subkind": "definition",
+              "meaning": "Synthetic autocorrelation time used by fixture study number 8.",
+              "symbol": "tau",
+              "namespace": "synthetic",
+              "units_or_domain": "fixture units",
+              "source_or_convention": "synthetic project convention"
+            },
+            "record_state": "active",
+            "aliases": [
+              "def-tau"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "definition",
+            "title": "Definition phi (order parameter definition)",
+            "state_json": {
+              "subkind": "definition",
+              "meaning": "Synthetic order parameter definition used by fixture study number 9.",
+              "symbol": "phi",
+              "namespace": "synthetic",
+              "units_or_domain": "fixture units",
+              "source_or_convention": "synthetic project convention"
+            },
+            "record_state": "active",
+            "aliases": [
+              "def-phi"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "hypothesis",
+            "title": "Hypothesis linear-scaling-hypothesis",
+            "state_json": {
+              "subkind": "hypothesis",
+              "proposal": "Under condition set 0, the synthetic observable follows the linear-scaling-hypothesis pattern.",
+              "applicability": {
+                "condition_set": 0
+              },
+              "support_criteria": [
+                "residual trend for linear-scaling-hypothesis is flat"
+              ],
+              "contradiction_criteria": [
+                "monotone drift remains for linear-scaling-hypothesis"
+              ]
+            },
+            "record_state": "active",
+            "aliases": [
+              "hyp-0"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "hypothesis",
+            "title": "Hypothesis logarithmic-drift-hypothesis",
+            "state_json": {
+              "subkind": "hypothesis",
+              "proposal": "Under condition set 1, the synthetic observable follows the logarithmic-drift-hypothesis pattern.",
+              "applicability": {
+                "condition_set": 1
+              },
+              "support_criteria": [
+                "residual trend for logarithmic-drift-hypothesis is flat"
+              ],
+              "contradiction_criteria": [
+                "monotone drift remains for logarithmic-drift-hypothesis"
+              ]
+            },
+            "record_state": "active",
+            "aliases": [
+              "hyp-1"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "hypothesis",
+            "title": "Hypothesis threshold-behavior-hypothesis",
+            "state_json": {
+              "subkind": "hypothesis",
+              "proposal": "Under condition set 2, the synthetic observable follows the threshold-behavior-hypothesis pattern.",
+              "applicability": {
+                "condition_set": 2
+              },
+              "support_criteria": [
+                "residual trend for threshold-behavior-hypothesis is flat"
+              ],
+              "contradiction_criteria": [
+                "monotone drift remains for threshold-behavior-hypothesis"
+              ]
+            },
+            "record_state": "active",
+            "aliases": [
+              "hyp-2"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "hypothesis",
+            "title": "Hypothesis independent-replicate-hypothesis",
+            "state_json": {
+              "subkind": "hypothesis",
+              "proposal": "Under condition set 3, the synthetic observable follows the independent-replicate-hypothesis pattern.",
+              "applicability": {
+                "condition_set": 3
+              },
+              "support_criteria": [
+                "residual trend for independent-replicate-hypothesis is flat"
+              ],
+              "contradiction_criteria": [
+                "monotone drift remains for independent-replicate-hypothesis"
+              ]
+            },
+            "record_state": "active",
+            "aliases": [
+              "hyp-3"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "observation",
+            "title": "Observation harmonic-trap-observable",
+            "state_json": {
+              "subkind": "observation",
+              "observation": "The synthetic harmonic-trap-observable was measured across three condition sets.",
+              "conditions": {
+                "condition_set": 0,
+                "synthetic": true
+              }
+            },
+            "record_state": "active",
+            "aliases": [
+              "obs-0"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "observation",
+            "title": "Observation box-spectrum-observable",
+            "state_json": {
+              "subkind": "observation",
+              "observation": "The synthetic box-spectrum-observable was measured across three condition sets.",
+              "conditions": {
+                "condition_set": 1,
+                "synthetic": true
+              }
+            },
+            "record_state": "active",
+            "aliases": [
+              "obs-1"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "observation",
+            "title": "Observation shell-momentum-observable",
+            "state_json": {
+              "subkind": "observation",
+              "observation": "The synthetic shell-momentum-observable was measured across three condition sets.",
+              "conditions": {
+                "condition_set": 2,
+                "synthetic": true
+              }
+            },
+            "record_state": "active",
+            "aliases": [
+              "obs-2"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "claim",
+            "subkind": "claim",
+            "title": "Claim linear-scaling-agreement",
+            "state_json": {
+              "subkind": "claim",
+              "statement": "The extrapolated synthetic value agrees with the reference within 2 sigma.",
+              "domain_applicability": {
+                "condition_set": [
+                  0,
+                  1,
+                  2
+                ]
+              },
+              "quantifiers": "for all fixture condition sets",
+              "evidence_criteria": [
+                {
+                  "criterion": "analytical derivation under fixture assumptions"
+                }
+              ]
+            },
+            "record_state": "active",
+            "aliases": [
+              "claim-linear"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "claim",
+            "subkind": "claim",
+            "title": "Claim threshold-consistency",
+            "state_json": {
+              "subkind": "claim",
+              "statement": "The threshold behavior is consistent across independent replicates.",
+              "domain_applicability": {
+                "condition_set": 2
+              },
+              "quantifiers": "for fixture replicate identities",
+              "evidence_criteria": [
+                {
+                  "criterion": "independent reproduction across replicates"
+                }
+              ]
+            },
+            "record_state": "active",
+            "aliases": [
+              "claim-threshold"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "claim",
+            "subkind": "claim",
+            "title": "Claim normalization-equivalence",
+            "state_json": {
+              "subkind": "claim",
+              "statement": "Both synthetic normalization conventions agree after correction.",
+              "domain_applicability": {
+                "convention": [
+                  "a",
+                  "b"
+                ]
+              },
+              "quantifiers": "for fixture conventions",
+              "evidence_criteria": [
+                {
+                  "criterion": "pinned definition comparison"
+                }
+              ]
+            },
+            "record_state": "active",
+            "aliases": [
+              "claim-normalization"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "issue",
+            "title": "Issue normalization-drift-issue",
+            "state_json": {
+              "subkind": "issue",
+              "affected_scope": {
+                "fixture": 0
+              },
+              "severity": "critical",
+              "effect": "The synthetic normalization-drift-issue blocks paper-ready assessment.",
+              "blocking_operations": [
+                "paper-ready assessment"
+              ],
+              "resolution_criterion": "A pinned source or definition resolves normalization-drift-issue.",
+              "status": "open"
+            },
+            "record_state": "active",
+            "aliases": [
+              "issue-0"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "issue",
+            "title": "Issue threshold-ambiguity-issue",
+            "state_json": {
+              "subkind": "issue",
+              "affected_scope": {
+                "fixture": 1
+              },
+              "severity": "high",
+              "effect": "The synthetic threshold-ambiguity-issue blocks paper-ready assessment.",
+              "blocking_operations": [
+                "paper-ready assessment"
+              ],
+              "resolution_criterion": "A pinned source or definition resolves threshold-ambiguity-issue.",
+              "status": "open"
+            },
+            "record_state": "active",
+            "aliases": [
+              "issue-1"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "issue",
+            "title": "Issue metadata-gap-issue",
+            "state_json": {
+              "subkind": "issue",
+              "affected_scope": {
+                "fixture": 2
+              },
+              "severity": "high",
+              "effect": "The synthetic metadata-gap-issue blocks paper-ready assessment.",
+              "blocking_operations": [
+                "paper-ready assessment"
+              ],
+              "resolution_criterion": "A pinned source or definition resolves metadata-gap-issue.",
+              "status": "open"
+            },
+            "record_state": "active",
+            "aliases": [
+              "issue-2"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "work",
+            "subkind": "task",
+            "title": "Task coarse-check-task",
+            "state_json": {
+              "subkind": "task",
+              "objective": "Complete the synthetic coarse-check-task.",
+              "work_state": "open",
+              "priority": "high",
+              "priority_reason": "coarse-check-task gates the fixture milestone.",
+              "completion_criteria": [
+                "evidence for coarse-check-task recorded"
+              ],
+              "owner": "unassigned",
+              "required_inputs": []
+            },
+            "record_state": "active",
+            "aliases": [
+              "task-0"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "work",
+            "subkind": "task",
+            "title": "Task extrapolation-fit-task",
+            "state_json": {
+              "subkind": "task",
+              "objective": "Complete the synthetic extrapolation-fit-task.",
+              "work_state": "open",
+              "priority": "high",
+              "priority_reason": "extrapolation-fit-task gates the fixture milestone.",
+              "completion_criteria": [
+                "evidence for extrapolation-fit-task recorded"
+              ],
+              "owner": "unassigned",
+              "required_inputs": []
+            },
+            "record_state": "active",
+            "aliases": [
+              "task-1"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "work",
+            "subkind": "task",
+            "title": "Task source-locate-task",
+            "state_json": {
+              "subkind": "task",
+              "objective": "Complete the synthetic source-locate-task.",
+              "work_state": "open",
+              "priority": "medium",
+              "priority_reason": "source-locate-task gates the fixture milestone.",
+              "completion_criteria": [
+                "evidence for source-locate-task recorded"
+              ],
+              "owner": "unassigned",
+              "required_inputs": []
+            },
+            "record_state": "active",
+            "aliases": [
+              "task-2"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "work",
+            "subkind": "task",
+            "title": "Task replicate-run-task",
+            "state_json": {
+              "subkind": "task",
+              "objective": "Complete the synthetic replicate-run-task.",
+              "work_state": "open",
+              "priority": "medium",
+              "priority_reason": "replicate-run-task gates the fixture milestone.",
+              "completion_criteria": [
+                "evidence for replicate-run-task recorded"
+              ],
+              "owner": "unassigned",
+              "required_inputs": []
+            },
+            "record_state": "active",
+            "aliases": [
+              "task-3"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "decision",
+            "title": "Decision fit-window-decision",
+            "state_json": {
+              "subkind": "decision",
+              "choice": "Adopt the synthetic fit-window-decision convention.",
+              "alternatives": [
+                {
+                  "name": "alternative-a"
+                },
+                {
+                  "name": "alternative-b"
+                }
+              ],
+              "reasons": [
+                "stability under fit-window-decision"
+              ],
+              "decision_maker": "synthetic researcher",
+              "applicability": {
+                "fixture": 0
+              },
+              "reconsideration_conditions": [
+                "new source contradicts the convention"
+              ]
+            },
+            "record_state": "active",
+            "aliases": [
+              "decision-0"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "knowledge",
+            "subkind": "decision",
+            "title": "Decision seed-policy-decision",
+            "state_json": {
+              "subkind": "decision",
+              "choice": "Adopt the synthetic seed-policy-decision convention.",
+              "alternatives": [
+                {
+                  "name": "alternative-a"
+                },
+                {
+                  "name": "alternative-b"
+                }
+              ],
+              "reasons": [
+                "stability under seed-policy-decision"
+              ],
+              "decision_maker": "synthetic researcher",
+              "applicability": {
+                "fixture": 1
+              },
+              "reconsideration_conditions": [
+                "new source contradicts the convention"
+              ]
+            },
+            "record_state": "active",
+            "aliases": [
+              "decision-1"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "source",
+            "subkind": "note",
+            "title": "Source synthetic methodology note",
+            "state_json": {
+              "subkind": "note",
+              "source_type": "note",
+              "title": "Synthetic methodology note",
+              "author": "synthetic author",
+              "external_id": "synthetic-note-1",
+              "version": "v1",
+              "identity_assurance": "metadata_only",
+              "preservation": "metadata_only",
+              "locator": "fixture://synthetic-note-1"
+            },
+            "record_state": "active",
+            "body_md": "The synthetic methodology note describes the fixture protocol.",
+            "aliases": [
+              "source-note"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "artifact",
+            "subkind": "analysis_result",
+            "title": "Artifact extrapolation-fit-result",
+            "state_json": {
+              "subkind": "analysis_result",
+              "role": "fixture fit output",
+              "media_type": "application/json",
+              "content_identity": {
+                "kind": "manifest",
+                "value": "synthetic-fit-manifest"
+              },
+              "assurance": "manifest",
+              "availability": "available",
+              "locations": [
+                {
+                  "kind": "fixture",
+                  "location": "fixture://fit-result",
+                  "availability": "available"
+                }
+              ],
+              "results": {
+                "results": [
+                  {
+                    "name": "exponent",
+                    "value": 1.0,
+                    "units": "dimensionless",
+                    "dimensionless": true,
+                    "condition": "fixture condition set 0",
+                    "uncertainty": {
+                      "type": "std_error",
+                      "level": 0.01,
+                      "method": "bootstrap"
+                    }
+                  }
+                ]
+              }
+            },
+            "record_state": "active",
+            "aliases": [
+              "artifact-fit"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "study",
+            "subkind": "numerical",
+            "title": "Study fixture-extrapolation",
+            "state_json": {
+              "subkind": "numerical",
+              "question": "Does the synthetic observable extrapolate consistently?",
+              "protocol": {
+                "method_profile": "numerical",
+                "preprocessing": "none"
+              },
+              "required_outputs": [
+                {
+                  "name": "exponent"
+                }
+              ],
+              "completion_criteria": [
+                "all fixture slots covered"
+              ],
+              "study_state": "active",
+              "executable": true,
+              "trial_design": {
+                "factors": {
+                  "condition_set": [
+                    0,
+                    1,
+                    2
+                  ]
+                }
+              }
+            },
+            "record_state": "active",
+            "aliases": [
+              "study-fixture"
+            ]
+          }
+        },
+        {
+          "op": "capture",
+          "payload": {
+            "kind": "resource",
+            "subkind": "cpu",
+            "title": "Resource fixture-host",
+            "state_json": {
+              "subkind": "cpu",
+              "machine_id": "fixture-host",
+              "capabilities": {
+                "cpu": 4
+              },
+              "capacity": 2,
+              "admin_state": "enabled",
+              "limitations": [
+                "fixture only"
+              ]
+            },
+            "record_state": "active",
+            "aliases": [
+              "resource-fixture"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "phase": "links",
+      "operations": [
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "supports",
+            "src_ref": {
+              "alias": "obs-0"
+            },
+            "dst_ref": {
+              "alias": "claim-linear"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 0."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "supports",
+            "src_ref": {
+              "alias": "obs-1"
+            },
+            "dst_ref": {
+              "alias": "claim-linear"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 1."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "contradicts",
+            "src_ref": {
+              "alias": "obs-2"
+            },
+            "dst_ref": {
+              "alias": "claim-linear"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 2."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "supports",
+            "src_ref": {
+              "alias": "artifact-fit"
+            },
+            "dst_ref": {
+              "alias": "claim-linear"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 3."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "supports",
+            "src_ref": {
+              "alias": "obs-2"
+            },
+            "dst_ref": {
+              "alias": "claim-threshold"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 4."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "assumes",
+            "src_ref": {
+              "alias": "claim-linear"
+            },
+            "dst_ref": {
+              "alias": "def-zeta"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 5."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "assumes",
+            "src_ref": {
+              "alias": "claim-threshold"
+            },
+            "dst_ref": {
+              "alias": "def-eta"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 6."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "blocks",
+            "src_ref": {
+              "alias": "issue-0"
+            },
+            "dst_ref": {
+              "alias": "claim-linear"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 7."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "blocks",
+            "src_ref": {
+              "alias": "issue-1"
+            },
+            "dst_ref": {
+              "alias": "claim-threshold"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 8."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "blocks",
+            "src_ref": {
+              "alias": "issue-2"
+            },
+            "dst_ref": {
+              "alias": "claim-normalization"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 9."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "resolves",
+            "src_ref": {
+              "alias": "task-2"
+            },
+            "dst_ref": {
+              "alias": "issue-2"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 10."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "depends_on",
+            "src_ref": {
+              "alias": "task-1"
+            },
+            "dst_ref": {
+              "alias": "artifact-fit"
+            },
+            "pin_mode": "tracking",
+            "qualifiers": {
+              "condition": "done_with_review"
+            },
+            "rationale": "Synthetic fixture link 11."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "depends_on",
+            "src_ref": {
+              "alias": "task-3"
+            },
+            "dst_ref": {
+              "alias": "task-1"
+            },
+            "pin_mode": "tracking",
+            "qualifiers": {
+              "condition": "done_with_review"
+            },
+            "rationale": "Synthetic fixture link 12."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "uses",
+            "src_ref": {
+              "alias": "artifact-fit"
+            },
+            "dst_ref": {
+              "alias": "def-kappa"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 13."
+          }
+        },
+        {
+          "op": "link",
+          "payload": {
+            "predicate": "derived_from",
+            "src_ref": {
+              "alias": "claim-linear"
+            },
+            "dst_ref": {
+              "alias": "obs-0"
+            },
+            "pin_mode": "pinned",
+            "qualifiers": {},
+            "rationale": "Synthetic fixture link 14."
+          }
+        }
+      ]
+    }
+  ]
+}

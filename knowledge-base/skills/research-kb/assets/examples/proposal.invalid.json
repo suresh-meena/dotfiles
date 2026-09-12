@@ -1,0 +1,5 @@
+{
+  "operations": [],
+  "reason": "An empty batch is not a proposal.",
+  "unexpected": "extra field"
+}

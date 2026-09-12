@@ -1,0 +1,19 @@
+{
+  "summary": "Checked the normalization definition against the frozen source passage; the correction resolves the earlier caveat.",
+  "next_step": "Retrieve the claim assessment criteria and record a reviewed assessment.",
+  "snapshot_cursor": "eyJzIjoxMjMsImUiOiJleGFtcGxlIn0",
+  "completed_refs": [
+    {
+      "object_id": "00000000-0000-4000-8000-000000000020",
+      "revision": 2
+    }
+  ],
+  "open_refs": [
+    {
+      "object_id": "00000000-0000-4000-8000-000000000021"
+    }
+  ],
+  "pending_proposals": ["3f1a-example-proposal"],
+  "in_flight_executions": [],
+  "unresolved_issues": ["No independent reproduction recorded yet."]
+}

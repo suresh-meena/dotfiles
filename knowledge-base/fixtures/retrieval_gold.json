@@ -1,0 +1,322 @@
+{
+  "name": "retrieval-gold-v1",
+  "description": "FTS-only gold set over synthetic-project-v1; expected_aliases must appear in top-10 search results.",
+  "corpus": "synthetic-project-v1",
+  "questions": [
+    {
+      "id": "q001",
+      "query": "definition zeta",
+      "expected_aliases": [
+        "def-zeta"
+      ]
+    },
+    {
+      "id": "q002",
+      "query": "definition eta",
+      "expected_aliases": [
+        "def-eta"
+      ]
+    },
+    {
+      "id": "q003",
+      "query": "definition kappa",
+      "expected_aliases": [
+        "def-kappa"
+      ]
+    },
+    {
+      "id": "q004",
+      "query": "definition lambda",
+      "expected_aliases": [
+        "def-lambda"
+      ]
+    },
+    {
+      "id": "q005",
+      "query": "definition mu",
+      "expected_aliases": [
+        "def-mu"
+      ]
+    },
+    {
+      "id": "q006",
+      "query": "definition nu",
+      "expected_aliases": [
+        "def-nu"
+      ]
+    },
+    {
+      "id": "q007",
+      "query": "definition rho",
+      "expected_aliases": [
+        "def-rho"
+      ]
+    },
+    {
+      "id": "q008",
+      "query": "definition sigma",
+      "expected_aliases": [
+        "def-sigma"
+      ]
+    },
+    {
+      "id": "q009",
+      "query": "definition tau",
+      "expected_aliases": [
+        "def-tau"
+      ]
+    },
+    {
+      "id": "q010",
+      "query": "definition phi",
+      "expected_aliases": [
+        "def-phi"
+      ]
+    },
+    {
+      "id": "q011",
+      "query": "linear-scaling-hypothesis",
+      "expected_aliases": [
+        "hyp-0"
+      ]
+    },
+    {
+      "id": "q012",
+      "query": "logarithmic-drift-hypothesis",
+      "expected_aliases": [
+        "hyp-1"
+      ]
+    },
+    {
+      "id": "q013",
+      "query": "threshold-behavior-hypothesis",
+      "expected_aliases": [
+        "hyp-2"
+      ]
+    },
+    {
+      "id": "q014",
+      "query": "independent-replicate-hypothesis",
+      "expected_aliases": [
+        "hyp-3"
+      ]
+    },
+    {
+      "id": "q015",
+      "query": "harmonic-trap-observable",
+      "expected_aliases": [
+        "obs-0"
+      ]
+    },
+    {
+      "id": "q016",
+      "query": "box-spectrum-observable",
+      "expected_aliases": [
+        "obs-1"
+      ]
+    },
+    {
+      "id": "q017",
+      "query": "shell-momentum-observable",
+      "expected_aliases": [
+        "obs-2"
+      ]
+    },
+    {
+      "id": "q018",
+      "query": "linear-scaling-agreement",
+      "expected_aliases": [
+        "claim-linear"
+      ]
+    },
+    {
+      "id": "q019",
+      "query": "threshold-consistency",
+      "expected_aliases": [
+        "claim-threshold"
+      ]
+    },
+    {
+      "id": "q020",
+      "query": "normalization-equivalence",
+      "expected_aliases": [
+        "claim-normalization"
+      ]
+    },
+    {
+      "id": "q021",
+      "query": "normalization-drift-issue",
+      "expected_aliases": [
+        "issue-0"
+      ]
+    },
+    {
+      "id": "q022",
+      "query": "threshold-ambiguity-issue",
+      "expected_aliases": [
+        "issue-1"
+      ]
+    },
+    {
+      "id": "q023",
+      "query": "metadata-gap-issue",
+      "expected_aliases": [
+        "issue-2"
+      ]
+    },
+    {
+      "id": "q024",
+      "query": "coarse-check-task",
+      "expected_aliases": [
+        "task-0"
+      ]
+    },
+    {
+      "id": "q025",
+      "query": "extrapolation-fit-task",
+      "expected_aliases": [
+        "task-1"
+      ]
+    },
+    {
+      "id": "q026",
+      "query": "source-locate-task",
+      "expected_aliases": [
+        "task-2"
+      ]
+    },
+    {
+      "id": "q027",
+      "query": "replicate-run-task",
+      "expected_aliases": [
+        "task-3"
+      ]
+    },
+    {
+      "id": "q028",
+      "query": "fit-window-decision",
+      "expected_aliases": [
+        "decision-0"
+      ]
+    },
+    {
+      "id": "q029",
+      "query": "seed-policy-decision",
+      "expected_aliases": [
+        "decision-1"
+      ]
+    },
+    {
+      "id": "q030",
+      "query": "synthetic methodology note",
+      "expected_aliases": [
+        "source-note"
+      ]
+    },
+    {
+      "id": "q031",
+      "query": "extrapolation-fit-result",
+      "expected_aliases": [
+        "artifact-fit"
+      ]
+    },
+    {
+      "id": "q032",
+      "query": "fixture-extrapolation study",
+      "expected_aliases": [
+        "study-fixture"
+      ]
+    },
+    {
+      "id": "q033",
+      "query": "fixture-host resource",
+      "expected_aliases": [
+        "resource-fixture"
+      ]
+    },
+    {
+      "id": "q034",
+      "query": "estimator bootstrap uncertainty",
+      "expected_aliases": [
+        "artifact-fit"
+      ]
+    },
+    {
+      "id": "q035",
+      "query": "convention reconsideration",
+      "expected_aliases": [
+        "decision-0"
+      ]
+    },
+    {
+      "id": "q036",
+      "query": "cutoff regularization lambda",
+      "expected_aliases": [
+        "def-lambda"
+      ]
+    },
+    {
+      "id": "q037",
+      "query": "renormalization mu",
+      "expected_aliases": [
+        "def-mu"
+      ]
+    },
+    {
+      "id": "q038",
+      "query": "spectral density rho",
+      "expected_aliases": [
+        "def-rho"
+      ]
+    },
+    {
+      "id": "q039",
+      "query": "correlation length nu",
+      "expected_aliases": [
+        "def-nu"
+      ]
+    },
+    {
+      "id": "q040",
+      "query": "order parameter phi",
+      "expected_aliases": [
+        "def-phi"
+      ]
+    },
+    {
+      "id": "q041",
+      "query": "statistical uncertainty sigma",
+      "expected_aliases": [
+        "def-sigma"
+      ]
+    },
+    {
+      "id": "q042",
+      "query": "autocorrelation time tau",
+      "expected_aliases": [
+        "def-tau"
+      ]
+    },
+    {
+      "id": "q043",
+      "query": "metadata gap resolution",
+      "expected_aliases": [
+        "issue-2"
+      ]
+    },
+    {
+      "id": "q044",
+      "query": "seed policy",
+      "expected_aliases": [
+        "decision-1"
+      ]
+    },
+    {
+      "id": "q045",
+      "query": "fit window stability",
+      "expected_aliases": [
+        "decision-0"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://research-kb.local/schemas/handoff.schema.json",
+  "title": "Session handoff",
+  "description": "Offline starter contract for a handoff payload. A handoff is a navigation aid, not a new authority over the records it references.",
+  "type": "object",
+  "required": ["summary", "next_step", "snapshot_cursor"],
+  "properties": {
+    "summary": { "type": "string", "minLength": 1, "maxLength": 10000 },
+    "next_step": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "snapshot_cursor": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "completed_refs": { "type": "array", "items": { "$ref": "#/$defs/ref" }, "maxItems": 500 },
+    "open_refs": { "type": "array", "items": { "$ref": "#/$defs/ref" }, "maxItems": 500 },
+    "pending_proposals": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "maxItems": 100
+    },
+    "in_flight_executions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "maxItems": 100
+    },
+    "unresolved_issues": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "maxItems": 100
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "ref": {
+      "type": "object",
+      "required": ["object_id"],
+      "properties": {
+        "object_id": { "type": "string", "minLength": 1 },
+        "revision": { "type": ["integer", "null"], "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

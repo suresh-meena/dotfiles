@@ -1,0 +1,15 @@
+name: research-kb
+version: "1.0.0"
+display_name: Research Knowledge Base
+short_description: Retrieve and maintain durable project knowledge with sources, evidence, and progress.
+long_description: >
+  Guides an agent through project-memory retrieval, capture, correction, evidence review, and
+  progress tracking for a research project. Live persistence requires the separately installed
+  Research KB runtime; this metadata file does not declare or imply a connected MCP endpoint.
+category: research
+tags:
+  - research
+  - knowledge-base
+  - provenance
+  - evidence
+entry_point: SKILL.md

@@ -1,0 +1,34 @@
+{
+  "operations": [
+    {
+      "op": "capture",
+      "payload": {
+        "kind": "knowledge",
+        "subkind": "idea",
+        "title": "Candidate improvement for the fitting window",
+        "state_json": {
+          "subkind": "idea",
+          "proposal": "Test whether excluding the smallest two sizes stabilizes the linear fit.",
+          "support_criteria": ["residual trend becomes flat"],
+          "contradiction_criteria": ["slope changes monotonically with the exclusion"]
+        }
+      }
+    },
+    {
+      "op": "link",
+      "payload": {
+        "predicate": "about",
+        "src_ref": {
+          "object_id": "00000000-0000-4000-8000-000000000001"
+        },
+        "dst_ref": {
+          "object_id": "00000000-0000-4000-8000-000000000002"
+        }
+      }
+    }
+  ],
+  "reason": "Record a new idea and relate it to the fitting question.",
+  "request_id": "example-proposal-1",
+  "persist": true,
+  "auto_apply": false
+}

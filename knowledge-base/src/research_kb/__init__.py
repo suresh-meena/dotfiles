@@ -1,0 +1,3 @@
+from research_kb.version import API_VERSION, SCHEMA_VERSION, RUNTIME_VERSION
+
+__all__ = ["API_VERSION", "SCHEMA_VERSION", "RUNTIME_VERSION"]

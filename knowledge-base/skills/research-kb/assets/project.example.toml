@@ -1,0 +1,28 @@
+# Example project routing file. Committed to the repository; never place secrets here.
+# The runtime writes this file during `rkb init`; this copy documents the accepted fields.
+
+[project]
+# Server-generated UUID. Human labels are project-scoped aliases, never primary keys.
+id = "00000000-0000-4000-8000-000000000000"
+name = "Example research project"
+# Optional short namespace used for human display and result prefixes.
+namespace = "example"
+
+[state]
+# State root for this project. Relative paths resolve against the repository root.
+# The default keeps the knowledge base inside the working directory.
+root = ".research/state"
+# Set to true only when an operator deliberately places the state store outside the repo.
+explicit_external = false
+
+[controller]
+# Local mode uses the shared CLI/Python service; controller mode uses an authenticated service.
+transport = "cli"
+# API compatibility range understood by this routing file.
+api_range = ">=1.0,<2.0"
+# Optional endpoint for a controller or MCP transport. Empty means local CLI only.
+endpoint = ""
+
+[display]
+# Display timezone only; stored provenance remains UTC.
+timezone = "UTC"

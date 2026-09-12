@@ -1,0 +1,8 @@
+# Validation helpers for the research-kb skill package.
+# Core scripts (doctor.py, validate_payload.py, lint_skill.py, kb_validation.py) use only the
+# Python standard library and run without these packages. Listed dependencies add stronger
+# JSON Schema validation for callers that have them installed.
+#
+# Do not install automatically: obtain authorization first.
+jsonschema>=4.20
+pytest>=8.0

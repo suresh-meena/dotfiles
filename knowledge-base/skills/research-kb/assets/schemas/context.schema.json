@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://research-kb.local/schemas/context.schema.json",
+  "title": "Context request",
+  "description": "Offline starter contract for an rkb_context request. The response includes snapshot cursor, completeness flags, and retrieval limitations.",
+  "type": "object",
+  "required": ["mode"],
+  "properties": {
+    "mode": {
+      "enum": ["lookup", "question", "claim_evidence", "history", "progress", "next_work", "source_read"]
+    },
+    "query": { "type": ["string", "null"], "maxLength": 2000 },
+    "focus_refs": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "oneOf": [
+          { "type": "string", "minLength": 1 },
+          {
+            "type": "object",
+            "required": ["object_id"],
+            "properties": {
+              "object_id": { "type": "string", "minLength": 1 },
+              "revision": { "type": ["integer", "null"], "minimum": 1 },
+              "anchor_id": { "type": ["string", "null"] },
+              "line_start": { "type": ["integer", "null"], "minimum": 1 },
+              "line_end": { "type": ["integer", "null"], "minimum": 1 }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "budget_tokens": { "type": ["integer", "null"], "minimum": 1, "maximum": 1000000 },
+    "as_of_cursor": { "type": ["string", "null"] },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+  },
+  "additionalProperties": false
+}

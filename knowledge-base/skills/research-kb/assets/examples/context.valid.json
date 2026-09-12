@@ -1,0 +1,11 @@
+{
+  "mode": "claim_evidence",
+  "focus_refs": [
+    {
+      "object_id": "00000000-0000-4000-8000-000000000010",
+      "revision": 3
+    }
+  ],
+  "budget_tokens": 6000,
+  "limit": 40
+}

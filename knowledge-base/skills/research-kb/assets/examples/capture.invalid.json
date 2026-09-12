@@ -1,0 +1,14 @@
+{
+  "op": "capture",
+  "payload": {
+    "kind": "knowledge",
+    "subkind": "definition",
+    "title": "Incomplete definition missing the meaning field",
+    "state_json": {
+      "subkind": "definition",
+      "symbol": "a",
+      "namespace": "lattice"
+    },
+    "unknown_extra_field": true
+  }
+}
