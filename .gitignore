@@ -46,6 +46,6 @@ __pycache__/
 *.egg-info/
 
 # Research KB local state (routing .research/project.toml is committed; the database stays local).
-.research/state/
-.research/spool/
-research-exports/
+**/.research/state/
+**/.research/spool/
+**/research-exports/
