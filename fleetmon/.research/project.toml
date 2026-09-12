@@ -1,0 +1,15 @@
+# Research KB project routing. Committed to the repository; no secrets here.
+[project]
+id = "504d5747-bd22-4b2a-96b8-2ea554b6e51b"
+name = "fleetmon"
+
+[state]
+root = ".research/state"
+explicit_external = false
+
+[controller]
+transport = "cli"
+api_range = ">=1.0,<2.0"
+
+[display]
+timezone = "UTC"

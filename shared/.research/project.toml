@@ -1,0 +1,15 @@
+# Research KB project routing. Committed to the repository; no secrets here.
+[project]
+id = "91be31cc-bc87-4374-863c-a695b0875625"
+name = "shared"
+
+[state]
+root = ".research/state"
+explicit_external = false
+
+[controller]
+transport = "cli"
+api_range = ">=1.0,<2.0"
+
+[display]
+timezone = "UTC"

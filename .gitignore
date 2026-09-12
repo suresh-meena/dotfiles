@@ -44,3 +44,8 @@ __pycache__/
 # modelctl runtime state.
 .modelctl/
 *.egg-info/
+
+# Research KB local state (routing .research/project.toml is committed; the database stays local).
+.research/state/
+.research/spool/
+research-exports/

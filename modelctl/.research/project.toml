@@ -1,0 +1,15 @@
+# Research KB project routing. Committed to the repository; no secrets here.
+[project]
+id = "17605777-43eb-43a2-9277-2f801cad6483"
+name = "modelctl"
+
+[state]
+root = ".research/state"
+explicit_external = false
+
+[controller]
+transport = "cli"
+api_range = ">=1.0,<2.0"
+
+[display]
+timezone = "UTC"

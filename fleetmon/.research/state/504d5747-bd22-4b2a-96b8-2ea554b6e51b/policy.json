@@ -1,0 +1,73 @@
+{
+  "capture": {
+    "allow_low_risk_auto_apply": true,
+    "allowed_import_roots": [],
+    "auto_capture_kinds": [
+      "idea",
+      "hypothesis",
+      "observation",
+      "interpretation",
+      "conclusion",
+      "negative_result",
+      "definition",
+      "assumption",
+      "derivation",
+      "method",
+      "decision",
+      "question",
+      "caveat",
+      "issue",
+      "claim"
+    ],
+    "default_record_state": "draft",
+    "import_scope": "explicit_only"
+  },
+  "execution": {
+    "adapters": [],
+    "allow_unrestricted_shell": false,
+    "enabled": false,
+    "max_walltime_seconds": 86400
+  },
+  "limits": {
+    "idempotency_retention_days": 365,
+    "max_context_records": 200,
+    "max_import_bytes": 100000000,
+    "max_page_size": 200,
+    "max_traversal_nodes": 500
+  },
+  "policy_name": "conservative",
+  "preservation": {
+    "allow_external_embedding": false,
+    "backup_frequency": "daily",
+    "retain_release_snapshots": true,
+    "source_capture": "explicit_only"
+  },
+  "provenance": {
+    "default_profile": "numerical",
+    "exploratory_gaps_allowed": true,
+    "require_clean_snapshot_for_paper_critical": true
+  },
+  "retrieval": {
+    "candidate_window": 50,
+    "embeddings": false,
+    "exact": true,
+    "external_embeddings_allowed": false,
+    "focused_budget_tokens": 8000,
+    "fts": true,
+    "orientation_budget_tokens": 3000,
+    "rrf_k": 60
+  },
+  "review": {
+    "auto_apply_low_risk": true,
+    "require_approval_for_default": [
+      "approve_selection",
+      "assess_evidence",
+      "execute_cancel",
+      "execute_launch",
+      "policy_change",
+      "resolve_critical",
+      "supersede",
+      "tombstone"
+    ]
+  }
+}
