@@ -1,6 +1,12 @@
 # Scientific review protocol
 
-Run the scientific pass before the prose pass.
+Run the scientific pass before the prose pass for a scientific review. Scale
+the pass to the request: a local prose edit needs a meaning check, not a full
+experiment audit. Return the requested draft or revision before optional notes.
+
+For an excerpt, assess only the evidence supplied. Say “not shown here” when
+the rest of the paper may contain the missing material. Ask for additional
+material only when it is needed to answer the user's actual question.
 
 ## Argument and contribution
 

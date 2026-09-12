@@ -125,3 +125,136 @@ def test_cli_exit_one_and_json_on_flagged_stdin():
 def test_cli_exit_two_on_missing_file(tmp_path: Path):
     proc = run_cli(str(tmp_path / "no-such-file.md"))
     assert proc.returncode == 2
+
+
+def test_editorial_is_default_and_findings_are_advisory():
+    text = (
+        "It is worth noting that we conduct an analysis. "
+        "In summary, the method is really exciting and yields better performance."
+    )
+    findings = prose_lint.lint_text(text, "draft.md")
+    assert findings == prose_lint.lint_text(text, "draft.md", "editorial")
+    assert {finding.rule for finding in findings} == {
+        "rhetorical-crutch", "nominalization", "summary-beat",
+        "filler-intensifier", "performed-enthusiasm", "vague-result",
+    }
+    assert all(finding.severity == "review" and finding.basis == "D" for finding in findings)
+
+
+@pytest.mark.parametrize("text", [
+    r"Under Assumption~\ref{ass:bounded}, $0 < \eta < 2/L$ is sufficient, not necessary, for stability.",
+    "Prior work analyzes a convex objective, whereas our guarantee assumes local smoothness.",
+    "We estimate paired differences rather than compare independent means.",
+    "The loss decreases; the constraint remains active.",
+    "We report accuracy, latency, and memory.",
+    "We reflect the vector across the constraint plane.",
+    "The confidence interval reflects uncertainty across five seeds.",
+    "No seed reaches the target. No run satisfies the constraint.",
+    "We fit the model. We test the model.",
+    "Overall accuracy increases by 2.4 points on the held-out split.",
+    r"The state space contains $n!$ permutations.",
+])
+def test_editorial_accepts_natural_scientific_constructions(text: str):
+    assert prose_lint.lint_text(text, "draft.tex", "editorial") == []
+
+
+@pytest.mark.parametrize(("text", "rule"), [
+    ("The bound is not global but local.", "corrective-negation"),
+    ("The baseline converges, whereas the variant diverges.", "contrast-pair"),
+    ("The loss decreases; the constraint remains active.", "parataxis-candidate"),
+    ("We report accuracy, latency, and memory.", "rule-of-three"),
+    ("We reflect the vector across the constraint plane.", "corporate-register"),
+    ("We fit the model. We test the model.", "uniform-sentence-length"),
+])
+def test_explicit_strict_keeps_existing_house_rules(text: str, rule: str):
+    findings = prose_lint.lint_text(text, "draft.md", "strict-house")
+    assert rule in {finding.rule for finding in findings}
+    assert all(finding.severity == "error" and finding.basis == "U" for finding in findings)
+    assert prose_lint.lint_text(text, "draft.md", "editorial") == []
+
+
+@pytest.mark.parametrize("profile", ["editorial", "strict-house"])
+def test_masking_preserves_source_columns(profile: str):
+    text = "  $x + y$ `code` https://example.org In summary, the estimate rises."
+    findings = prose_lint.lint_text(text, "draft.md", profile)
+    summary = next(finding for finding in findings if finding.rule == "summary-beat")
+    assert (summary.line, summary.column) == (1, text.index("In summary") + 1)
+
+
+def test_synthetic_masking_preserves_source_columns():
+    line = "$x$ `code` https://example.org The model has better performance."
+    findings = prose_lint.lint_text("\n".join([line] * 4), "draft.md", "synthetic-prose")
+    vague = next(finding for finding in findings if finding.rule == "A15")
+    assert (vague.line, vague.column) == (4, line.index("better performance") + 1)
+
+
+@pytest.mark.parametrize("path", ["draft.md", "draft.txt", "<stdin>"])
+def test_inline_percent_in_prose_does_not_hide_findings(path: str):
+    text = "Accuracy reaches 95%, which is remarkable."
+    findings = prose_lint.lint_text(text, path)
+    assert [finding.rule for finding in findings] == ["performed-enthusiasm"]
+    assert findings[0].column == text.index("remarkable") + 1
+
+
+@pytest.mark.parametrize("path", ["draft.tex", "draft.ltx", "draft.TEX"])
+def test_tex_comments_are_masked_but_escaped_percent_is_prose(path: str):
+    assert prose_lint.lint_text("Accuracy rises. % In summary, it is exciting!", path) == []
+    text = r"Accuracy reaches 95\%, which is remarkable."
+    findings = prose_lint.lint_text(text, path)
+    assert [finding.rule for finding in findings] == ["performed-enthusiasm"]
+    assert findings[0].column == text.index("remarkable") + 1
+
+
+def test_masked_lines_keep_original_lengths():
+    lines = [
+        "# Exciting heading", "```", "exciting code", "```",
+        r"\[", "exciting math", r"\]", "$x$ `code` https://example.org",
+        "% exciting comment", "The estimate rises. % exciting comment",
+    ]
+    assert [len(line) for line in prose_lint.mask_nonprose(lines, "draft.tex")] == [
+        len(line) for line in lines
+    ]
+
+
+def test_cli_default_json_uses_advisory_findings():
+    proc = run_cli("--format", "json", stdin_text="The method yields better performance.")
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    payload = json.loads(proc.stdout)
+    assert len(payload) == 1
+    assert payload[0] == {
+        "path": "<stdin>", "line": 1, "column": 19, "rule": "vague-result",
+        "severity": "review", "basis": "D",
+        "message": "Check that nearby text supplies the metric, comparison, and setting for this result.",
+        "excerpt": "The method yields better performance.",
+    }
+    assert not proc.stderr
+
+
+def test_cli_default_and_explicit_strict_remain_distinct():
+    text = "We report accuracy, latency, and memory."
+    advisory = run_cli("--format", "json", stdin_text=text)
+    strict = run_cli("--format", "json", "--profile", "strict-house", stdin_text=text)
+    assert advisory.returncode == 0, advisory.stdout + advisory.stderr
+    assert json.loads(advisory.stdout) == []
+    assert strict.returncode == 1, strict.stdout + strict.stderr
+    findings = json.loads(strict.stdout)
+    assert {finding["rule"] for finding in findings} == {"rule-of-three"}
+    assert all(finding["severity"] == "error" and finding["basis"] == "U" for finding in findings)
+
+
+def test_cli_explicit_editorial_and_synthetic_profiles():
+    text = "Moreover, the method shows better performance.\n" * 5
+    editorial = run_cli("--format", "json", "--profile", "editorial", stdin_text=text)
+    synthetic = run_cli("--format", "json", "--profile", "synthetic-prose", stdin_text=text)
+    assert editorial.returncode == synthetic.returncode == 1
+    assert {item["rule"] for item in json.loads(editorial.stdout)} == {"vague-result"}
+    assert {item["rule"] for item in json.loads(synthetic.stdout)} == {"A03", "A15"}
+
+
+def test_cli_exit_two_on_invalid_utf8(tmp_path: Path):
+    target = tmp_path / "invalid.md"
+    target.write_bytes(b"\xff")
+    proc = run_cli("--format", "json", str(target))
+    assert proc.returncode == 2
+    assert str(target) in proc.stderr
+    assert not proc.stdout

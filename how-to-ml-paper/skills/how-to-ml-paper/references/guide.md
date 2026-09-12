@@ -57,7 +57,10 @@ Briefly restate what was established and how. Future work may identify plausible
 
 ## Paragraph-first workflow
 
-Start with one sentence per intended paragraph. Each sentence states one idea, not merely a topic. Reorder, merge, or delete these messages until the logical flow works. This is the inexpensive moment for collaborator feedback.
+For a new section or structural rewrite, start with one sentence per intended
+paragraph. Each sentence states one idea, not merely a topic. Reorder, merge,
+or delete these messages until the logical flow works. For a local edit, work
+directly on the supplied paragraph when its purpose is already clear.
 
 Then expand each message into prose. In LaTeX, retaining it as a comment can make structure visible during review:
 
@@ -67,6 +70,68 @@ Existing methods assume ...
 ```
 
 The paragraph should express its message as simply and clearly as the technical content allows. Comments are scaffolding: retain them for collaboration if helpful, and remove them if the venue or authors prefer clean source.
+
+## Turning notes into paper prose
+
+The following drafting practices are local editorial guidance (D), informed by
+the reader-oriented principles above. They are not attributed quotations or
+experimentally validated writing rules.
+
+### Choose the controlling point
+
+Decide which relationship the passage needs to explain. An abstract might center
+on an accuracy/latency tradeoff; a method paragraph on why a routing decision
+can be made before expensive computation; a results paragraph on when a method
+stops helping. This determines what to include. Do not fit every note into the
+same amount of space or force every section into problem/obstacle/method/result.
+
+### Explain the method before evaluating it
+
+An acronym or a label such as “adaptive framework” does not explain an operation.
+State what information a component receives, what it changes, and how that
+change connects to the research problem. Include only the implementation detail
+needed for this passage; leave a complete specification to the method section.
+Describe an algorithm's defined operation confidently. Claims about why it
+improves an outcome still require evidence.
+
+### Turn the result into a comparison
+
+Name the baseline, metric, magnitude, and tested conditions. Keep paired facts
+together when the reader needs both: latency with accuracy, quality with compute,
+or a theorem with its assumptions. Distinguish percentage points from relative
+percent changes, latency from throughput, and an observed difference from
+statistical significance or equivalence.
+
+A useful interpretation explains what a comparison lets the reader conclude.
+It may identify a tradeoff or eliminate a proposed explanation. “These results
+demonstrate the effectiveness of our approach” adds neither. Include uncertainty
+where it changes the result's interpretation, rather than attaching a general
+caveat to every sentence.
+
+### Allocate detail by section
+
+- In an abstract, explain the central operation and headline evidence. Include
+  a comparison that makes the contribution legible. Put secondary tuning details
+  in experimental setup unless they are themselves central to the claim.
+- In an introduction, develop the actual obstacle and the method's response to
+  it. A broad field-history opening is useful only if the target reader needs it.
+  Do not claim prior methods fail without supporting literature or experiments.
+- In a method section, introduce the input, output, and role of each component
+  before its notation; state how the components connect. Prefer definitions and
+  dependencies to adjectives such as “principled” or “powerful.”
+- In results, begin with the question answered by the comparison, explain its
+  outcome, and bound the interpretation. Do not narrate every table cell.
+- In related work, compare assumptions or operations using verified sources.
+  If sources are missing, ask for them or mark the unresolved comparison; do not
+  fabricate a category of prior work to make the contribution look novel.
+
+### Revise the author's prose
+
+Keep effective sentences. Preserve the author's terminology, useful emphasis,
+and level of formality. First repair order, missing relationships, or ambiguity;
+then edit wording. When the user asks for a small edit, avoid a full rewrite
+unless a local change cannot fix the problem. Compare the revision with the
+source for changes in certainty, scope, causality, and theorem conditions.
 
 ## Evidence and claim checks
 

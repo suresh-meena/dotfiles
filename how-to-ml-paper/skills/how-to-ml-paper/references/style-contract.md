@@ -1,46 +1,82 @@
 # Prose style contract
 
-Apply this contract to prose drafted or rewritten for the paper.
+The default is clear scientific prose with the author's voice intact. The
+editorial practices below are local heuristics (D), not universal laws of good
+writing. Explicit user preferences take precedence over these defaults.
 
-## Precedence
+## Meaning comes first
 
-Preserve factual accuracy, mathematical meaning, direct quotations, required venue syntax, and precise scientific scope. Keep qualifications that specify a population, assumption, probability, confidence interval, effect size, or source of uncertainty. Preserve logically necessary negation, negative results, theorem conditions, limitations, and comparison targets.
+Preserve numbers, units, mathematical meaning, citation keys, cross-references,
+comparison targets, and conditions under which a claim holds. Keep qualifications
+that specify uncertainty, a population, an assumption, or a limitation. “Not
+established” must not become “false,” a sufficient condition must not become a
+necessary condition, and an observed association must not become an explanation.
+Terminological consistency takes precedence over lexical variety.
 
-Resolve a surface violation through a new sentence shape. Record any remaining exception in the review. Terminological consistency outranks lexical variety.
+Do not supply a plausible mechanism, baseline, or measurement to make a rewrite
+sound specific. When evidence is missing, narrow the claim or identify the gap
+outside the requested prose. Preserve evidence-bearing clauses during compression.
 
-## Strict house profile
+## Make the prose belong to this paper
 
-The explicit house voice excludes:
+- Start at the concrete problem, observation, or decision the reader needs now.
+  Replace broad importance claims with the actual setting or constraint when it
+  is known. Delete generic context when no useful detail supports it.
+- Explain actions. “We use an adaptive module” leaves the method hidden; say
+  what changes, what information drives the change, and where it occurs.
+- Connect facts through their scientific relationship. A baseline can expose a
+  tradeoff; an ablation can test an attribution; a failure can bound a result.
+  A sequence of accurate sentences still needs a reason for that ordering.
+- Give the reader enough interpretation to understand the comparison. Keep an
+  ending that adds a consequence or boundary; remove a restatement that merely
+  calls the method effective, promising, or important.
+- Attach qualifications to the claim they limit. State established observations
+  directly, with uncertainty where the evidence requires it. Repeating “may,”
+  “potentially,” or “in this setting” does not improve calibration by itself.
 
-- antithesis and corrective-negation templates;
-- paragraph announcements, paragraph recaps, and delayed payoff;
-- paratactic strings whose logical relationship stays implicit;
-- rhetorical crutches, negative anaphora, and balanced contrast pairs;
-- three-part rhetorical enumeration and em dashes;
-- setup/payoff mini-dramas and repeated sentence frames;
-- stacked noun phrases and filler intensifiers;
-- corporate-register verbs and avoidable nominalizations;
-- empty hedges, performed enthusiasm, and patterned sentence lengths.
+## Preserve a natural technical voice
 
-Write for the spoken voice. Use concrete verbs and familiar words. Let technical information determine the paragraph's shape. Vary sentence length and grammar without a visible cycle. Enter through substantive content. Stop after the final useful fact or analysis.
+Keep a good sentence when it already does its job. Follow the surrounding text's
+terminology, level of formality, and use of first person. A sample the author
+likes is more useful than a generic instruction to sound academic.
 
-## Synthetic-prose profile
+Use grammatical relationships the argument needs. A contrast can state a real
+method difference; negation can preserve a theorem condition; a three-item list
+can enumerate exactly three measurements. Sentence length follows the complexity
+of the idea. Do not split connected clauses or change a technical verb merely
+to avoid a surface pattern. Do not add conversational flourishes, dramatic
+questions, fragments, or manufactured irregularity to make prose seem human.
 
-Inspect repetition, density, and document-level regularity. A single connector, contrast, adjective, triad, or summary sentence provides weak evidence. Report clusters and repeated templates.
+When a draft feels generic, first change its information and organization.
+Replacing “leverage” with “use” leaves an unexplained method unexplained.
+Read the revised paragraph as a whole, including the paragraphs around it when
+available. Check what each sentence adds and what its pronouns refer to.
 
-High-value signals include repeated paragraph architecture, redundant interpretive closure, connector saturation, unsupported importance words, recurring contrast templates, rhetorical negative repetition, setup/payoff boilerplate, repeated syntactic skeletons, document-navigation prose, rhetorical questions, restated claims, unsupported causal explanations, symmetrical limitation neutralization, excessive triads, and vague result language.
+## Linter profiles
 
-Use these signals to improve prose. Never label a passage as AI-authored.
+Use the linter as an optional review aid, after drafting. It cannot assess
+scientific validity, author voice, or whether a paragraph develops an argument.
+Its output is never evidence of authorship.
 
-## Manual pass
+- **`editorial` (default):** advisory checks for generic, promotional, or vague
+  prose. Findings use `review` severity and local-heuristic provenance `D`.
+  Inspect the passage before changing it; even a flagged phrase can be justified.
+- **`strict-house` (explicit opt-in):** the existing restrictive house profile,
+  including contrast templates, semicolons, em dashes, triads, repeated openings,
+  and similar sentence lengths. Apply it only when the user requests that style.
+  Its `error`/`U` labels denote profile conventions, not scientific defects.
+  Preserve necessary meaning even when a convention cannot be satisfied.
+- **`synthetic-prose`:** inspect clusters of repeated patterns in longer drafts.
+  A repeated form can express a real parallel; a single connector or contrast is
+  weak evidence. Never rewrite merely to obtain a particular pattern count.
 
-Read the prose aloud. Find paragraphs that feel staged, balanced, slogan-like, or uniformly polished. Check whether each transition carries information. Replace importance labels with evidence. Trace explanatory claims to measurements or controlled tests. Preserve unevenness when the scientific content has uneven importance.
-
-Run the linter from the skill directory:
+From the skill directory:
 
 ```bash
+python scripts/prose_lint.py --profile editorial paper.tex
 python scripts/prose_lint.py --profile strict-house paper.tex
 python scripts/prose_lint.py --profile synthetic-prose paper.tex
 ```
 
-The linter catches surface patterns. Human judgment remains necessary for discourse roles, semantic restatement, noun stacking, and causal support.
+A clean lint result is not a quality score. A useful final pass checks meaning,
+paragraph flow, specificity, and the requested format and length.

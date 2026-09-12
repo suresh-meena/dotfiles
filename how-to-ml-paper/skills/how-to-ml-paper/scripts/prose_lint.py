@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flag house-style violations and repeated synthetic-prose patterns."""
+"""Suggest prose edits, with optional strict-house and repetition checks."""
 
 from __future__ import annotations
 
@@ -99,6 +99,31 @@ LINE_RULES = (
     ),
 )
 
+
+# Editorial findings invite a contextual review; strict rules remain opt-in.
+EDITORIAL_MESSAGES = {
+    "rhetorical-crutch": "Consider starting with the substantive claim if this phrase adds no information.",
+    "filler-intensifier": "Check whether this intensifier adds precision; remove it if it does not.",
+    "performed-enthusiasm": "Check whether the evidence supports this emphasis; a measured result may be clearer.",
+    "nominalization": "Consider using the verb carried by the noun if the revision reads more naturally.",
+}
+EDITORIAL_RULES = tuple(
+    Rule(rule.name, rule.pattern, EDITORIAL_MESSAGES[rule.name])
+    for rule in LINE_RULES
+    if rule.name in EDITORIAL_MESSAGES
+) + (
+    compile_rule(
+        "summary-beat",
+        r"\b(?:in summary|to summarize|in conclusion|all in all|taken together|to sum up)\b",
+        "Check whether the recap adds an inference or useful synthesis; trim it if it only repeats the evidence.",
+    ),
+    compile_rule(
+        "vague-result",
+        r"\b(?:better performance|strong performance|significant improvement|meaningful improvement|robust generalization|promising results)\b",
+        "Check that nearby text supplies the metric, comparison, and setting for this result.",
+    ),
+)
+
 THROAT_OPENERS = re.compile(
     r"^\s*(?:this (?:section|paper|paragraph) (?:discusses|presents|describes|shows|explores)|"
     r"in this (?:section|paper|paragraph),|there (?:are|is) several|when it comes to|"
@@ -110,38 +135,43 @@ SENTENCE_RE = re.compile(r"(?<=[.!?])(?:[\"'”’)}\]]*)\s+")
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
 
 
-def mask_nonprose(lines: list[str]) -> list[str]:
-    """Mask fenced code, LaTeX comments, display math, and Markdown headings."""
+def mask_nonprose(lines: list[str], path: str = "<stdin>") -> list[str]:
+    """Mask nonprose without shifting columns; inline comments require a TeX path."""
     masked: list[str] = []
     in_fence = False
     in_display_math = False
+    is_latex = Path(path).suffix.lower() in {".tex", ".ltx"}
+
+    def blank(match: re.Match[str]) -> str:
+        return " " * len(match.group())
+
     for line in lines:
         stripped = line.lstrip()
         if stripped.startswith("```") or stripped.startswith("~~~"):
             in_fence = not in_fence
-            masked.append("")
+            masked.append(" " * len(line))
             continue
         if in_fence:
-            masked.append("")
+            masked.append(" " * len(line))
             continue
         if stripped.startswith("\\[") or stripped.startswith("$$"):
             in_display_math = True
-            masked.append("")
+            masked.append(" " * len(line))
             if stripped.count("$$") >= 2 or "\\]" in stripped:
                 in_display_math = False
             continue
         if in_display_math:
-            masked.append("")
+            masked.append(" " * len(line))
             if "\\]" in stripped or "$$" in stripped:
                 in_display_math = False
             continue
         if stripped.startswith(("#", "%")):
-            masked.append("")
+            masked.append(" " * len(line))
             continue
-        text = re.sub(r"(?<!\\)%.*$", "", line)
-        text = re.sub(r"`[^`]*`", "", text)
-        text = re.sub(r"https?://\S+", "", text)
-        text = re.sub(r"\$[^$]+\$", "", text)
+        text = re.sub(r"(?<!\\)%.*$", blank, line) if is_latex else line
+        text = re.sub(r"`[^`]*`", blank, text)
+        text = re.sub(r"https?://\S+", blank, text)
+        text = re.sub(r"\$[^$]+\$", blank, text)
         masked.append(text)
     return masked
 
@@ -191,9 +221,23 @@ def sentence_records(lines: list[str], start: int, end: int) -> list[tuple[str, 
     return records
 
 
+def lint_editorial(text: str, path: str) -> list[Finding]:
+    original = text.splitlines()
+    lines = mask_nonprose(original, path)
+    findings: list[Finding] = []
+    for line_index, line in enumerate(lines):
+        for rule in EDITORIAL_RULES:
+            for match in rule.pattern.finditer(line):
+                add_finding(
+                    findings, path, original, line_index, match.start(), rule.name,
+                    rule.message, severity="review", basis="D",
+                )
+    return sorted(findings, key=lambda item: (item.path, item.line, item.column, item.rule))
+
+
 def lint_strict(text: str, path: str) -> list[Finding]:
     original = text.splitlines()
-    lines = mask_nonprose(original)
+    lines = mask_nonprose(original, path)
     findings: list[Finding] = []
 
     for line_index, line in enumerate(lines):
@@ -270,7 +314,7 @@ def offset_location(text: str, offset: int) -> tuple[int, int]:
 
 def lint_synthetic(text: str, path: str) -> list[Finding]:
     original = text.splitlines()
-    masked_lines = mask_nonprose(original)
+    masked_lines = mask_nonprose(original, path)
     masked = "\n".join(masked_lines)
     findings: list[Finding] = []
     word_count = len(WORD_RE.findall(masked))
@@ -318,7 +362,9 @@ def lint_synthetic(text: str, path: str) -> list[Finding]:
     return sorted(findings, key=lambda item: (item.path, item.line, item.column, item.rule))
 
 
-def lint_text(text: str, path: str, profile: str) -> list[Finding]:
+def lint_text(text: str, path: str, profile: str = "editorial") -> list[Finding]:
+    if profile == "editorial":
+        return lint_editorial(text, path)
     if profile == "strict-house":
         return lint_strict(text, path)
     return lint_synthetic(text, path)
@@ -326,11 +372,14 @@ def lint_text(text: str, path: str, profile: str) -> list[Finding]:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Flag deterministic violations of the how-to-ml-paper prose contract."
+        description="Suggest context-sensitive prose edits; strict-house checks require an explicit profile."
     )
     parser.add_argument("paths", nargs="*", help="UTF-8 text, Markdown, or LaTeX files. Reads stdin when omitted.")
     parser.add_argument("--format", choices=("text", "json"), default="text", dest="output_format")
-    parser.add_argument("--profile", choices=("strict-house", "synthetic-prose"), default="strict-house")
+    parser.add_argument(
+        "--profile", choices=("editorial", "strict-house", "synthetic-prose"), default="editorial",
+        help="Check advisory prose signals (default), explicit house rules, or repeated patterns.",
+    )
     return parser.parse_args(argv)
 
 

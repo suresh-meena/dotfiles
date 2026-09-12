@@ -39,4 +39,13 @@ Access dates below are 2026-09-04 unless noted. Use canonical links and retrieve
 - Repeated paragraph geometry, redundant closure, negative anaphora density, triad density, and uniform rhetorical polish remain revision heuristics.
 - Lipton and Steinhardt, [Troubling Trends in Machine Learning Scholarship](https://arxiv.org/abs/1807.03341), 2018. Methodological criticism supporting separation of observation and speculation; it is not controlled empirical evidence for a detector.
 
-The cited detection studies predate rigorous comparison of Claude Opus 5, Claude Fable 5, and GPT-5.6. Product availability does not establish a prose fingerprint. Never attribute authorship or model identity from these rules.
+The positive drafting workflow, worked synthetic revisions, and default
+`editorial` linter profile are local editorial practices (D). They do not inherit
+empirical validation from the studies above. The strict-house conventions apply
+as user policy (U) only when the user requests that profile. Writing trials in
+`how-to-ml-paper/evals/` document limited observations, not general performance
+guarantees.
+
+The detection studies concern particular corpora and methods. They do not
+establish an authorship test for an individual passage. Never attribute
+authorship or model identity from these revision signals.
