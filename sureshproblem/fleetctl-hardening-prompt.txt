@@ -1,0 +1,280 @@
+We need to harden the existing fleetctl / remote-fleet-operator system for a very large and heterogeneous GPU fleet.
+
+Repository:
+- Root: the current dotfiles checkout
+- CLI: shared/fleet-dotfiles/bin/fleetctl
+- Skill: shared/fleet-dotfiles/codex/skills/remote-fleet-operator/SKILL.md
+- Documentation: shared/fleet-dotfiles/docs/bin/fleetctl.md
+- Related monitoring project: fleetmon/
+
+First, read the existing CLI, skill, documentation, tests, and configuration schema completely. Do not immediately redesign the system. Identify the current architecture, guarantees, limitations, and compatibility constraints.
+
+The system must support:
+
+1. Very large fleets
+
+Design for hundreds or thousands of machines, not only a handful of hosts.
+
+Requirements:
+
+- Bounded concurrency for fan-out operations.
+- Per-host and per-route concurrency limits.
+- Bridge-aware throttling.
+- Avoid opening one uncontrolled SSH process per host.
+- Support batching, pagination, streaming output, and summary reporting.
+- Preserve host identity in every result.
+- Report ok, failed, refused, timeout, unreachable, and skipped separately.
+- Never silently omit hosts.
+- Produce a final summary showing requested, resolved, attempted, successful, failed, refused, unreachable, and skipped targets.
+- Make partial failures explicit.
+- Ensure exit codes are useful in automation.
+- Do not retry non-idempotent operations such as sbatch, srun, file deletion, or arbitrary user commands unless the operation has not started and retrying is provably safe.
+- Add retry and backoff only where safe, configurable, and observable.
+- Avoid retrying a command after a remote command may already have started.
+- Add timeouts at connection, command, scheduler submission, polling, and log-streaming layers.
+- Make concurrency and timeout settings configurable rather than hard-coded.
+- Keep memory bounded when processing very large inventories.
+- Do not load unnecessary full-fleet data into memory for every command.
+
+2. Heterogeneous execution environments
+
+Support:
+
+- Direct bare-metal hosts.
+- NVIDIA GPU hosts.
+- AMD GPU hosts.
+- CPU-only hosts.
+- Slurm login nodes.
+- Slurm controller or administrative surfaces.
+- Slurm compute nodes.
+- Hosts reached through bridges or bastions.
+- Sites where direct SSH execution is allowed.
+- Sites where compute must always go through Slurm.
+
+Distinguish transport reachability, host role, hardware capabilities, scheduler capabilities, policy permissions, and runtime/container capabilities. Do not infer that a host is safe for compute merely because SSH works.
+
+3. GPU vendor and hardware modeling
+
+Support capability fields such as:
+
+- gpu_vendor: nvidia, amd, none, or unknown
+- gpu_model
+- gpu_count
+- gpu_memory_gb
+- gpu_memory_total_gb
+- gpu_arch
+- gpu_compute_capability for NVIDIA where available
+- gpu_gfx_arch for AMD where available
+- mig_enabled
+- mig_profile
+- gpu_partition
+- nvlink
+- infiniband
+- pcie_generation
+- numa_nodes
+- cpus
+- memory_gb
+- local_nvme_gb
+- os
+- kernel
+- container_runtime
+
+Requirements:
+
+- Do not treat NVIDIA-specific fields as universal.
+- Do not treat AMD-specific fields as universal.
+- An undeclared capability must not satisfy a requirement.
+- Capability matching must support vendor-aware requirements.
+- A request for NVIDIA must never match AMD.
+- A request for AMD must never match NVIDIA.
+- Handle multiple GPU models on one host conservatively.
+- Clearly distinguish physical GPUs, MIG devices, Slurm GPU allocations, and logical devices.
+- Preserve declared inventory as authoritative.
+- Treat probing as drift detection, not automatic scheduling authority.
+- Do not allow stale probe results to silently override inventory declarations.
+
+Support safe discovery commands where available:
+
+NVIDIA: nvidia-smi, nvidia-smi -L, nvidia-smi --query-gpu=..., and MIG information.
+AMD: amd-smi, rocm-smi, and rocminfo.
+Generic: lspci, lsmod, uname, lscpu, free, numactl, df, and ibstat or equivalent.
+
+Discovery must detect missing commands cleanly, avoid failing a valid host because an optional tool is unavailable, mark facts as observed/declared/unknown, support targeted or sampled probes, use bounded parallelism, and never expose secrets or sensitive connection data.
+
+4. Slurm support
+
+Treat Slurm as a first-class scheduler, not merely as an arbitrary submit command.
+
+Support site-specific configuration for login access, partitions, accounts, QoS, reservations, constraints, features, GRES, TRES, GPU types, CPU and memory limits, walltime, mail policy, modules, containers, native batch requirements, and site-specific submit/status/log/cancel commands.
+
+Support where appropriate:
+
+- sinfo
+- squeue
+- scontrol
+- sbatch
+- srun
+- salloc
+- sacct
+- scancel
+
+Model the distinction between submitting from a login node, interactive srun, salloc, sbatch, job inspection, partition inspection, node inspection, and compute-node execution.
+
+Safety rules:
+
+- Never run training or arbitrary compute directly on a Slurm login node.
+- A login target may expose scheduler control-plane commands but must not be treated as a compute target.
+- Use fleetctl submit for batch jobs.
+- Use fleetctl exec --admin only for explicitly permitted control-plane inspection.
+- Refuse unsafe direct execution with a useful explanation and correct alternative.
+- Preserve native Slurm scripts when native_batch_required is true.
+- Do not submit the same job twice because of retries or route fallback.
+- Track submission identity and job IDs.
+- Support job status, logs, cancellation, and accounting.
+- Handle pending, running, completed, failed, cancelled, timeout, node failure, out-of-memory, and preempted states.
+- Distinguish scheduler refusal from SSH failure.
+- Validate requested vendor, GPU type, GPU count, CPUs, memory, and walltime before connecting or submitting.
+- Support --gres=gpu:<type>:<count>, --gpus, --gpus-per-node, --gpus-per-task, --constraint, --partition, --account, --qos, --cpus-per-task, --mem, and --time.
+
+Do not assume every Slurm site uses identical GPU syntax. Put site-specific behavior in protocols or profiles, not scattered conditionals.
+
+5. Bare-metal support
+
+For direct bare-metal GPU machines:
+
+- Permit direct execution only when the target role allows it.
+- Verify the declared work directory.
+- Support argv-safe direct execution.
+- Support staged scripts for complex commands.
+- Support synchronization with dry-run mode.
+- Support vendor-specific health checks.
+- Detect whether GPUs are visible to the current user.
+- Report driver/runtime mismatches without claiming the host is healthy.
+- Support Apptainer/Singularity or Docker only when explicitly configured.
+- Do not invent container commands from host probing.
+
+6. Inventory and configuration design
+
+Keep secrets and private connection material out of Git. Preserve the existing concepts where possible: targets, pools, protocols, profiles, project bindings, secrets, routes, capabilities, queues, job ledger, and state directory.
+
+Requirements:
+
+- Strict validation.
+- Unknown keys fail with actionable errors.
+- Configuration migrations are explicit and safe.
+- Preserve backward compatibility where reasonable.
+- Version the schema if required.
+- Support tags such as gpu, nvidia, amd, slurm, baremetal, login, compute, production, and training.
+- Support pool selection by tags and capabilities.
+- Make target selection deterministic.
+- Never silently select another host when the user named a specific target.
+- Make --fit behavior explainable and deterministic.
+- If multiple candidates match, choose by a documented deterministic policy or refuse without --fit.
+
+7. Operational safety
+
+Preserve and strengthen these principles:
+
+- Prefer fleetctl over raw SSH.
+- Never bypass a fleetctl refusal with raw SSH.
+- Never use --admin merely to make a refusal disappear.
+- Treat role restrictions as hard safety boundaries.
+- Keep routing declarative.
+- Prefer direct routes before bridge routes where configured.
+- Do not re-route an already-started command.
+- Do not retry a possibly submitted scheduler job.
+- Require --dry-run for first-time submissions and destructive sync operations.
+- Make plans inspectable before execution.
+- Avoid leaking hostnames, usernames, tokens, passwords, private keys, or secret command output.
+- Use restrictive permissions for state, facts, job ledgers, and generated configuration.
+- Log enough for auditing without logging sensitive data.
+
+8. Skill design
+
+Update shared/fleet-dotfiles/codex/skills/remote-fleet-operator/SKILL.md so it becomes a reliable operating manual for Codex.
+
+The skill must explain:
+
+- First checks to perform.
+- How to identify direct bare-metal versus Slurm environments.
+- How to distinguish login, bridge, compute, storage, and workstation roles.
+- How to select NVIDIA versus AMD targets.
+- How to use capabilities and queues.
+- How to run bounded fleet-wide read-only checks.
+- How to avoid unsafe fan-out submissions.
+- How to handle large-fleet partial failure.
+- How to use dry runs.
+- How to inspect and report scheduler jobs.
+- When raw SSH is permitted for debugging.
+- How to report uncertainty.
+- How to avoid claiming that an unprobed or unreachable host is healthy.
+- How to use the site-specific Slurm instructions below.
+
+Do not make the skill generic. Include concrete command examples based on the actual fleetctl interface.
+
+9. User-provided Slurm instructions
+
+I will provide site-specific Slurm and cluster instructions below. Treat them as authoritative for this task, but validate them against the current code and configuration model.
+
+USER SLURM INSTRUCTIONS BEGIN
+Use the supplied document at sureshproblem/AMD Server.pdf and its extracted
+fleetctl context at:
+shared/fleet-dotfiles/codex/skills/remote-fleet-operator/references/amd-gpu-cluster.md
+
+The context records page-specific site rules, documented AMD MI210 hardware,
+storage limits, Slurm examples, and source inconsistencies. For this site, all
+compute jobs must go through Slurm and GPU queues must run GPU workloads.
+Treat example resource requests and software versions as documented background,
+not current availability or site maxima. Validate the actual private protocol,
+queue declarations, and runtime before converting the examples into executable
+configuration. Keep the PDF's private connection details out of repository files.
+USER SLURM INSTRUCTIONS END
+
+Integrate those instructions into the protocol/profile model and Codex skill without hard-coding secrets or private hostnames into the repository.
+
+10. Testing
+
+Add or improve deterministic tests for large-fleet fan-out, bounded concurrency, per-route throttling, partial failures, timeouts, retry safety, duplicate Slurm submission prevention, direct versus scheduler-backed roles, login-node refusal, NVIDIA and AMD matching, vendor mismatch, queue capabilities, GPU count/memory, MIG or logical devices, native Slurm batch mode, dry-run plans, deterministic --fit, unknown configuration keys, schema migration, secret redaction, bridge routing, job ledger behavior, exit codes, large output, missing optional probe tools, Slurm states, and failure modes.
+
+Prefer fake transports and fake Slurm responses instead of requiring real GPU hosts or a live cluster.
+
+11. Documentation
+
+Update relevant documentation with architecture, configuration examples, NVIDIA examples, AMD examples, direct bare-metal examples, Slurm login/submit examples, queue and GPU capability examples, large-fleet fan-out examples, dry-run examples, failure and retry semantics, exit-code semantics, security rules, and migration notes.
+
+12. Implementation process
+
+Phase 1:
+- Inspect the existing CLI, tests, docs, skill, and schema.
+- Produce a concise gap analysis.
+- Identify compatibility risks.
+- Propose the smallest coherent design.
+
+Phase 2:
+- Implement the changes.
+- Keep interfaces backwards compatible unless there is a strong reason not to.
+- Use focused patches.
+- Do not rewrite unrelated code.
+- Do not remove existing safety checks.
+
+Phase 3:
+- Add tests.
+- Run formatting, syntax checks, unit tests, and relevant integration tests.
+- Test dry-run behavior.
+- Test fake direct hosts and fake Slurm responses.
+
+Phase 4:
+- Review the final diff for accidental secret exposure, unsafe retries, uncontrolled concurrency, duplicate submissions, silent host omission, vendor confusion, login-node execution risks, and compatibility issues.
+
+At the end, report:
+
+- Files changed.
+- Main behavior changes.
+- New configuration fields.
+- New commands or flags.
+- Compatibility impact.
+- Tests run and results.
+- Remaining limitations.
+- Assumptions made about the supplied Slurm instructions.
+
+Do not claim success unless the tests actually pass. If a requested behavior conflicts with the current architecture, explain the conflict and implement the safest compatible version.

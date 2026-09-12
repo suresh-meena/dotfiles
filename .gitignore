@@ -49,3 +49,6 @@ __pycache__/
 **/.research/state/
 **/.research/spool/
 **/research-exports/
+
+# Supplied site document contains private connection details.
+/sureshproblem/AMD Server.pdf
