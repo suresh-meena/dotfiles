@@ -110,6 +110,13 @@ The dashboard refreshes live host and GPU cards every two seconds, pauses while 
 
 Helpers cap process inspection and reuse the username cache, which keeps peak RSS bounded on compute nodes while retaining the top memory consumers needed for triage.
 
+The hub runs local writes and maintenance on one worker, with two separate
+workers for dashboard queries. Both queues are bounded, including cancelled
+requests. Chart ranges sample across the selected window and apply the point
+limit to each GPU. Retention also expires scheduler records that have not been
+updated within the configured window; jobs still reported by the scheduler
+remain current.
+
 Non-secret configuration is read from
 `~/.config/fleetmon/config.toml` (or `FLEETMON_CONFIG`). Defaults are safe for a
 single-user hub: loopback binding, 60-second polling, at most two concurrent

@@ -166,7 +166,6 @@
     return node;
   }
   function clear() {
-    focusPairs.length = 0;
     content.replaceChildren();
   }
   function heading(text) {
@@ -188,27 +187,20 @@
     idleMinFree: "",
     idleBusy: false,
     idleStale: false,
-    workloadSearchFocus: false,
-    idleHostFocus: false,
-    idleModelFocus: false,
-    idleFreeFocus: false,
   };
   const sortState = new Map();
-  const focusPairs = [];
+  const tableScrolls = new Map();
 
-  function trackFocus(node, flag) {
-    focusPairs.push([node, flag]);
-    node.addEventListener("focus", () => {
-      ui[flag] = true;
-    });
-    node.addEventListener("blur", () => {
-      ui[flag] = false;
-    });
-  }
-  function refocusTracked() {
-    focusPairs.forEach(([node, flag]) => {
-      if (ui[flag] && typeof node.focus === "function") node.focus();
-    });
+  function scrollTable(table) {
+    const wrap = el("div", "table-scroll");
+    const key = table.dataset.tableKey || "table";
+    wrap.setAttribute("tabindex", "0");
+    wrap.setAttribute("role", "region");
+    wrap.setAttribute("aria-label", `${key.replace(/-/g, " ")} table`);
+    wrap.dataset.focusKey = `${key}-scroll`;
+    wrap.append(table);
+    tableScrolls.set(key, wrap);
+    return wrap;
   }
 
   function sortTbody(tbody, position, kind, direction) {
@@ -231,13 +223,19 @@
 
   function dataTable(columns, tableKey) {
     const table = el("table");
+    table.dataset.tableKey = tableKey || "table";
     const head = el("thead");
     const headRow = el("tr");
     columns.forEach((column, position) => {
       const th = el("th", column.num ? "num" : "", column.label);
       th.dataset.position = String(position);
-      if (column.sort !== false) th.dataset.kind = column.num ? "num" : "text";
-      th.setAttribute("tabindex", "0");
+      th.scope = "col";
+      if (column.sort !== false) {
+        th.dataset.kind = column.num ? "num" : "text";
+        th.dataset.focusKey = `${tableKey}-column-${position}`;
+        th.setAttribute("tabindex", "0");
+        th.setAttribute("aria-sort", "none");
+      }
       headRow.append(th);
     });
     head.append(headRow);
@@ -249,11 +247,16 @@
       const position = Number(th.dataset.position);
       const direction = th.dataset.dir === "asc" ? -1 : 1;
       headRow.querySelectorAll("[data-dir]").forEach((other) => {
-        if (other !== th) other.removeAttribute("data-dir");
+        if (other !== th) {
+          delete other.dataset.dir;
+          other.setAttribute("aria-sort", "none");
+        }
       });
       th.dataset.dir = direction === 1 ? "asc" : "desc";
+      th.setAttribute("aria-sort", direction === 1 ? "ascending" : "descending");
       if (tableKey) sortState.set(tableKey, {position, kind, direction});
       sortTbody(tbody, position, kind, direction);
+      if (tableKey === "workloads") applyWorkloadFilter();
     };
     head.addEventListener("click", (event) => {
       const th = event.target.closest("th[data-kind]");
@@ -273,6 +276,7 @@
       const th = headRow.cells[saved.position];
       if (!th) return;
       th.dataset.dir = saved.direction === 1 ? "asc" : "desc";
+      th.setAttribute("aria-sort", saved.direction === 1 ? "ascending" : "descending");
       sortTbody(tbody, saved.position, saved.kind, saved.direction);
     };
     return tbody;
@@ -368,7 +372,9 @@
   function detailsBlock(title, open, onToggle) {
     const det = el("details", "disclosure");
     if (open) det.setAttribute("open", "");
-    det.append(el("summary", null, title));
+    const summary = el("summary", null, title);
+    summary.dataset.focusKey = `disclosure-${title}`;
+    det.append(summary);
     det.addEventListener("toggle", () => {
       if (onToggle) onToggle(det.hasAttribute("open"));
     });
@@ -445,7 +451,11 @@
       const li = document.createElement("li");
       const link = document.createElement("a");
       link.href = `/host/${encodeURIComponent(host.target)}`;
-      if (page === "host" && host.target === target) link.className = "active";
+      if (page === "host" && host.target === target) {
+        link.className = "active";
+        link.setAttribute("aria-current", "page");
+      }
+      link.title = host.target;
       link.append(el("span", "sb-name", host.target));
       link.append(token(host.state, ""));
       li.append(link);
@@ -525,7 +535,7 @@
       {label: "gpus"},
       {label: "age", num: true},
       {label: "cpu", num: true},
-      {label: "cpu history"},
+      {label: "cpu history", sort: false},
       {label: "load (1m)", num: true},
       {label: "ram", num: true},
       {label: "root disk", num: true},
@@ -586,7 +596,7 @@
       ]);
     });
     tbody.applySavedSort();
-    content.append(tbody.parentNode);
+    content.append(scrollTable(tbody.parentNode));
   }
 
   // ---- host ----
@@ -701,7 +711,9 @@
   function gpuCard(gpu, procEntries, owners) {
     const card = el("article", "gpu-card");
     const head = el("div", "gpu-head");
-    head.append(el("span", "gpu-name", `GPU ${_int(gpu.idx)} · ${_text(gpu.model)}`));
+    const name = el("span", "gpu-name", `GPU ${_int(gpu.idx)} · ${_text(gpu.model)}`);
+    name.title = name.textContent;
+    head.append(name);
     head.append(availabilityToken(itemFlag(gpu), gpu.reason));
     card.append(head);
     card.append(
@@ -828,6 +840,7 @@
     const search = el("input", "search");
     search.type = "search";
     search.id = "workload-search";
+    search.dataset.focusKey = "workload-search";
     search.placeholder = "search workloads";
     search.setAttribute("aria-label", "Search workloads by user, name, or pid");
     search.value = ui.search;
@@ -835,7 +848,6 @@
       ui.search = search.value;
       applyWorkloadFilter();
     });
-    trackFocus(search, "workloadSearchFocus");
     const label = el("label", "toggle");
     const box = el("input");
     box.type = "checkbox";
@@ -863,7 +875,6 @@
     }
     if (!workloadBar) workloadBar = buildWorkloadBar();
     content.append(workloadBar);
-    refocusTracked();
     const columns = [
       {label: "pid", num: true},
       {label: "user"},
@@ -892,16 +903,17 @@
           Array.isArray(process.gpu_allocations)
             ? String(process.gpu_allocations.length)
             : "",
-          process.gpu_allocations,
+          Array.isArray(process.gpu_allocations) ? process.gpu_allocations.length : undefined,
         ),
       ]);
       tr.dataset.i = String(index);
     });
     workloadTbody = tbody;
     tbody.applySavedSort();
-    content.append(tbody.parentNode);
+    content.append(scrollTable(tbody.parentNode));
     const button = el("button", "more-btn", "Show all");
     button.type = "button";
+    button.dataset.focusKey = "workload-more";
     button.addEventListener("click", () => {
       ui.processLimit = ui.processLimit === Infinity ? WORKLOAD_LIMIT : Infinity;
       applyWorkloadFilter();
@@ -909,7 +921,7 @@
     workloadBtn = button;
     content.append(button);
     applyWorkloadFilter();
-    note(`bounded current-process snapshot (${_int(workloadAll.length)} rows)`);
+    note(`${_int(workloadAll.length)} sampled processes`);
   }
 
   function renderUsers(users, latest) {
@@ -947,7 +959,7 @@
         ]);
       });
       tbody.applySavedSort();
-      block.append(tbody.parentNode);
+      block.append(scrollTable(tbody.parentNode));
     }
     content.append(block);
   }
@@ -982,7 +994,7 @@
         ["observation window", `${_dur(sample.observation_duration_seconds)}`],
         ["poll backoff", `${_dur(host.backoff)}`],
         ["processes", processes],
-        ["permission denied", _yes(sample.permission_denied)],
+        ["permission denied", _int(sample.permission_denied)],
         [
           "truncation",
           [
@@ -1024,7 +1036,8 @@
       doc.summary && typeof doc.summary === "object" ? doc.summary : null;
     const pick = (key) =>
       summary && _number(summary[key]) ? String(summary[key]) : String(computed[key]);
-    return {idle: pick("idle"), busy: pick("busy"), stale: pick("unknown")};
+    return {idle: pick("idle"), busy: pick("busy"),
+      stale: summary && _number(summary.unknown) ? String(summary.unknown) : String(computed.stale)};
   }
   function idleRank(avail) {
     return avail === "idle" ? 0 : avail === "busy" ? 1 : 2;
@@ -1068,7 +1081,6 @@
       ui.idleHost = hostInput.value;
       renderIdleTable();
     });
-    trackFocus(hostInput, "idleHostFocus");
     const modelInput = el("input");
     modelInput.type = "search";
     modelInput.placeholder = "filter by model";
@@ -1078,7 +1090,6 @@
       ui.idleModel = modelInput.value;
       renderIdleTable();
     });
-    trackFocus(modelInput, "idleModelFocus");
     const freeInput = el("input");
     freeInput.type = "number";
     freeInput.min = "0";
@@ -1089,7 +1100,6 @@
       ui.idleMinFree = freeInput.value;
       renderIdleTable();
     });
-    trackFocus(freeInput, "idleFreeFocus");
     const busyLabel = el("label", "toggle");
     const busyBox = el("input");
     busyBox.type = "checkbox";
@@ -1151,7 +1161,7 @@
       ]);
     });
     tbody.applySavedSort();
-    idleWrap.append(tbody.parentNode);
+    idleWrap.append(scrollTable(tbody.parentNode));
     idleWrap.append(
       el(
         "p",
@@ -1170,15 +1180,14 @@
     cards.append(card("idle GPUs", counts.idle, "ok"));
     cards.append(card("busy GPUs", counts.busy, "busy"));
     cards.append(card("stale GPUs", counts.stale, "stale"));
-    cards.append(card("GPUs listed", String(items.length), ""));
+    cards.append(card("GPUs listed", doc ? String(items.length) : UNKNOWN, ""));
     content.append(cards);
     if (!doc) {
-      note("Idle GPU data is not available yet (requires the new hub API)");
+      note("GPU data is temporarily unavailable.");
       return;
     }
     if (!idleFilterBar) idleFilterBar = buildIdleFilters();
     content.append(idleFilterBar);
-    refocusTracked();
     idleWrap = el("div");
     content.append(idleWrap);
     renderIdleTable();
@@ -1226,8 +1235,8 @@
       ]);
     });
     tbody.applySavedSort();
-    content.append(tbody.parentNode);
-    note(`showing ${list.length} jobs — bounded, latest first`);
+    content.append(scrollTable(tbody.parentNode));
+    note(`${list.length} jobs`);
   }
 
   // ---- hub status ----
@@ -1281,9 +1290,9 @@
 
   // ---- charts: one tiny local SVG renderer, one request per chart group ----
   const svgNS = "http://www.w3.org/2000/svg";
-  const W = 640;
-  const H = 150;
-  const PAD = {l: 46, r: 12, t: 8, b: 18};
+  const W = 480;
+  const H = 180;
+  const PAD = {l: 48, r: 12, t: 8, b: 24};
   const PALETTE = ["c1", "c2", "c3", "c4", "c5"];
   const CHART_COLORS = {cpu: "c1", ram: "c2", disk: "c3"};
   const X_LABELS = 4;
@@ -1343,9 +1352,14 @@
       const button = el("button", null, label);
       button.type = "button";
       button.setAttribute("aria-pressed", String(hours === chartHours));
+      button.dataset.focusKey = `range-${hours}`;
       button.addEventListener("click", () => {
         if (hours === chartHours) return;
         chartHours = hours;
+        chartsLoaded = false;
+        lastCharts = null;
+        chartPanel = null;
+        renderAll();
         refreshCharts();
       });
       wrap.append(button);
@@ -1414,7 +1428,8 @@
     );
     if (chartSeries.length > 1) {
       chartSeries.forEach((item, index) => {
-        const label = el("span", "series", item.label);
+        const label = el("span", "series", item.label.replace(/^gpu(\d+)\s.*/, "GPU $1"));
+        label.title = item.label;
         label.prepend(el("span", `swatch ${seriesColor(item.chart, index)}`));
         caption.append(label);
       });
@@ -1569,11 +1584,33 @@
 
   // ---- rendering dispatch and bounded polling ----
   function renderAll() {
+    const active = document.activeElement;
+    const selection = active && typeof active.selectionStart === "number"
+      ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
+    const scroll = Array.from(tableScrolls, ([key, node]) => [key, node.scrollLeft]);
+    const position = typeof window === "object" ? [window.scrollX, window.scrollY] : null;
     if (page === "host") renderHost(lastData);
     else if (page === "overview") renderOverview(lastData, lastIdleDoc);
     else if (page === "idle-gpus") renderIdle(lastIdleDoc);
     else if (page === "jobs") renderJobs(lastData);
     else renderHubStatus(lastData);
+    scroll.forEach(([key, left]) => {
+      const node = tableScrolls.get(key);
+      if (node) node.scrollLeft = left;
+    });
+    // Search/filter controls are reused. Rebuilt buttons and sort headers
+    // carry a stable key, so keyboard focus survives telemetry refreshes too.
+    if (active && typeof active.focus === "function") {
+      const key = active.dataset && active.dataset.focusKey;
+      const replacement = active.isConnected ? active : key
+        ? Array.from(document.querySelectorAll("[data-focus-key]"))
+          .find((node) => node.dataset.focusKey === key) : null;
+      if (replacement) {
+        replacement.focus({preventScroll: true});
+        if (selection) replacement.setSelectionRange(...selection);
+      }
+    }
+    if (position) window.scrollTo(...position);
   }
 
   function sampleAgeText() {
@@ -1616,6 +1653,7 @@
 
   let refreshInFlight = false;
   let rangeInFlight = false;
+  let rangeQueued = false;
   let missedWhileHidden = false;
   let missedChartsWhileHidden = false;
   let lastData = null;
@@ -1648,17 +1686,21 @@
         data = await fetchJson(endpoint);
       }
       const idle = idlePromise ? await idlePromise : null;
-      if (idle) lastIdleDoc = idle;
+      if (page === "overview") lastIdleDoc = idle;
       if (page === "idle-gpus") lastIdleDoc = data;
       lastData = data;
       if (!document.hidden) {
         if (page === "idle-gpus" && data === null) {
-          renderIdle(null);
-          status.textContent = "Idle GPU API not available yet";
+          renderAll();
+          status.textContent = "Unable to refresh GPU availability";
           status.className = "error";
         } else {
           renderAll();
           setStatusOk();
+          if (page === "overview" && idle === null) {
+            status.textContent = "Unable to refresh GPU availability";
+            status.className = "error";
+          }
         }
       }
       missedWhileHidden = false;
@@ -1675,7 +1717,11 @@
   async function refreshCharts() {
     // Independent of the main refresh: a slow chart group can never delay
     // current data, and the last good chart group is kept on failure.
-    if ((!chartsEndpoint && !sparkEndpoint) || rangeInFlight) return;
+    if (!chartsEndpoint && !sparkEndpoint) return;
+    if (rangeInFlight) {
+      rangeQueued = true;
+      return;
+    }
     rangeInFlight = true;
     try {
       if (sparkEndpoint) {
@@ -1689,16 +1735,27 @@
       chartsLoaded = true;
       lastCharts = charts;
       if (!document.hidden && lastData) {
-        renderHost(lastData);
-        setStatusOk();
+        renderAll();
       }
     } catch (_error) {
       /* keep the last good charts */
     } finally {
       rangeInFlight = false;
+      if (rangeQueued) {
+        rangeQueued = false;
+        if (document.hidden) missedChartsWhileHidden = true;
+        else refreshCharts();
+      }
     }
   }
 
+  const nav = document.getElementById("nav");
+  nav.querySelectorAll("[data-nav]").forEach((link) => {
+    if (link.dataset.nav === page) {
+      link.classList.add("active");
+      link.setAttribute("aria-current", "page");
+    }
+  });
   document.getElementById("menu").addEventListener("click", () => {
     const open = document.getElementById("nav").classList.toggle("open");
     document.getElementById("menu").setAttribute("aria-expanded", String(open));

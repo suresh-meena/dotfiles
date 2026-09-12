@@ -13,13 +13,21 @@
   --c4: #a04b4b;
   --c5: #6b7280;
 }
+* {
+  box-sizing: border-box;
+}
 body {
   margin: 0;
+}
+:focus-visible {
+  outline: 2px solid var(--c1);
+  outline-offset: 2px;
 }
 header {
   grid-column: 1 / -1;
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  justify-content: space-between;
   gap: 1rem;
   padding: 0.45rem 0.9rem;
   background: #20262e;
@@ -37,7 +45,7 @@ header button {
   color: #e8eaed;
   background: transparent;
   border: 1px solid #4a525d;
-  padding: 0 0.5rem;
+  padding: 0.3rem 0.65rem;
   cursor: pointer;
 }
 @media (min-width: 900px) {
@@ -105,7 +113,8 @@ body {
 }
 @media (max-width: 899px) {
   body {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto 1fr;
   }
   nav {
     min-height: 0;
@@ -168,8 +177,8 @@ td .meter-track {
   height: 8px;
 }
 .meters {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   gap: 0.6rem 1.6rem;
   margin: 0.1rem 0 0.5rem;
 }
@@ -177,7 +186,7 @@ td .meter-track {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
-  min-width: 200px;
+  min-width: 0;
 }
 .meter-box .meter-label {
   font-size: 0.72rem;
@@ -186,18 +195,28 @@ td .meter-track {
   letter-spacing: 0.06em;
   color: #6b7280;
 }
+.meter-box .meter {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.2rem;
+}
 .meter-box .meter-track {
-  width: 260px;
-  height: 14px;
+  width: 100%;
+  height: 12px;
+}
+.meter-box .meter-value {
+  white-space: normal;
 }
 .meter-box .meter-value {
   font-size: 0.85rem;
 }
 
 main {
+  min-width: 0;
   padding: 0.7rem 0.9rem 1.4rem;
 }
-h2 {
+h1, h2 {
   font-size: 1rem;
   margin: 0.15rem 0 0.3rem;
 }
@@ -208,8 +227,9 @@ h3 {
   margin: 1rem 0 0.25rem;
 }
 #status {
-  margin: 0.1rem 0;
+  margin: 0.1rem 0 0.75rem;
   color: #5b6470;
+  font-size: 0.85rem;
 }
 #status.error {
   color: #a12622;
@@ -309,7 +329,7 @@ h3 {
 /* GPU cards: responsive grid; every field stays on-screen at desktop width. */
 .gpu-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
   gap: 0.6rem;
   margin: 0.2rem 0 0.8rem;
 }
@@ -351,15 +371,17 @@ h3 {
 }
 .gpu-meter .meter {
   flex: 1 1 auto;
+  flex-wrap: wrap;
   min-width: 0;
 }
 .gpu-meter .meter-track {
-  flex: 1 1 0px;
+  flex: 1 1 60px;
   width: auto;
   min-width: 60px;
 }
 .gpu-meter .meter-value {
-  flex: none;
+  max-width: 100%;
+  white-space: normal;
 }
 .gpu-sum {
   display: inline-flex;
@@ -422,7 +444,10 @@ h3 {
   border: 1px solid #c8ced4;
   background: #fff;
   color: inherit;
-  min-width: 10rem;
+  min-width: 0;
+  width: 12rem;
+  max-width: 100%;
+  min-height: 2.2rem;
 }
 .filters input[type="number"] {
   min-width: 6rem;
@@ -442,7 +467,7 @@ h3 {
   font-size: 0.8rem;
   background: #fff;
   border: 1px solid #c8ced4;
-  padding: 0.15rem 0.7rem;
+  padding: 0.3rem 0.7rem;
   cursor: pointer;
   margin: 0 0 0.4rem;
 }
@@ -501,6 +526,21 @@ thead th {
 thead th[data-kind] {
   cursor: pointer;
 }
+thead th[data-kind]::after {
+  content: "↕";
+  display: inline-block;
+  width: 1em;
+  margin-left: 0.3em;
+  color: #6b7280;
+}
+thead th[aria-sort="ascending"]::after {
+  content: "↑";
+  color: #1c2128;
+}
+thead th[aria-sort="descending"]::after {
+  content: "↓";
+  color: #1c2128;
+}
 thead th[data-kind]:focus {
   outline: 2px solid var(--c1);
   outline-offset: -2px;
@@ -515,6 +555,9 @@ th.num {
 }
 .kv {
   max-width: 34rem;
+}
+.kv td {
+  overflow-wrap: anywhere;
 }
 .kv th {
   width: 11rem;
@@ -551,8 +594,8 @@ figure {
   border: 1px solid #e2e6ea;
 }
 figure.chart {
-  min-height: 200px;
   position: relative;
+  align-self: start;
 }
 figcaption {
   font-size: 0.76rem;
@@ -572,7 +615,7 @@ figcaption .series {
 }
 svg {
   display: block;
-  font: 9px ui-monospace, monospace;
+  font: 14px system-ui, sans-serif;
 }
 svg text {
   fill: #8b929b;
@@ -623,6 +666,10 @@ svg .overlay {
 .tip {
   display: none;
   position: absolute;
+  top: 2rem;
+  right: 0.5rem;
+  max-width: calc(100% - 1rem);
+  overflow-wrap: anywhere;
   background: #fff;
   border: 1px solid #ccc;
   padding: 0.2rem 0.35rem;
@@ -631,7 +678,7 @@ svg .overlay {
   color: #1c2128;
   pointer-events: none;
   z-index: 2;
-  white-space: nowrap;
+  white-space: normal;
 }
 .tip.on {
   display: block;
@@ -643,21 +690,22 @@ svg .overlay {
 /* Compact range switcher above the chart group; active range bold. */
 .ranges {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.3rem;
   margin: 0.35rem 0 0.4rem;
 }
 .ranges button {
   font: inherit;
   font-size: 0.78rem;
   background: none;
-  border: none;
-  padding: 0;
+  border: 1px solid #d3d8dd;
+  padding: 0.3rem 0.65rem;
   color: #454d58;
   cursor: pointer;
 }
 .ranges button[aria-pressed="true"] {
   font-weight: 700;
-  text-decoration: underline;
+  background: #e2e7ec;
+  border-color: #aeb8c2;
   color: #1c2128;
 }
 
@@ -668,6 +716,9 @@ svg.spark {
 }
 
 @media (max-width: 600px) {
+  figure.chart svg {
+    font-size: 16px;
+  }
   nav {
     display: none;
     flex-direction: column;
@@ -685,7 +736,7 @@ svg.spark {
     grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   }
   .gpu-meter .meter-label {
-    width: 4.4rem;
+    width: 6rem;
   }
 }
 
@@ -703,6 +754,20 @@ main > * {
 }
 
 /* Wide tables scroll inside the content instead of the page. */
-#content {
+.table-scroll {
+  max-width: 100%;
   overflow-x: auto;
+  margin: 0.2rem 0 0.9rem;
+}
+.table-scroll > table {
+  margin: 0;
+}
+.table-scroll td {
+  max-width: 24rem;
+  overflow-wrap: anywhere;
+}
+@media (pointer: coarse) {
+  nav a, summary, .ranges button, .more-btn {
+    min-height: 2.6rem;
+  }
 }

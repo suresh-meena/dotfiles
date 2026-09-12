@@ -314,6 +314,9 @@ def test_retention_removes_all_terminal_slurm_jobs_but_keeps_active(tmp_path):
         ],
         updated_at=1,
     )
+    # Active jobs remain current because each successful queue poll updates
+    # them. Old unconfirmed jobs expire with the rest of the history.
+    db.upsert_slurm_jobs("h", [{"job_id": 4, "state": "RUNNING"}], updated_at=3)
     db.retain(2)
     assert [row["job_id"] for row in db.jobs()] == ["4"]
 

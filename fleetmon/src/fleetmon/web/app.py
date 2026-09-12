@@ -12,6 +12,7 @@ import asyncio
 import base64
 import hmac
 import html
+import logging
 import math
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -37,6 +38,7 @@ MAX_BASIC_CREDENTIAL_BYTES = 512
 BASIC_USERNAME = "fleetmon"
 MAX_QUERY_WORKERS = 2
 MAX_QUERY_PENDING = 32
+LOG = logging.getLogger(__name__)
 ROOT = Path(__file__).parent
 PAGE_TITLES = {
     "overview": "Overview",
@@ -50,10 +52,14 @@ def _invoke(source: Any, name: str, **kwargs: Any) -> Any:
     """Call one query method, without leaking query errors."""
     if source is None:
         return []
-    try:
-        return getattr(source, name)(**kwargs)
-    except Exception:
+    method = getattr(source, name, None)
+    if method is None:
         return []
+    try:
+        return method(**kwargs)
+    except Exception as exc:
+        LOG.error("dashboard query %s failed: %s", name, type(exc).__name__)
+        raise HTTPException(503, "dashboard data unavailable") from None
 
 
 async def _invoke_with_executor(
@@ -67,18 +73,17 @@ async def _invoke_with_executor(
 
     if capacity is not None and not capacity.acquire(blocking=False):
         raise HTTPException(503, "query capacity exhausted")
-    loop = asyncio.get_running_loop()
     try:
-        future = loop.run_in_executor(
-            executor, partial(_invoke, source, name, **kwargs)
-        )
+        future = executor.submit(partial(_invoke, source, name, **kwargs))
     except BaseException:
         if capacity is not None:
             capacity.release()
         raise
     if capacity is not None:
         future.add_done_callback(lambda _future: capacity.release())
-    return await future
+    # Request cancellation cannot stop a running thread. Retain its capacity
+    # until the actual query finishes, including when the client disconnects.
+    return await asyncio.shield(asyncio.wrap_future(future))
 
 
 def _bounded(value: Any, limit: int, offset: int = 0) -> list[Any]:
@@ -232,7 +237,7 @@ def _valid_credentials(supplied: str, token: str | None) -> bool:
     if scheme.lower() == "bearer":
         return bool(
             hmac.compare_digest(scheme.lower(), "bearer")
-            & hmac.compare_digest(value, token)
+            & hmac.compare_digest(value.encode("utf-8"), token.encode("utf-8"))
         )
     if scheme.lower() != "basic" or len(value) > MAX_BASIC_CREDENTIAL_BYTES:
         return False
@@ -247,8 +252,8 @@ def _valid_credentials(supplied: str, token: str | None) -> bool:
     # Evaluate both comparisons so a wrong username does not skip the token
     # comparison. The fixed username is intentionally not user-configurable.
     return bool(
-        hmac.compare_digest(username, BASIC_USERNAME)
-        & hmac.compare_digest(password, token)
+        hmac.compare_digest(username.encode("utf-8"), BASIC_USERNAME.encode("utf-8"))
+        & hmac.compare_digest(password.encode("utf-8"), token.encode("utf-8"))
     )
 
 
@@ -296,7 +301,9 @@ def create_app(
 
     @app.on_event("shutdown")
     async def close_query_executor() -> None:
-        app.state.query_executor.shutdown(wait=True, cancel_futures=True)
+        await asyncio.to_thread(
+            app.state.query_executor.shutdown, wait=True, cancel_futures=True
+        )
 
     app.state.ready = True
     app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")

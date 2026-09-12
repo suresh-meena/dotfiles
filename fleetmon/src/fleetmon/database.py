@@ -511,14 +511,19 @@ class Database:
             raise NotADirectoryError(dest.parent)
         if parent_stat.st_mode & 0o077:
             raise PermissionError("backup directory must not be group/world accessible")
-        with self._lock:
-            target_conn = sqlite3.connect(dest)
-            try:
-                self.conn.backup(target_conn)
-                target_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            finally:
-                target_conn.close()
-        os.chmod(dest, 0o600)
+        descriptor = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(descriptor)
+        try:
+            with self._lock:
+                target_conn = sqlite3.connect(dest)
+                try:
+                    self.conn.backup(target_conn)
+                    target_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                finally:
+                    target_conn.close()
+        except BaseException:
+            dest.unlink(missing_ok=True)
+            raise
 
     def upsert_host(
         self,
@@ -781,18 +786,50 @@ class Database:
             arguments.append(self._range_epoch(end))
         arguments.append(points)
         where = " AND ".join(predicates)
-        rows = [
-            dict(row)
-            for row in self.query(
-                f"""
-                SELECT received_at, cpu_busy, ram_total, ram_used,
-                       root_total, root_free
-                FROM host_samples AS hs WHERE {where}
-                ORDER BY received_at DESC LIMIT ?
-                """,
-                arguments,
-            )
-        ]
+        sample_sql = f"""
+            SELECT poll_id, received_at, cpu_busy, ram_total, ram_used,
+                   root_total, root_free
+            FROM host_samples AS hs WHERE {where}
+            ORDER BY received_at DESC LIMIT ?
+        """
+        # Seek one latest observation per time bucket through the target/time
+        # index. Long ranges cover the whole window without loading or sorting
+        # all retained samples, and still return at most `points` rows.
+        if start is not None and end is not None:
+            lower = self._range_epoch(start)
+            upper = self._range_epoch(end)
+            if upper > lower:
+                width = (upper - lower) / points
+                sample_sql = """
+                    WITH RECURSIVE buckets(n) AS (
+                        SELECT 0 UNION ALL SELECT n+1 FROM buckets WHERE n+1 < ?
+                    )
+                    SELECT hs.poll_id, hs.received_at, hs.cpu_busy,
+                           hs.ram_total, hs.ram_used, hs.root_total, hs.root_free
+                    FROM buckets JOIN host_samples AS hs ON hs.poll_id=(
+                        SELECT poll_id FROM host_samples
+                        WHERE target=? AND received_at>=? + n * ?
+                          AND received_at<=CASE WHEN n=? THEN ?
+                              ELSE ? + (n+1) * ? END
+                          AND (received_at<? + (n+1) * ? OR n=?)
+                        ORDER BY received_at DESC LIMIT 1
+                    )
+                    ORDER BY hs.received_at DESC
+                """
+                arguments = [
+                    points,
+                    target,
+                    lower,
+                    width,
+                    points - 1,
+                    upper,
+                    lower,
+                    width,
+                    lower,
+                    width,
+                    points - 1,
+                ]
+        rows = [dict(row) for row in self.query(sample_sql, arguments)]
         rows.reverse()
         series: list[dict[str, Any]] = []
 
@@ -847,14 +884,18 @@ class Database:
         )
         gpu_rows = self.query(
             f"""
+            WITH sampled AS ({sample_sql})
             SELECT g.uuid, g.idx, g.model, g.utilization, g.vram_used, g.vram_total,
                    hs.received_at
-            FROM gpu_samples AS g
-            JOIN host_samples AS hs ON hs.poll_id=g.poll_id
-            WHERE {where}
-            ORDER BY hs.received_at DESC LIMIT ?
+            FROM sampled AS hs JOIN gpu_samples AS g ON hs.poll_id=g.poll_id
+            WHERE g.uuid IN (
+                SELECT uuid FROM gpu_samples WHERE poll_id=(
+                    SELECT poll_id FROM sampled ORDER BY received_at DESC LIMIT 1
+                ) ORDER BY idx LIMIT ?
+            )
+            ORDER BY hs.received_at DESC, g.idx LIMIT ?
             """,
-            arguments,
+            [*arguments, MAX_CHART_GPUS, points * MAX_CHART_GPUS],
         )
         grouped: dict[str, dict[str, Any]] = {}
         for row in gpu_rows:
@@ -1383,25 +1424,39 @@ class Database:
                         (before, batch),
                     )
                     count = cursor.rowcount
-                    terminal_predicate = " OR ".join(
-                        "state LIKE ?" for _ in TERMINAL_SLURM_STATE_PREFIXES
-                    )
+                    # A job still observed in squeue has a fresh updated_at.
+                    # Expire old unconfirmed rows too: missing accounting must
+                    # not preserve a last-known RUNNING row indefinitely.
                     cursor.execute(
-                        f"""
-                        DELETE FROM slurm_jobs
-                        WHERE updated_at < ? AND ({terminal_predicate})
+                        """
+                        DELETE FROM slurm_jobs WHERE rowid IN (
+                            SELECT rowid FROM slurm_jobs
+                            WHERE updated_at < ? LIMIT ?
+                        )
                         """,
-                        (before,)
-                        + tuple(
-                            f"{prefix}%" for prefix in TERMINAL_SLURM_STATE_PREFIXES
-                        ),
+                        (before, batch),
                     )
+                    job_count = cursor.rowcount
+                    cursor.execute(
+                        """
+                        DELETE FROM hosts WHERE target IN (
+                            SELECT h.target FROM hosts AS h
+                            WHERE h.state='retired' AND h.updated_at < ?
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM polls WHERE target=h.target
+                              )
+                            LIMIT ?
+                        )
+                        """,
+                        (before, batch),
+                    )
+                    host_count = cursor.rowcount
                     cursor.execute("COMMIT")
                 except Exception:
                     cursor.execute("ROLLBACK")
                     raise
             total += count
-            if count < batch:
+            if max(count, job_count, host_count) < batch:
                 break
         return total
 

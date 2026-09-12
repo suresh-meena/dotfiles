@@ -110,11 +110,11 @@ class Node {
     return node.dataset[key] !== undefined || node._attrs[m[1]] !== undefined;
   }
   querySelectorAll(selector) {
-    if (selector !== "[data-dir]") throw new Error(`selector not shimmed: ${selector}`);
+    if (!["[data-dir]", "[data-nav]"].includes(selector)) throw new Error(`selector not shimmed: ${selector}`);
     const out = [];
     const walk = (n) =>
       n.childNodes.forEach((c) => {
-        if (c.nodeType === 1 && c.dataset.dir !== undefined) out.push(c);
+        if (c.nodeType === 1 && Node.matchesAttr(c, selector)) out.push(c);
         walk(c);
       });
     walk(this);
@@ -757,8 +757,8 @@ const cardValues = (content) =>
 // idle page without the backend API yet: graceful, unknown summary
 {
   const {shim} = await run("idle-gpus", "", {"/api/overview": OVERVIEW});
-  assert.match(shim.status.textContent, /Idle GPU API not available yet/);
-  assert.match(textOf(shim.content), /not available yet/, "explicit integration note");
+  assert.match(shim.status.textContent, /Unable to refresh GPU availability/);
+  assert.match(textOf(shim.content), /temporarily unavailable/, "plain availability error");
   assert.deepEqual(
     cardValues(shim.content).slice(0, 3),
     ["unknown", "unknown", "unknown"],
@@ -833,6 +833,35 @@ const cardValues = (content) =>
   assert.match(shim.status.textContent, /Unable to load dashboard data/);
   assert.equal(shim.status.className, "error");
   assert.equal(tables(shim.content).length, 0);
+}
+
+
+// A second range selection while a chart request is pending must be fetched.
+{
+  const {shim} = await run("host", "alpha", {
+    "/api/hosts/alpha?limit=1": HOST,
+    "/api/hosts/alpha/charts?hours=24": CHARTS,
+    "/api/overview": OVERVIEW,
+  });
+  let finishFirst;
+  const requests = [];
+  globalThis.fetch = async (url) => {
+    requests.push(url);
+    if (url.endsWith("hours=1")) {
+      await new Promise((resolve) => { finishFirst = resolve; });
+    }
+    return {ok: true, json: async () => CHARTS};
+  };
+  const range = (label) => collect(shim.content, "BUTTON").find((b) => b.textContent === label);
+  range("1h").handlers.click[0]();
+  range("7d").handlers.click[0]();
+  finishFirst();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests, [
+    "/api/hosts/alpha/charts?hours=1",
+    "/api/hosts/alpha/charts?hours=168",
+  ]);
+  assert.equal(range("7d")._attrs["aria-pressed"], "true");
 }
 
 console.log("js harness ok");

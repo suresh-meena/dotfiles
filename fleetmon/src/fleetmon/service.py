@@ -8,11 +8,14 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +23,7 @@ from . import __version__, notify
 from .config import HubConfig, ensure_backup_filesystem
 from .database import Database, observation_slots
 from .discovery import (
+    MAX_TARGETS,
     Inventory,
     Target,
     admitted_targets,
@@ -65,10 +69,10 @@ class HubRuntime:
         poll_controller: PollController | None = None,
     ):
         self.config = config
+        self.state = OperationalState(self.config.state_dir / "runtime.json")
+        ensure_backup_filesystem(self.config)
         self.db = database or Database(self.config.database_path)
         self.notify_poster = notify.default_poster
-        ensure_backup_filesystem(self.config)
-        self.state = OperationalState(self.config.state_dir / "runtime.json")
         self.discover_fn = discover_fn
         self.controller = poll_controller or PollController(
             self.config.ssh_concurrency,
@@ -79,12 +83,41 @@ class HubRuntime:
         self.inventory: Inventory | None = None
         self.admitted_names: set[str] = set()
         self.last_inventory = 0.0
+        self._last_inventory_attempt = None
         self.last_retention = 0.0
         self.last_backup_attempt = 0.0
         self.last_backup_success = 0.0
         self.last_backup_path: str | None = None
         self.last_backup_error: str | None = None
         self.started = time.time()
+        # Each bounded target schedule awaits its local operation before
+        # submitting another. A single worker serializes state-file writes
+        # and keeps SQLite locks, fsync, backups and notifications off the loop.
+        self._local_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="fleetmon-local"
+        )
+        self._local_capacity = threading.BoundedSemaphore(MAX_TARGETS + 8)
+        self._gpu_window_lock = threading.Lock()
+        self._gpu_window_cache = None
+
+    async def _local(
+        self, function: Callable[..., Any], *args: Any, **kwargs: Any
+    ) -> Any:
+        if not self._local_capacity.acquire(blocking=False):
+            raise RuntimeError("local work capacity exhausted")
+        try:
+            future = self._local_executor.submit(partial(function, *args, **kwargs))
+        except BaseException:
+            self._local_capacity.release()
+            raise
+        future.add_done_callback(lambda _future: self._local_capacity.release())
+        # close() drains this worker before closing SQLite. Cancelling a poll
+        # must not leave a half-written snapshot or state file behind.
+        return await asyncio.shield(asyncio.wrap_future(future))
+
+    def _invalidate_gpu_window(self) -> None:
+        with self._gpu_window_lock:
+            self._gpu_window_cache = None
 
     def _include_tags(self) -> set[str]:
         return {self.config.include_tag} if self.config.include_tag else set()
@@ -95,6 +128,7 @@ class HubRuntime:
     def refresh_inventory(self) -> Inventory:
         """Refresh inventory, retaining the last known good copy on failure."""
 
+        self._last_inventory_attempt = time.monotonic()
         try:
             inventory = self._discover()
         except Exception as exc:
@@ -104,14 +138,15 @@ class HubRuntime:
     async def refresh_inventory_async(self) -> Inventory:
         """Refresh without blocking the hub event loop on fleetctl pipes."""
 
+        self._last_inventory_attempt = time.monotonic()
         try:
             if self.discover_fn is discover:
                 inventory = await discover_async(str(self.config.fleetctl_path))
             else:
-                inventory = self._discover()
+                inventory = await self._local(self._discover)
         except Exception as exc:
-            return self._inventory_failed(exc)
-        return self._apply_inventory(inventory)
+            return await self._local(self._inventory_failed, exc)
+        return await self._local(self._apply_inventory, inventory)
 
     def _discover(self) -> Inventory:
         try:
@@ -171,7 +206,7 @@ class HubRuntime:
             )
 
         for target, row in existing.items():
-            if target not in current_names:
+            if target not in current_names and row["state"] != "retired":
                 self.db.upsert_host(
                     target,
                     row["role"],
@@ -218,10 +253,15 @@ class HubRuntime:
             last_success is None
             or now - float(last_success) > self._gpu_freshness_seconds()
         ):
-            self.state.update_target(target, gpu_free_counts={}, gpu_free_notified={})
+            await self._local(
+                self.state.update_target,
+                target,
+                gpu_free_counts={},
+                gpu_free_notified={},
+            )
             return
         events, new_counts, notified = notify.evaluate_gpu_free(
-            self.db.gpu_recent(target),
+            await self._local(self.db.gpu_recent, target),
             target_state.get("gpu_free_counts") or {},
             target_state.get("gpu_free_notified") or {},
             now=now,
@@ -243,15 +283,19 @@ class HubRuntime:
                 self.config.notify_url,
                 self.notify_poster,
             )
-            self.state.update_target(
+            await self._local(
+                self.state.update_target,
                 target,
                 gpu_free_counts=new_counts,
                 gpu_free_notified=notified,
                 gpu_free_next_retry=next_retry,
             )
         else:
-            self.state.update_target(
-                target, gpu_free_counts=new_counts, gpu_free_notified=notified
+            await self._local(
+                self.state.update_target,
+                target,
+                gpu_free_counts=new_counts,
+                gpu_free_notified=notified,
             )
 
     def _helper_path(self, target: str) -> str | None:
@@ -288,8 +332,12 @@ class HubRuntime:
             not self.config.polling_enabled
             or target.name in self.config.disabled_targets
         ):
-            self.db.upsert_host(
-                target.name, target.role, target.protocol, "polling_disabled"
+            await self._local(
+                self.db.upsert_host,
+                target.name,
+                target.role,
+                target.protocol,
+                "polling_disabled",
             )
             return "polling_disabled"
         if not self.admitted(target):
@@ -297,13 +345,17 @@ class HubRuntime:
         prior_state = self.state.target(target.name)
         if float(prior_state.get("next_retry", 0) or 0) > time.time():
             return "backoff"
-        if not self._has_disk_reserve():
+        if not await self._local(self._has_disk_reserve):
             return "disk_low"
 
-        helper = helper_path or self._helper_path(target.name)
+        helper = helper_path or await self._local(self._helper_path, target.name)
         if helper is None:
-            self.db.upsert_host(
-                target.name, target.role, target.protocol, "helper_missing"
+            await self._local(
+                self.db.upsert_host,
+                target.name,
+                target.role,
+                target.protocol,
+                "helper_missing",
             )
             return "helper_missing"
 
@@ -353,21 +405,25 @@ class HubRuntime:
                 ).timestamp()
                 if abs(received - captured) > MAX_CAPTURE_SKEW_SECONDS:
                     raise ProtocolError("capture time outside accepted skew")
-                self.db.snapshot(
+                await self._local(
+                    self.db.snapshot,
                     poll_id,
                     target.name,
                     document,
                     received,
                     started_at=started,
                 )
-                self._gpu_window_cache = None
+                await self._local(self._invalidate_gpu_window)
                 # Classification keeps the latest two observations; thin the
                 # now-older history to the configured cadence so fast polling
                 # cannot multiply stored rows.
-                self.db.downsample_history(
-                    target.name, self.config.history_interval_seconds
+                await self._local(
+                    self.db.downsample_history,
+                    target.name,
+                    self.config.history_interval_seconds,
                 )
-                self.state.update_target(
+                await self._local(
+                    self.state.update_target,
                     target.name,
                     failures=0,
                     last_success=received,
@@ -381,7 +437,8 @@ class HubRuntime:
                 code = self._protocol_error_code(exc)
 
         ended = time.time()
-        self.db.record_error(
+        await self._local(
+            self.db.record_error,
             poll_id,
             target.name,
             code,
@@ -391,7 +448,8 @@ class HubRuntime:
         previous_failures = int(prior_state.get("failures", 0))
         failures = min(previous_failures + 1, 4)
         delay = self._backoff(target.name, failures)
-        self.state.update_target(
+        await self._local(
+            self.state.update_target,
             target.name,
             failures=failures,
             backoff=delay,
@@ -399,7 +457,8 @@ class HubRuntime:
             last_error=code,
         )
         host_state = "unreachable" if code in {"transport", "timeout"} else code
-        self.db.record_host_failure(
+        await self._local(
+            self.db.record_host_failure,
             target.name,
             target.role,
             target.protocol,
@@ -407,6 +466,7 @@ class HubRuntime:
             code,
             delay,
         )
+        await self._local(self._invalidate_gpu_window)
         return code
 
     async def _poll_slurm_command(
@@ -443,15 +503,17 @@ class HubRuntime:
         target_state = self.state.target(target.name)
         if float(target_state.get("slurm_next_retry", 0) or 0) > time.time():
             return "backoff"
-        if not self._has_disk_reserve():
+        if not await self._local(self._has_disk_reserve):
             return "disk_low"
 
         queue_result = await self._poll_slurm_command(target, "squeue", squeue_argv())
         if queue_result is None:
             return "polling_disabled"
         if queue_result.timed_out or queue_result.overflow:
-            return self._slurm_failure(
-                target, "timeout" if queue_result.timed_out else "output_overflow"
+            return await self._local(
+                self._slurm_failure,
+                target,
+                "timeout" if queue_result.timed_out else "output_overflow",
             )
 
         jobs: list[dict[str, Any]] | None = None
@@ -469,21 +531,22 @@ class HubRuntime:
             if queue_result is None:
                 return "polling_disabled"
             if queue_result.timed_out or queue_result.overflow:
-                return self._slurm_failure(
+                return await self._local(
+                    self._slurm_failure,
                     target,
                     "timeout" if queue_result.timed_out else "output_overflow",
                 )
             if queue_result.returncode != 0:
-                return self._slurm_failure(target, "transport")
+                return await self._local(self._slurm_failure, target, "transport")
             try:
                 jobs = parse_squeue_text(queue_result.stdout)
             except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
-                return self._slurm_failure(target, "invalid_json")
-        self.db.upsert_slurm_jobs(target.name, jobs)
+                return await self._local(self._slurm_failure, target, "invalid_json")
+        await self._local(self.db.upsert_slurm_jobs, target.name, jobs)
         # Queue success is the scheduler freshness signal; accounting is
         # intentionally throttled and must not make a healthy queue look stale.
         watermark = self.state.target(target.name).get("sacct_watermark")
-        self.db.set_slurm_state(target.name, watermark, "live")
+        await self._local(self.db.set_slurm_state, target.name, watermark, "live")
 
         now = datetime.now(timezone.utc)
         last_sacct_attempt = float(
@@ -528,7 +591,9 @@ class HubRuntime:
                 try:
                     rows = parse_sacct(accounting.stdout)
                 except (UnicodeDecodeError, ValueError):
-                    return self._slurm_accounting_failure(target, "invalid_json")
+                    return await self._local(
+                        self._slurm_accounting_failure, target, "invalid_json"
+                    )
             elif accounting is not None and (
                 accounting.returncode != 0
                 and not accounting.timed_out
@@ -557,18 +622,23 @@ class HubRuntime:
                             accounting.stdout, fields=SACCT_COMPAT_FIELDS
                         )
                     except (UnicodeDecodeError, ValueError):
-                        return self._slurm_accounting_failure(target, "invalid_json")
+                        return await self._local(
+                            self._slurm_accounting_failure, target, "invalid_json"
+                        )
             if rows is not None:
-                self.db.upsert_slurm_jobs(target.name, rows)
+                await self._local(self.db.upsert_slurm_jobs, target.name, rows)
                 new_watermark = now.isoformat()
-                self.state.update_target(
+                await self._local(
+                    self.state.update_target,
                     target.name,
                     last_sacct=time.time(),
                     last_sacct_attempt=time.time(),
                     sacct_watermark=new_watermark,
                     sacct_last_error=None,
                 )
-                self.db.set_slurm_state(target.name, new_watermark, "live")
+                await self._local(
+                    self.db.set_slurm_state, target.name, new_watermark, "live"
+                )
             else:
                 code = "transport"
                 if accounting is not None:
@@ -576,8 +646,9 @@ class HubRuntime:
                         code = "timeout"
                     elif accounting.overflow:
                         code = "output_overflow"
-                return self._slurm_accounting_failure(target, code)
-        self.state.update_target(
+                return await self._local(self._slurm_accounting_failure, target, code)
+        await self._local(
+            self.state.update_target,
             target.name,
             slurm_failures=0,
             slurm_next_retry=0,
@@ -743,13 +814,14 @@ class HubRuntime:
         what any single request sees.
         """
 
-        now = time.time()
-        cached = getattr(self, "_gpu_window_cache", None)
-        if cached is not None and now - cached[0] <= self.GPU_WINDOW_TTL_SECONDS:
-            return cached[1]
-        window = self.db.gpu_window()
-        self._gpu_window_cache = (now, window)
-        return window
+        with self._gpu_window_lock:
+            now = time.monotonic()
+            cached = self._gpu_window_cache
+            if cached is not None and now - cached[0] <= self.GPU_WINDOW_TTL_SECONDS:
+                return cached[1]
+            window = self.db.gpu_window()
+            self._gpu_window_cache = (now, window)
+            return window
 
     def _annotate_gpu_summary(self, rows: list[dict[str, Any]]) -> None:
         """Add per-host idle/busy/unknown GPU counts from the shared window."""
@@ -1064,11 +1136,13 @@ class HubRuntime:
 
     async def _inventory(self) -> Inventory:
         if (
-            self.inventory is None
-            or time.time() - self.last_inventory
+            self._last_inventory_attempt is None
+            or time.monotonic() - self._last_inventory_attempt
             >= self.config.inventory_interval_seconds
         ):
             return await self.refresh_inventory_async()
+        if self.inventory is None:
+            raise RuntimeError("inventory unavailable")
         return self.inventory
 
     async def run_once(self) -> list[str]:
@@ -1150,8 +1224,10 @@ class HubRuntime:
                 cycle_started = asyncio.get_running_loop().time()
                 if time.time() - last_health >= HUB_HEALTH_INTERVAL_SECONDS:
                     last_health = time.time()
-                    self._hub_health(
-                        self._hub_cpu_percent(time.time()), self._hub_rss_bytes()
+                    await self._local(
+                        self._hub_health,
+                        self._hub_cpu_percent(time.time()),
+                        self._hub_rss_bytes(),
                     )
                 try:
                     inventory = await self._inventory()
@@ -1177,8 +1253,8 @@ class HubRuntime:
                             self._run_schedule(key, poller, target)
                         )
                     if time.time() - self.last_retention >= RETENTION_INTERVAL_SECONDS:
-                        self.retain()
-                    self.maybe_backup()
+                        await self._local(self.retain)
+                    await self._local(self.maybe_backup)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -1198,4 +1274,5 @@ class HubRuntime:
             raise
 
     def close(self) -> None:
+        self._local_executor.shutdown(wait=True, cancel_futures=True)
         self.db.close()
