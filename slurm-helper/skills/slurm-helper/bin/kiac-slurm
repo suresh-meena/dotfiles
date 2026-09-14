@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# kiac-slurm — KIAC-aware Slurm generator/validator/diagnostics CLI.
+# Prefer an installed entry point; otherwise run the bundled package.
+# Guard: never exec ourselves (happens when this bin/ dir is on PATH).
+set -euo pipefail
+
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+found="$(command -v kiac-slurm 2>/dev/null || true)"
+if [ -n "$found" ]; then
+    self_real="$(readlink -f -- "$0" 2>/dev/null || echo "$0")"
+    found_real="$(readlink -f -- "$found" 2>/dev/null || echo "$found")"
+    if [ "$found_real" != "$self_real" ]; then
+        exec kiac-slurm "$@"
+    fi
+fi
+
+root="$(cd -- "$here/.." && pwd)"
+if [ ! -d "$root/src/kiac_slurm" ]; then
+    echo "kiac-slurm: cannot locate the kiac_slurm package (expected $root/src)" >&2
+    exit 2
+fi
+
+PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m kiac_slurm "$@"

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kiac-slurm"
+version = "0.1.0"
+description = "KIAC-aware Slurm batch script generator, validator, and diagnostics CLI (slurm-helper skill tooling)"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+[project.scripts]
+kiac-slurm = "kiac_slurm.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

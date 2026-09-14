@@ -1,0 +1,77 @@
+cluster: kiac
+
+policy:
+  compute_via_slurm_only: true
+  preferred_storage: /storage
+  # verified 2026-09-14: /storage is the recommended area but writability was
+  # not confirmed for this user — never assume it; check on the cluster.
+  assume_storage_writable: false
+
+partitions:
+  long:
+    documented_nodes: [cn1, cn4]
+    documented_max_times: ["48:00:00", "24:00:00"]
+    status: disputed
+  short:
+    documented_nodes: [cn2, cn5]
+    documented_max_times: ["24:00:00", "12:00:00"]
+    status: disputed
+  medium:
+    documented_nodes: [cn3]
+    documented_max_times: ["24:00:00"]
+  a100:
+    documented_nodes: [cn6]
+    documented_max_times: ["24:00:00"]
+  ada:
+    documented_nodes: ["cn[7-9]"]
+    documented_max_times: ["48:00:00"]
+  h200:
+    documented_nodes: [cn10]
+    documented_max_times: ["24:00:00"]
+    account_required: true
+    interactive_qos: h200_qos
+    batch_qos: h200_qos   # verified 2026-09-14 (was unknown)
+
+gpu_catalog_documented:
+  - A5000
+  - A6000
+  - A100
+  - ADA6000
+  - H200
+
+discover_gres_types_live: true
+
+# ---------------------------------------------------------------------------
+# Verified on the live cluster (scontrol/squeue/sacctmgr + real jobs).
+# Facts below outrank the manual but carry an as-of date: re-verify after
+# cluster changes. Account permissions are per-user associations.
+# `kiac-slurm learn apply` rewrites ONLY the marked block below; everything
+# outside the markers is preserved for manual editing.
+# ---------------------------------------------------------------------------
+# --- verified-live:begin (managed by `kiac-slurm learn apply`) ---
+verified_live:
+  as_of: "2026-09-14"
+  user: sureshmeena
+  accounts: [research, chiru]        # this user's associations (freerun: NOT associated)
+  test_only_enforces_account_policy: false
+  partitions:
+    long:
+      gres_types: [a6000]
+    short:
+      gres_types: [a5000]
+    medium:
+      gres_types: [a5000, a6000, ada6000]
+    ada:
+      gres_types: [ada6000]
+    a100:
+      gres_types: [a100]
+      allowed_accounts: [research]   # chiru passes --test-only but is REJECTED at scheduling
+      denied_accounts: [chiru]
+      verified_note: "a100 allows research,freerun_not_chiru"
+    h200:
+      gres_types: [h200]
+      allowed_accounts: [chiru]
+      required_qos: h200_qos         # normal QOS stays pending: "h200 allows h200_qos not normal"
+  # long/short/medium/ada: research and chiru accepted by --test-only; NOT yet
+  # confirmed by a real smoke job (only a100 and h200 have smoke-verified combos).
+# --- verified-live:end ---
