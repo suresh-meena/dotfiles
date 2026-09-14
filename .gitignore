@@ -52,3 +52,9 @@ __pycache__/
 
 # Supplied site document contains private connection details.
 /sureshproblem/AMD Server.pdf
+
+# Supplied KIAC site manual contains private connection details.
+/slurm-helper/Instructions and guidelines.pdf
+
+# slurm-helper self-learning runtime state (raw evidence log; applied facts live in config/kiac.yaml).
+/slurm-helper/skills/slurm-helper/var/
