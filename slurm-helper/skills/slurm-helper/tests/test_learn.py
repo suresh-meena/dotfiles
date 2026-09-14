@@ -196,6 +196,71 @@ def test_learned_maxtime_drives_offline_check():
     assert any(d.level == "INFO" and "resolved" in d.message for d in rep.items)
 
 
+def test_inspect_scontrol_records_success_evidence(tmp_path, monkeypatch, capsys):
+    """A completed job is the strongest account/QOS evidence — harvest it."""
+    obs = enable_learning(tmp_path, monkeypatch)
+    runner = FakeRunner(
+        {
+            ("squeue",): (0, ""),
+            ("scontrol", "show", "job"): (
+                0,
+                "JobId=58822 JobState=COMPLETED Account=chiru Partition=h200 "
+                "Qos=h200_qos RunTime=02:00:00 NodeList=cn10\n",
+            ),
+        }
+    )
+    rc = main(["inspect", "58822"], runner=runner)
+    assert rc == 0
+    entries = learn.read_observations(obs)
+    match = [e for e in entries if e["kind"] == "account-ok"]
+    assert match and match[0]["subject"] == "h200"
+    assert match[0]["observed"] == "chiru/h200_qos"
+    assert "58822" in match[0]["detail"] and "COMPLETED" in match[0]["detail"]
+
+
+def test_inspect_sacct_records_success_evidence(tmp_path, monkeypatch, capsys):
+    obs = enable_learning(tmp_path, monkeypatch)
+    runner = FakeRunner(
+        {
+            ("squeue",): (0, ""),
+            ("scontrol", "show", "job"): (1, "not found"),
+            ("sacct",): (0, "58823|COMPLETED|0:0|00:05:00||cn6|research|a100|\n"),
+        }
+    )
+    rc = main(["inspect", "58823"], runner=runner)
+    assert rc == 0
+    entries = learn.read_observations(obs)
+    match = [e for e in entries if e["kind"] == "account-ok"]
+    assert match and match[0]["subject"] == "a100"
+    assert match[0]["observed"] == "research"
+
+
+def test_account_ok_extends_but_never_creates_exclusive_lists():
+    entries = [{"kind": "account-ok", "subject": "h200",
+                "observed": "research/h200_qos", "detail": "job 9"}]
+    new = learn.build_verified_update(SITE, None, entries)
+    allowed = new["partitions"]["h200"]["allowed_accounts"]
+    assert set(allowed) == {"chiru", "research"}  # extended, chiru kept
+
+    # a lone success on a partition without policy evidence must NOT bar
+    # every other account (KIAC023 treats allowed_accounts as exclusive)
+    entries = [{"kind": "account-ok", "subject": "long",
+                "observed": "research", "detail": "job 10"}]
+    new = learn.build_verified_update(SITE, None, entries)
+    assert "allowed_accounts" not in new["partitions"].get("long", {})
+
+
+def test_record_job_success_gates_on_run_states(tmp_path, monkeypatch):
+    obs = enable_learning(tmp_path, monkeypatch)
+    # pending/cancelled jobs prove nothing about policy permission
+    assert learn.record_job_success("PENDING", "chiru", "h200", "h200_qos", "1") == 0
+    assert learn.record_job_success("CANCELLED", "chiru", "h200", "h200_qos", "2") == 0
+    # a job that reached a node is schedulability proof
+    assert learn.record_job_success("TIMEOUT", "chiru", "h200", "h200_qos", "3") == 1
+    entries = learn.read_observations(obs)
+    assert len(entries) == 1 and "TIMEOUT" in entries[0]["detail"]
+
+
 def test_learn_note_and_log_cli(tmp_path, monkeypatch, capsys):
     obs = enable_learning(tmp_path, monkeypatch)
     rc = main(["learn", "note", "FS001 false positive for /storage paths off-cluster"])

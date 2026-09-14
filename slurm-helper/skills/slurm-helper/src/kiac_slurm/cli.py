@@ -520,16 +520,28 @@ def cmd_inspect(args, runner: Runner) -> int:
                 print(f"  {key}={fields[key]}")
         if fields.get("Reason"):
             learn.record_job_reason(fields["Reason"], fields.get("Account") or None)
+        learn.record_job_success(
+            fields.get("JobState"),
+            fields.get("Account"),
+            fields.get("Partition"),
+            fields.get("Qos"),
+            jobid,
+        )
         _print_cancel_hint(jobid)
         return 0
 
     rc, out = runner.run(
-        ["sacct", "-j", jobid, "-X", "-n", "-o", "JobID,State,ExitCode,Elapsed,MaxRSS,NodeList"]
+        ["sacct", "-j", jobid, "-X", "-n",
+         "-o", "JobID,State,ExitCode,Elapsed,MaxRSS,NodeList,Account,Partition,QOS"]
     )
     if rc == 0 and out.strip():
         print(f"job {jobid} history (sacct):")
         for line in out.strip().splitlines():
             print(f"  {line}")
+            f = line.split("|")
+            if len(f) >= 9:
+                # f: jobid, state, exit, elapsed, maxrss, nodelist, account, partition, qos
+                learn.record_job_success(f[1], f[6], f[7], f[8], f[0])
             for marker, hint in (
                 ("OUT_OF_MEMORY", "ran out of RAM: raise --mem or check for leaks"),
                 ("TIMEOUT", "hit the walltime: raise --time within the partition MaxTime"),

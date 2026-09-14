@@ -53,11 +53,15 @@ line numbers and suggested corrections.
 interactive | inspect | learn` — see `--help` and `SKILL.md` for the workflow
 each supports.
 
-The skill is self-learning: live runs and pending-job reasons are recorded as
-evidence (`var/observations.jsonl`), and `kiac-slurm learn log / apply`
-distills that evidence into the marker-bounded `verified_live` section of
-`config/kiac.yaml` behind a reviewed diff (`--yes`), so the cluster knowledge
-improves over time and travels through git.
+The skill is self-learning: live runs, pending-job rejection reasons, and
+completed jobs (positive account/QOS evidence — the one thing `--test-only`
+can never prove) are recorded as evidence (`var/observations.jsonl`), and
+`kiac-slurm learn log / apply` distills that evidence into the marker-bounded
+`verified_live` section of `config/kiac.yaml` behind a reviewed diff (`--yes`),
+so the cluster knowledge improves over time and travels through git. SKILL.md
+also binds agents to an evidence discipline: claims are classed
+verified-by-run / verified-live / changed-untested / inferred and never
+reported as a flat "fixed" list.
 
 ## Install
 

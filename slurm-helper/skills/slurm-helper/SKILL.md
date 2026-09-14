@@ -84,6 +84,50 @@ it (`sbatch --account=... --partition=... --gres=gpu:1 --time=00:05:00
   libraries — compute nodes lack `uv` and Torch in the system interpreter;
   use the experiment virtualenv, and install `uv` in the user account if a
   launcher needs it).
+- Never report a fix or configuration as "done/fixed" without labeling its
+  evidence class (next section). A flat list of "fixed" items where
+  run-proven, code-changed, and merely-documented claims sit together is
+  the canonical failure this skill exists to prevent.
+
+## Evidence discipline (what "fixed" means)
+
+Cluster work fails quietly: schedulers accept requests they will never run,
+and a green dry-run proves nothing about policy or execution. When making,
+recording, or handing off claims about cluster infrastructure or jobs,
+class every claim by its evidence — and keep the classes separate:
+
+| Class | Meaning | Example |
+| --- | --- | --- |
+| `verified-by-run` | a real job exercised it — cite JOBID and state (`sacct`) | job 58822 COMPLETED with `chiru`+`h200_qos` on h200 |
+| `verified-live` | read from the scheduler this session | `scontrol show partition` MaxTime |
+| `changed-untested` | a code/config change with no run evidence yet | pinning `pyarrow==25.0.1` |
+| `inferred` | reasoning only | "the array limit is probably MaxArraySize" |
+
+Rules that follow:
+
+- **"Applied" is not "verified."** A changed line, a pinned version, or new
+  launch instructions prove nothing until a job runs. Never let
+  `changed-untested` items appear under a "fixed" heading.
+- **Do not stack fixes on unverified fixes.** Validate each layer with the
+  cheapest real run (a 5-minute smoke job) before building the next change
+  on it; otherwise a later failure cannot be attributed and an earlier
+  "fix" may itself be the bug.
+- **Prefer enforced fixes over instructions.** A checker ERROR (KIAC023) or
+  a generator default cannot be silently ignored; a comment, README line,
+  or "launch instruction" can. When a fix can be enforced by this skill's
+  config or rules, enforce it there instead of documenting it.
+- **Cite job IDs, not adjectives.** "Fixed the H200 wiring" carries no
+  evidence; "job 58822, COMPLETED, account chiru, qos h200_qos" does.
+- A green `sbatch --test-only` is never verification for accounts/QOS
+  (LIVE002); `inspect` on running/completed jobs records `account-ok`
+  evidence automatically, and `learn apply` folds it into config — that is
+  the intended path from "it worked once" to durable knowledge.
+
+This discipline also bounds the skill's own knowledge: only
+scheduler-observable facts (partitions, GRES, times, accounts/QOS behavior
+with job-level provenance) belong in `verified_live`; experiment-level
+state (library pins, launcher bugs) stays in the experiment project's own
+records, never in site config.
 
 ## Task workflows
 

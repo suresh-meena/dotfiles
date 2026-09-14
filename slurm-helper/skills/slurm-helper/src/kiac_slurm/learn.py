@@ -258,6 +258,45 @@ def record_job_reason(reason: str, job_account: Optional[str] = None) -> int:
     return written
 
 
+# States proving the scheduler actually placed the job (account/QOS policy
+# was satisfied; policy failures manifest as PENDING, never these states).
+RAN_STATES = frozenset(
+    {
+        "RUNNING",
+        "COMPLETED",
+        "COMPLETING",
+        "TIMEOUT",
+        "OUT_OF_MEMORY",
+        "FAILED",
+        "NODE_FAIL",
+        "BOOT_FAIL",
+        "PREEMPTED",
+    }
+)
+
+
+def record_job_success(state, account, partition, qos, jobid) -> int:
+    """Positive evidence: a job that reached a node proves its account/
+    partition/QOS combination is schedulable — the strongest possible proof,
+    and the one thing `sbatch --test-only` can never provide."""
+    if not account or not partition:
+        return 0
+    st = str(state or "").strip().upper()
+    if st not in RAN_STATES:
+        return 0
+    observed = str(account) + (f"/{qos}" if qos else "")
+    written = record({
+        "kind": "account-ok",
+        "subject": str(partition),
+        "observed": observed,
+        "detail": f"job {jobid} reached state {st} — the account/partition"
+                  + (f"/QOS" if qos else "") +
+                  " combination is schedulable",
+        "source": "job record",
+    })
+    return int(written)
+
+
 # ---------------------------------------------------------------------------
 # Distilling evidence into the config's verified_live section
 # ---------------------------------------------------------------------------
@@ -289,7 +328,7 @@ def build_verified_update(
         # only structured policy evidence touches the config; manual notes,
         # maxtime/gres observations (already handled via `state`), submit
         # errors, etc. are for `learn log` review, not for partition entries
-        if kind not in ("account-policy", "qos-required") or not subject:
+        if kind not in ("account-policy", "qos-required", "account-ok") or not subject:
             continue
         part = merged.setdefault("partitions", {}).setdefault(subject, {})
         if kind == "account-policy" and entry.get("observed"):
@@ -302,6 +341,14 @@ def build_verified_update(
                 part["denied_accounts"] = denied
         elif kind == "qos-required" and entry.get("observed"):
             part["required_qos"] = str(entry["observed"])
+        elif kind == "account-ok" and entry.get("observed"):
+            # A run proves this account is permitted. Only EXTEND an existing
+            # allowed list (KIAC023 treats it as exclusive); a lone success on
+            # a fresh partition must not silently bar every other account.
+            account = str(entry["observed"]).split("/")[0]
+            allowed = part.get("allowed_accounts")
+            if isinstance(allowed, list) and allowed and account not in allowed:
+                allowed.append(account)
     if merged:
         merged["as_of"] = today or datetime.date.today().isoformat()
     return merged
