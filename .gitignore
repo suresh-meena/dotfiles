@@ -58,3 +58,4 @@ __pycache__/
 
 # slurm-helper self-learning runtime state (raw evidence log; applied facts live in config/kiac.yaml).
 /slurm-helper/skills/slurm-helper/var/
+/slurm-helper/AMD Server.pdf
