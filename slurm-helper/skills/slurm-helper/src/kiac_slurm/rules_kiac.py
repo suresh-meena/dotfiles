@@ -1,20 +1,23 @@
-"""KIAC site policy (stage 5) resolved against live scheduler state (7-8).
+"""Site policy rules (stage 5) resolved against live scheduler state (7-8).
 
-Source-of-truth model:
+Multi-site: every rule ID is prefixed from the site config (`KIAC`* on KIAC,
+`AMD`* on the AMD MI210 cluster); rule numbers are shared. Source-of-truth
+model per site:
+
   * Slurm syntax comes from SchedMD semantics (rules_generic).
   * Current partitions/nodes/GRES/times/accounts come from the live controller.
-  * Site-only operational rules come from the KIAC manual (config/kiac.yaml).
-  * A dated `verified_live` section in the config records facts confirmed on
-    the real cluster; it outranks the manual but is re-verified after cluster
-    changes and can be superseded by a fresh live query in the same run.
+  * Site-only operational rules come from the site manual (config/<site>.yaml).
+  * A dated `verified_live` section records facts confirmed on the real
+    cluster; it outranks the manual but is re-verified after cluster changes
+    and can be superseded by a fresh live query in the same run.
 
 Conflicts are surfaced, never silently reconciled: disputed documented values
 stay labeled document-conflict until a live query resolves them.
 
 Account/QOS policy is enforced from the verified matrix because
-`sbatch --test-only` does NOT enforce it (verified 2026-09-14: chiru/a100
-passed --test-only but the real job stayed pending with "Job's account not
-permitted to use this partition").
+`sbatch --test-only` does NOT enforce it (verified 2026-09-14 on KIAC:
+chiru/a100 passed --test-only but the real job stayed pending with "Job's
+account not permitted to use this partition").
 """
 
 from __future__ import annotations
@@ -35,6 +38,10 @@ from .parser import ParsedScript, expand_hostlist, fmt_time, parse_memory, parse
 from .rules_generic import iter_gpu_requests
 
 
+def _rid(site: SiteConfig, code: str) -> str:
+    return f"{site.rule_prefix}{code}"
+
+
 def check_kiac(
     script: ParsedScript,
     rep: Report,
@@ -53,9 +60,11 @@ def check_kiac(
     _check_time(script, rep, site, part, doc, live_p)
     _check_storage(script, rep, site)
     _check_gpu(script, rep, site, part, state, live_p)
+    _check_gpu_jobs_only(script, rep, site, part)
+    _check_gpu_vendor_tools(script, rep, site)
     _check_nodelist(script, rep, site, part)
-    _check_node_states(script, rep, part, state, live_p)
-    _check_memory_vs_nodes(script, rep, part, state, live_p)
+    _check_node_states(script, rep, site, part, state, live_p)
+    _check_memory_vs_nodes(script, rep, site, part, state, live_p)
 
 
 def _verified_tag(site: SiteConfig) -> str:
@@ -66,8 +75,8 @@ def _verified_tag(site: SiteConfig) -> str:
 def _check_partition(script, rep, site, part, part_d, doc, live_p, live_names) -> None:
     if part is None:
         rep.error(
-            "KIAC001",
-            "no --partition directive; KIAC usage requires an explicit partition",
+            _rid(site, "001"),
+            f"no --partition directive; {site.cluster_name} usage requires an explicit partition",
             suggestion="pick one from `kiac-slurm resources`; do not assume a cluster default",
         )
         return
@@ -75,9 +84,9 @@ def _check_partition(script, rep, site, part, part_d, doc, live_p, live_names) -
         if live_names is not None:
             if live_p is None:
                 rep.error(
-                    "KIAC011",
-                    f'"--partition={part}" is absent from the documented KIAC partition table.\n'
-                    "Live lookup: partition not found",
+                    _rid(site, "011"),
+                    f'"--partition={part}" is absent from the documented {site.cluster_name} '
+                    "partition table.\nLive lookup: partition not found",
                     line=part_d.line_no,
                     excerpt=part_d.raw,
                     suggestion="use one of: " + ", ".join(live_names),
@@ -92,11 +101,11 @@ def _check_partition(script, rep, site, part, part_d, doc, live_p, live_names) -
                 )
         else:
             # spec: unknown partitions are rejected offline unless explicitly
-            # configured or found live (the manual's `general` must not pass)
+            # configured or found live (the KIAC manual's `general` must not pass)
             rep.error(
-                "KIAC011",
-                f'"--partition={part}" is not in the documented KIAC partition table '
-                f"({', '.join(site.partition_names)}) and cannot be verified offline",
+                _rid(site, "011"),
+                f'"--partition={part}" is not in the documented {site.cluster_name} partition '
+                f"table ({', '.join(site.partition_names)}) and cannot be verified offline",
                 line=part_d.line_no,
                 excerpt=part_d.raw,
                 suggestion="use a documented partition, or verify with "
@@ -105,14 +114,22 @@ def _check_partition(script, rep, site, part, part_d, doc, live_p, live_names) -
             )
     else:
         rep.pass_(
-            "KIAC010",
-            f"partition '{part}' is documented (nodes: {', '.join(doc.nodes_raw)})",
+            _rid(site, "010"),
+            f"partition '{part}' is documented (nodes: {', '.join(doc.nodes_raw) or '?'})",
             line=part_d.line_no,
             confidence=CONF_DOCUMENTED,
         )
+        if doc.status == "example-only":
+            rep.info(
+                _rid(site, "010"),
+                f"partition '{part}' is named only in the manual's example scripts — "
+                "confirm it (and its limits) live before relying on it",
+                line=part_d.line_no,
+                confidence=CONF_DOCUMENTED,
+            )
         if live_names is not None and live_p is None:
             rep.error(
-                "KIAC011",
+                _rid(site, "011"),
                 f"partition '{part}' is documented but absent from the live cluster",
                 line=part_d.line_no,
                 excerpt=part_d.raw,
@@ -124,12 +141,13 @@ def _check_partition(script, rep, site, part, part_d, doc, live_p, live_names) -
 def _check_account(script, rep, site, part, part_d, doc, accounts) -> None:
     if doc is None or not doc.account_required:
         _check_account_policy(script, rep, site, part, accounts)
+        _check_qos_policy(script, rep, site, part)
         return
     acc = script.directive_for("--account")
     if acc is None or not acc.value:
         rep.error(
-            "KIAC020",
-            "H200 jobs require an account.",
+            _rid(site, "020"),
+            f"{part.upper()} jobs require an account.",
             line=part_d.line_no,
             excerpt=part_d.raw,
             suggestion="Add: #SBATCH --account=<verified_account>   (see `kiac-slurm account`)",
@@ -182,7 +200,7 @@ def _check_account_policy(script, rep, site, part, accounts) -> None:
                 else "; no live associations found"
             )
         rep.error(
-            "KIAC023",
+            _rid(site, "023"),
             f"account '{acc.value}' is not permitted on partition '{part}' {tag}{detail}. "
             "The job would pass sbatch --test-only and then stay pending with "
             "'Job's account not permitted to use this partition'"
@@ -197,7 +215,7 @@ def _check_account_policy(script, rep, site, part, accounts) -> None:
         )
     elif allowed and acc.value in allowed:
         rep.pass_(
-            "KIAC023",
+            _rid(site, "023"),
             f"account '{acc.value}' is permitted on '{part}' ({tag})",
             line=acc.line_no,
             confidence=CONF_VERIFIED_LIVE,
@@ -215,7 +233,7 @@ def _check_qos_policy(script, rep, site, part) -> None:
     tag = _verified_tag(site)
     if qos_d is None or not qos_d.value:
         rep.error(
-            "KIAC024",
+            _rid(site, "024"),
             f"partition '{part}' requires --qos={required} ({tag}); without it the job "
             f"stays pending with \"Job's QOS not permitted to use this partition\"",
             suggestion=f"Add: #SBATCH --qos={required}",
@@ -223,7 +241,7 @@ def _check_qos_policy(script, rep, site, part) -> None:
         )
     elif qos_d.value != required:
         rep.error(
-            "KIAC024",
+            _rid(site, "024"),
             f"--qos={qos_d.value} is not permitted on '{part}'; the verified value is "
             f"'{required}' ({tag})",
             line=qos_d.line_no,
@@ -233,7 +251,7 @@ def _check_qos_policy(script, rep, site, part) -> None:
         )
     else:
         rep.pass_(
-            "KIAC024",
+            _rid(site, "024"),
             f"--qos={required} matches the verified requirement for '{part}' ({tag})",
             line=qos_d.line_no,
             confidence=CONF_VERIFIED_LIVE,
@@ -279,7 +297,7 @@ def _check_time(script, rep, site, part, doc, live_p) -> None:
         # previously-learned live MaxTime: authoritative even offline
         if want > learned_max:
             rep.error(
-                "KIAC033",
+                _rid(site, "033"),
                 f"--time={time_d.value} exceeds the learned MaxTime {fmt_time(learned_max)} "
                 f"for '{part}' ({_verified_tag(site)})",
                 line=time_d.line_no,
@@ -289,7 +307,7 @@ def _check_time(script, rep, site, part, doc, live_p) -> None:
             )
         else:
             rep.pass_(
-                "KIAC033",
+                _rid(site, "033"),
                 f"--time={time_d.value} within learned MaxTime {fmt_time(learned_max)} "
                 f"({_verified_tag(site)})",
                 line=time_d.line_no,
@@ -297,7 +315,7 @@ def _check_time(script, rep, site, part, doc, live_p) -> None:
             )
             if doc is not None and doc.status == "disputed":
                 rep.info(
-                    "KIAC033",
+                    _rid(site, "033"),
                     f"documented MaxTime dispute for '{part}' resolved by learned live "
                     f"data: {fmt_time(learned_max)}",
                     line=time_d.line_no,
@@ -309,7 +327,7 @@ def _check_time(script, rep, site, part, doc, live_p) -> None:
         return
     if want > max(limits):
         rep.error(
-            "KIAC030",
+            _rid(site, "030"),
             f"--time={time_d.value} exceeds every documented MaxTime for '{part}' "
             f"({' vs '.join(doc.max_times_raw)})",
             line=time_d.line_no,
@@ -320,7 +338,7 @@ def _check_time(script, rep, site, part, doc, live_p) -> None:
     elif len(set(limits)) > 1:
         if want > min(limits):
             rep.warn(
-                "KIAC031",
+                _rid(site, "031"),
                 f"documented MaxTime for '{part}' is disputed ({' vs '.join(doc.max_times_raw)}); "
                 f"--time={time_d.value} may exceed the real limit",
                 line=time_d.line_no,
@@ -330,7 +348,7 @@ def _check_time(script, rep, site, part, doc, live_p) -> None:
             )
         else:
             rep.info(
-                "KIAC032",
+                _rid(site, "032"),
                 f"documented MaxTime dispute for '{part}' ({' vs '.join(doc.max_times_raw)}) — "
                 "this request fits both candidates",
                 line=time_d.line_no,
@@ -338,7 +356,7 @@ def _check_time(script, rep, site, part, doc, live_p) -> None:
             )
     else:
         rep.pass_(
-            "KIAC030",
+            _rid(site, "030"),
             f"--time={time_d.value} within documented MaxTime {fmt_time(limits[0])}",
             line=time_d.line_no,
             confidence=CONF_DOCUMENTED,
@@ -347,10 +365,15 @@ def _check_time(script, rep, site, part, doc, live_p) -> None:
 
 def _check_storage(script, rep, site) -> None:
     preferred = site.preferred_storage
-    home = os.path.expanduser("~")
+    if site.home_path_prefix:
+        home = site.home_path_prefix.rstrip("/")
+    else:
+        home = os.path.expanduser("~")
     writable_note = (
         "" if site.assume_storage_writable else " (writability not assumed — check on the cluster)"
     )
+    caveat = f" — {site.preferred_storage_caveat}" if site.preferred_storage_caveat else ""
+    quota = f" ({site.home_quota_note})" if site.home_quota_note else ""
     candidates = []
     chdir = script.get("--chdir")
     if chdir:
@@ -367,21 +390,21 @@ def _check_storage(script, rep, site) -> None:
         if expanded == preferred or expanded.startswith(preferred + "/"):
             if not praised:
                 rep.pass_(
-                    "KIAC040",
+                    _rid(site, "040"),
                     f"working directory '{expanded}' is on the recommended storage "
-                    f"({preferred}){writable_note}",
+                    f"({preferred}){writable_note}{caveat}",
                     confidence=CONF_DOCUMENTED,
                 )
                 praised = True
         elif expanded == home or expanded.startswith(home + "/"):
             rep.warn(
-                "KIAC040",
-                f"working directory '{expanded}' is under /home; the manual recommends "
-                f"{preferred} for workload data",
+                _rid(site, "040"),
+                f"working directory '{expanded}' is under the home directory{quota}; the "
+                f"manual recommends {preferred} for workload data",
                 line=line_no,
                 confidence=CONF_DOCUMENTED,
-                suggestion=f"move data to {preferred}/<project> after confirming it is "
-                "writable for you",
+                suggestion=f"move data to {preferred}/<project> after confirming it suits "
+                "your retention needs",
             )
 
 
@@ -423,7 +446,7 @@ def _check_gpu(script, rep, site, part, state, live_p) -> None:
             # the real cluster; stronger than the manual's catalog
             if gtype.casefold() in verified_types:
                 rep.pass_(
-                    "KIAC051",
+                    _rid(site, "051"),
                     f"GPU type '{gtype}' is verified on partition '{part}' "
                     f"({_verified_tag(site)})",
                     line=line_no,
@@ -431,7 +454,7 @@ def _check_gpu(script, rep, site, part, state, live_p) -> None:
                 )
             else:
                 rep.error(
-                    "KIAC051",
+                    _rid(site, "051"),
                     f"GPU type '{gtype}' is not among the types verified on '{part}' "
                     f"({', '.join(sorted(verified_types))}) ({_verified_tag(site)})",
                     line=line_no,
@@ -443,7 +466,7 @@ def _check_gpu(script, rep, site, part, state, live_p) -> None:
         elif gtype is not None:
             if gtype.casefold() in {g.casefold() for g in catalog}:
                 rep.pass_(
-                    "KIAC050",
+                    _rid(site, "050"),
                     f"GPU type '{gtype}' is in the documented catalog (the live GRES string "
                     "may differ)",
                     line=line_no,
@@ -451,7 +474,7 @@ def _check_gpu(script, rep, site, part, state, live_p) -> None:
                 )
             else:
                 rep.warn(
-                    "KIAC050",
+                    _rid(site, "050"),
                     f"GPU type '{gtype}' is not in the documented catalog ({', '.join(catalog)})",
                     line=line_no,
                     excerpt=raw,
@@ -479,6 +502,43 @@ def _check_gpu(script, rep, site, part, state, live_p) -> None:
             )
 
 
+def _check_gpu_jobs_only(script, rep, site, part) -> None:
+    """AMD Policy B: GPU queues are for GPU jobs; usage is monitored and
+    CPU-only jobs in them are a blockable violation."""
+    if not site.gpu_jobs_only_partitions or part not in site.gpu_jobs_only_partitions:
+        return
+    gpu_requested = any(
+        count is None or count >= 1
+        for _line_no, _raw, _gtype, count in iter_gpu_requests(script)
+    )
+    if gpu_requested:
+        return
+    rep.error(
+        _rid(site, "070"),
+        f"partition '{part}' is a GPU-only queue (site policy; CPU-only jobs there are "
+        "monitored and can get the account blocked), but this script requests no GPU",
+        suggestion="add --gres=gpu:N, or move the CPU workload to a CPU partition",
+        confidence=CONF_DOCUMENTED,
+    )
+
+
+def _check_gpu_vendor_tools(script, rep, site) -> None:
+    """The AMD manual's own example runs nvidia-smi on MI210 hardware."""
+    if site.gpu_vendor != "amd":
+        return
+    for line_no, text in script.body_lines:
+        if "nvidia-smi" in text:
+            rep.error(
+                _rid(site, "071"),
+                "'nvidia-smi' cannot work here: this site has AMD MI210 GPUs "
+                "(the manual's own example gets this wrong)",
+                line=line_no,
+                excerpt=text,
+                suggestion="use rocm-smi (or rocminfo) to inspect AMD GPUs",
+                confidence=CONF_DOCUMENTED,
+            )
+
+
 def _check_nodelist(script, rep, site, part) -> None:
     nodelist = script.get("--nodelist")
     if not nodelist:
@@ -488,7 +548,7 @@ def _check_nodelist(script, rep, site, part) -> None:
         mapped = site.node_partition_map.get(node)
         if mapped and part and mapped != part:
             rep.warn(
-                "KIAC060",
+                _rid(site, "060"),
                 f"node '{node}' is documented under partition '{mapped}', not '{part}'",
                 line=nodelist_d.line_no if nodelist_d else None,
                 confidence=CONF_DOCUMENTED,
@@ -496,7 +556,7 @@ def _check_nodelist(script, rep, site, part) -> None:
             )
 
 
-def _check_node_states(script, rep, part, state, live_p) -> None:
+def _check_node_states(script, rep, site, part, state, live_p) -> None:
     if state is None or live_p is None or not live_p.nodes:
         return
     bad = [n for n in live_p.nodes if n in state.nodes and state.nodes[n].is_down()]
@@ -508,7 +568,7 @@ def _check_node_states(script, rep, part, state, live_p) -> None:
         )
 
 
-def _check_memory_vs_nodes(script, rep, part, state, live_p) -> None:
+def _check_memory_vs_nodes(script, rep, site, part, state, live_p) -> None:
     if state is None or live_p is None:
         return
     mem_d = script.directive_for("--mem")

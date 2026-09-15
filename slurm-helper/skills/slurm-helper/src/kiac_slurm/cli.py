@@ -77,7 +77,8 @@ def run_check(
             rep.warn("LIVE000", "live checks skipped: no Slurm commands on this host",
                      confidence=CONF_INFERRED)
         else:
-            state = discover(runner=runner, cache_dir=cache_dir, force=no_cache)  # 7
+            state = discover(runner=runner, cache_dir=cache_dir, force=no_cache,
+                             site_name=site.cluster_name)  # 7
             if state is None:
                 rep.warn("LIVE000", "live checks skipped: scheduler discovery failed",
                          confidence=CONF_INFERRED)
@@ -121,7 +122,7 @@ def run_check(
 # ---------------------------------------------------------------------------
 
 def cmd_check(args, runner: Runner) -> int:
-    site = load_site_config(args.config)
+    site = load_site_config(args.config, site=getattr(args, "site", None))
     rep = run_check(
         args.file,
         live=args.live,
@@ -139,7 +140,7 @@ def cmd_check(args, runner: Runner) -> int:
 
 
 def cmd_submit(args, runner: Runner) -> int:
-    site = load_site_config(args.config)
+    site = load_site_config(args.config, site=getattr(args, "site", None))
     live = not args.offline and slurm_available(runner)
     rep = run_check(args.file, live=live, runner=runner, no_cache=args.no_cache, site=site)
     print(render_text(rep, args.file, live=live))
@@ -157,13 +158,17 @@ def cmd_submit(args, runner: Runner) -> int:
             "observed": _first_line(out) or f"exit {rc}",
             "detail": _tail(out, 6),
             "source": "sbatch",
-        })
+        }, site_name=site.cluster_name)
     print(out.strip() or f"sbatch exited {rc}")
     return 0 if rc == 0 else 1
 
 
 def cmd_new(args, runner: Runner) -> int:
-    site = load_site_config(args.config)
+    site = load_site_config(args.config, site=getattr(args, "site", None))
+    if args.template == "h200" and "h200" not in site.partitions:
+        print("error: the h200 template is KIAC-specific; on other sites use "
+              "-t gpu --partition <verified-partition>", file=sys.stderr)
+        return 2
     fields = (
         "job_name", "partition", "time", "ntasks", "cpus_per_task", "mem", "gres",
         "nodes", "ntasks_per_node", "account", "qos", "array", "workdir", "module",
@@ -177,7 +182,7 @@ def cmd_new(args, runner: Runner) -> int:
             values["qos"] = str(required)
     text = generate(args.template, values, strict_bash=not args.no_strict_bash)
 
-    state = discover(runner=runner) if slurm_available(runner) else None
+    state = discover(runner=runner, site_name=site.cluster_name) if slurm_available(runner) else None
     for confidence, note in _generator_notes(args.template, values, site, state):
         print(f"note [{confidence}] {note}", file=sys.stderr)
 
@@ -265,7 +270,7 @@ def _generator_notes(template, values, site, state) -> List[tuple]:
 
 
 def cmd_doctor(args, runner: Runner) -> int:
-    site = load_site_config(args.config)
+    site = load_site_config(args.config, site=getattr(args, "site", None))
     lines = []
     core_ok = True
     for tool in ("sbatch", "sinfo", "scontrol", "squeue", "sacct", "sacctmgr", "scancel"):
@@ -287,7 +292,7 @@ def cmd_doctor(args, runner: Runner) -> int:
 
     state = None
     if slurm_available(runner):
-        state = discover(runner=runner, force=args.no_cache)
+        state = discover(runner=runner, force=args.no_cache, site_name=site.cluster_name)
     if state is not None:
         lines.append(("PASS", f"cluster state via {state.source}: "
                               f"{len(state.partitions)} partitions, {len(state.nodes)} nodes"))
@@ -311,9 +316,12 @@ def cmd_doctor(args, runner: Runner) -> int:
         lines.append(("PASS", f"storage: {preferred} present" + (", writable" if writable else "")))
     else:
         lines.append(("WARN", f"storage: {preferred} not mounted here"))
-    lines.append(("INFO", "home quota: unknown until queried (manual gives conflicting figures)"))
+    lines.append((
+        "INFO",
+        f"home quota: {site.home_quota_note or 'unknown until queried (manual gives conflicting figures)'}",
+    ))
 
-    entries = learn.read_observations()
+    entries = learn.read_observations(learn.observations_path(site.cluster_name))
     if entries:
         latest = max(entries, key=lambda e: str(e.get("ts")))
         lines.append((
@@ -330,10 +338,10 @@ def cmd_doctor(args, runner: Runner) -> int:
 
 
 def cmd_resources(args, runner: Runner) -> int:
-    site = load_site_config(args.config)
+    site = load_site_config(args.config, site=getattr(args, "site", None))
     state = None
     if not args.documented and slurm_available(runner):
-        state = discover(runner=runner, force=args.no_cache)
+        state = discover(runner=runner, force=args.no_cache, site_name=site.cluster_name)
         if state is not None:
             learn.record_discovery(site, state)
 
@@ -365,16 +373,19 @@ def cmd_resources(args, runner: Runner) -> int:
         _print_table(["PARTITION", "MAXTIME", "NODES", "STATES", "GPU GRES"], rows)
     else:
         as_of = site.verified_as_of
-        header = "# documented KIAC partition table [documented; manual conflicts marked disputed]"
+        header = (f"# documented {site.cluster_name} partition table "
+                  "[documented; manual conflicts marked disputed]")
         if site.verified.get("partitions"):
             header += f"; GPU types/account policy verified live {as_of}"
         print(header)
         rows = []
         for name in site.partition_names:
             doc = site.partitions[name]
-            times = " vs ".join(doc.max_times_raw)
+            times = " vs ".join(doc.max_times_raw) or "unknown"
             if doc.status == "disputed":
                 times += " [disputed]"
+            elif doc.status == "example-only":
+                times += " [example-only]"
             vp = site.verified_partition(name) or {}
             gres = ",".join(str(g) for g in vp.get("gres_types") or []) or "run --live"
             rows.append((name, times, ",".join(doc.nodes_raw), doc.status, gres))
@@ -391,12 +402,13 @@ def cmd_resources(args, runner: Runner) -> int:
             if bits:
                 print(f"  {name}: {'; '.join(bits)}")
         if not args.documented and not slurm_available(runner):
-            print("\nno live Slurm on this host; run on the KIAC login node for verified state")
+            print(f"\nno live Slurm on this host; run on the {site.cluster_name} "
+                  "login node for verified state")
     return 0
 
 
 def cmd_account(args, runner: Runner) -> int:
-    site = load_site_config(args.config)
+    site = load_site_config(args.config, site=getattr(args, "site", None))
     acc_qos = accounts_qos(runner)
     if acc_qos:
         print("your Slurm account associations [verified-live]:")
@@ -432,7 +444,7 @@ def cmd_account(args, runner: Runner) -> int:
 
 
 def cmd_explain(args, runner: Runner) -> int:
-    site = load_site_config(args.config)
+    site = load_site_config(args.config, site=getattr(args, "site", None))
     script = parse_script(args.file)
     print(f"{args.file}: {len(script.directives)} directive(s)")
     for directive in script.directives:
@@ -449,7 +461,7 @@ def cmd_explain(args, runner: Runner) -> int:
 
 
 def cmd_interactive(args, runner: Runner) -> int:
-    site = load_site_config(args.config)
+    site = load_site_config(args.config, site=getattr(args, "site", None))
     doc = site.partitions.get(args.partition)
     if doc is not None and doc.account_required and not args.account:
         print(f"error: partition '{args.partition}' requires --account (KIAC020); "
@@ -491,6 +503,8 @@ def cmd_interactive(args, runner: Runner) -> int:
 
 
 def cmd_inspect(args, runner: Runner) -> int:
+    site = load_site_config(args.config, site=getattr(args, "site", None))
+    site_name = site.cluster_name
     jobid = args.jobid
     rc, out = runner.run(["squeue", "-h", "-j", jobid, "-o", "%T|%R|%P|%a|%L|%M|%N"])
     rows = [line for line in out.strip().splitlines() if line.strip()] if rc == 0 else []
@@ -507,7 +521,7 @@ def cmd_inspect(args, runner: Runner) -> int:
                 explanation = REASON_EXPLANATIONS.get(match.group(0) if match else "")
                 if explanation:
                     print(f"    -> {explanation}")
-                learn.record_job_reason(reason, account or None)
+                learn.record_job_reason(reason, account or None, site_name=site_name)
         _print_cancel_hint(jobid)
         return 0
 
@@ -519,13 +533,15 @@ def cmd_inspect(args, runner: Runner) -> int:
             if fields.get(key):
                 print(f"  {key}={fields[key]}")
         if fields.get("Reason"):
-            learn.record_job_reason(fields["Reason"], fields.get("Account") or None)
+            learn.record_job_reason(fields["Reason"], fields.get("Account") or None,
+                                    site_name=site_name)
         learn.record_job_success(
             fields.get("JobState"),
             fields.get("Account"),
             fields.get("Partition"),
             fields.get("Qos"),
             jobid,
+            site_name=site_name,
         )
         _print_cancel_hint(jobid)
         return 0
@@ -541,7 +557,7 @@ def cmd_inspect(args, runner: Runner) -> int:
             f = line.split("|")
             if len(f) >= 9:
                 # f: jobid, state, exit, elapsed, maxrss, nodelist, account, partition, qos
-                learn.record_job_success(f[1], f[6], f[7], f[8], f[0])
+                learn.record_job_success(f[1], f[6], f[7], f[8], f[0], site_name=site_name)
             for marker, hint in (
                 ("OUT_OF_MEMORY", "ran out of RAM: raise --mem or check for leaks"),
                 ("TIMEOUT", "hit the walltime: raise --time within the partition MaxTime"),
@@ -563,7 +579,7 @@ def _print_cancel_hint(jobid: str) -> None:
 
 
 def cmd_learn(args, runner: Runner) -> int:
-    site = load_site_config(args.config)
+    site = load_site_config(args.config, site=getattr(args, "site", None))
     if args.learn_cmd == "note":
         text = " ".join(args.text).strip()
         if not text:
@@ -575,17 +591,18 @@ def cmd_learn(args, runner: Runner) -> int:
             "observed": text[:120],
             "detail": text,
             "source": "user",
-        })
+        }, site_name=site.cluster_name)
         print("recorded" if saved else "not recorded (KIAC_SLURM_LEARN=off or duplicate)")
         return 0
 
     if args.learn_cmd == "apply":
-        entries = learn.read_observations()
+        entries = learn.read_observations(learn.observations_path(site.cluster_name))
         state = None
         if slurm_available(runner):
-            state = discover(runner=runner, force=args.no_cache)
+            state = discover(runner=runner, force=args.no_cache,
+                             site_name=site.cluster_name)
         new_verified = learn.build_verified_update(site, state, entries, runner=runner)
-        config_path = Path(args.config) if args.config else default_config_path()
+        config_path = Path(args.config) if args.config else default_config_path(site.cluster_name)
         if config_path is None:
             print("error: no site config found", file=sys.stderr)
             return 2
@@ -614,7 +631,9 @@ def cmd_learn(args, runner: Runner) -> int:
         return 0
 
     # default: log
-    entries = learn.summarize(learn.read_observations())
+    entries = learn.summarize(
+        learn.read_observations(learn.observations_path(site.cluster_name))
+    )
     if not entries:
         print("no observations recorded yet; they accumulate automatically on every "
               "--live run and from `inspect` on pending jobs")
@@ -786,15 +805,23 @@ REASON_EXPLANATIONS = {
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kiac-slurm",
-        description="KIAC-aware Slurm batch script generator, validator, and diagnostics",
+        description="Site-aware Slurm batch script generator, validator, and diagnostics "
+                    "(KIAC GPU cluster, AMD MI210 cluster)",
     )
     parser.add_argument("--version", action="version",
                         version=f"kiac-slurm {__version__} (slurm-helper)")
+    parser.add_argument("--site", default=None,
+                        help="site config name (default: $KIAC_SLURM_SITE or 'kiac'; "
+                             "e.g. 'amd')")
     sub = parser.add_subparsers(dest="command")
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--config", default=None,
-                        help="site config path (default: config/kiac.yaml in the skill tree)")
+                        help="site config path (default: config/<site>.yaml in the skill tree)")
+    # SUPPRESS so `kiac-slurm --site X check ...` (global position) survives
+    # when the subcommand position doesn't repeat it
+    common.add_argument("--site", default=argparse.SUPPRESS,
+                        help="site config name (also accepted before the subcommand)")
 
     p = sub.add_parser("new", parents=[common],
                        help="generate a batch script from parameters")

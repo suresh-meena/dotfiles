@@ -1,4 +1,4 @@
 interface:
-  display_name: "Slurm Helper (KIAC)"
-  short_description: "Generate, lint, and preflight Slurm scripts for the KIAC cluster"
-  default_prompt: "Use $slurm-helper to create or fix the requested Slurm batch script, run the bundled checker against it, and verify any site-specific partition, GPU, account, or time claim against live scheduler state before submission."
+  display_name: "Slurm Helper (KIAC + AMD)"
+  short_description: "Generate, lint, and preflight Slurm scripts for the KIAC and AMD MI210 clusters"
+  default_prompt: "Use $slurm-helper to create or fix the requested Slurm batch script, selecting the right site (--site kiac|amd) from context, run the bundled checker against it, and verify any site-specific partition, GPU, account, or time claim against live scheduler state before submission."

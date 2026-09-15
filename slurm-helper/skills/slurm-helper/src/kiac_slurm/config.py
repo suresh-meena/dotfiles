@@ -28,11 +28,12 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def default_config_path() -> Optional[Path]:
+def default_config_path(site_name=None) -> Optional[Path]:
     env = os.environ.get("KIAC_SLURM_CONFIG")
     if env:
         return Path(env)
-    candidate = repo_root() / "config" / "kiac.yaml"
+    site = site_name or os.environ.get("KIAC_SLURM_SITE") or "kiac"
+    candidate = repo_root() / "config" / f"{site}.yaml"
     return candidate if candidate.exists() else None
 
 
@@ -53,9 +54,15 @@ class PartitionDoc:
 class SiteConfig:
     raw: Dict[str, Any]
     cluster_name: str = "kiac"
+    rule_prefix: str = "KIAC"
     partitions: Dict[str, PartitionDoc] = field(default_factory=dict)
     preferred_storage: str = "/storage"
     assume_storage_writable: bool = False
+    preferred_storage_caveat: Optional[str] = None
+    home_path_prefix: Optional[str] = None
+    home_quota_note: Optional[str] = None
+    gpu_jobs_only_partitions: List[str] = field(default_factory=list)
+    gpu_vendor: str = "nvidia"
     gpu_catalog: List[str] = field(default_factory=list)
     discover_gres_types_live: bool = True
     node_partition_map: Dict[str, str] = field(default_factory=dict)
@@ -89,13 +96,14 @@ class SiteConfig:
         return parse_time(raw) if raw else None
 
 
-def load_site_config(path=None) -> SiteConfig:
+def load_site_config(path=None, site=None) -> SiteConfig:
     if path is None:
-        resolved = default_config_path()
+        resolved = default_config_path(site)
         if resolved is None:
+            wanted = site or os.environ.get("KIAC_SLURM_SITE") or "kiac"
             raise ConfigError(
-                "site config not found; pass --config PATH or set KIAC_SLURM_CONFIG "
-                f"(expected {repo_root() / 'config' / 'kiac.yaml'})"
+                f"site config not found for '{wanted}'; pass --config PATH or set "
+                f"KIAC_SLURM_CONFIG (expected {repo_root() / 'config' / (wanted + '.yaml')})"
             )
     else:
         resolved = Path(path)
@@ -104,6 +112,14 @@ def load_site_config(path=None) -> SiteConfig:
 
     text = resolved.read_text()
     data = _load_yaml(text)
+
+    if site and str(data.get("cluster") or "kiac") != site:
+        # an explicit --site that disagrees with the loaded file (e.g. a stale
+        # KIAC_SLURM_CONFIG) must be loud, never a silent site swap
+        raise ConfigError(
+            f"--site {site} requested but config {resolved} declares cluster "
+            f"'{data.get('cluster')}'; unset KIAC_SLURM_CONFIG or pass the matching site"
+        )
 
     partitions: Dict[str, PartitionDoc] = {}
     node_map: Dict[str, str] = {}
@@ -132,9 +148,15 @@ def load_site_config(path=None) -> SiteConfig:
     return SiteConfig(
         raw=data,
         cluster_name=str(data.get("cluster") or "kiac"),
+        rule_prefix=str(data.get("rule_prefix") or "KIAC"),
         partitions=partitions,
         preferred_storage=str(policy.get("preferred_storage") or "/storage"),
         assume_storage_writable=bool(policy.get("assume_storage_writable", False)),
+        preferred_storage_caveat=policy.get("preferred_storage_caveat"),
+        home_path_prefix=policy.get("home_path_prefix"),
+        home_quota_note=policy.get("home_quota_note"),
+        gpu_jobs_only_partitions=[str(p) for p in policy.get("gpu_jobs_only_partitions") or []],
+        gpu_vendor=str(data.get("gpu_vendor") or "nvidia").lower(),
         gpu_catalog=[str(g) for g in data.get("gpu_catalog_documented") or []],
         discover_gres_types_live=bool(data.get("discover_gres_types_live", True)),
         node_partition_map=node_map,

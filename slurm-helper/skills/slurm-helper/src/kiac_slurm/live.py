@@ -175,11 +175,12 @@ class ClusterState:
         return state
 
 
-def default_cache_dir() -> Path:
+def default_cache_dir(site_name=None) -> Path:
     env = os.environ.get("KIAC_SLURM_CACHE_DIR")
     if env:
         return Path(env)
-    return Path.home() / ".cache" / "kiac-slurm"
+    site = site_name or os.environ.get("KIAC_SLURM_SITE") or "kiac"
+    return Path.home() / ".cache" / "kiac-slurm" / site
 
 
 def slurm_available(runner: Optional[Runner] = None) -> bool:
@@ -193,10 +194,11 @@ def discover(
     cache_dir=None,
     ttl: float = DEFAULT_TTL,
     force: bool = False,
+    site_name=None,
 ) -> Optional[ClusterState]:
-    """One-shot cluster discovery, cached to avoid controller RPC spam."""
+    """One-shot cluster discovery, cached (per site) to avoid RPC spam."""
     runner = runner or Runner()
-    cache_file = (Path(cache_dir) if cache_dir else default_cache_dir()) / "cluster.json"
+    cache_file = (Path(cache_dir) if cache_dir else default_cache_dir(site_name)) / "cluster.json"
     if not force:
         cached = _load_cache(cache_file, ttl)
         if cached is not None:

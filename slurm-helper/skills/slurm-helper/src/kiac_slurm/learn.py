@@ -42,11 +42,15 @@ DEDUP_WINDOW_DAYS = 30
 # Observation store
 # ---------------------------------------------------------------------------
 
-def observations_path() -> Path:
+def _site_name(site_name=None) -> str:
+    return site_name or os.environ.get("KIAC_SLURM_SITE") or "kiac"
+
+
+def observations_path(site_name=None) -> Path:
     env = os.environ.get("KIAC_SLURM_OBSERVATIONS")
     if env:
         return Path(env)
-    return repo_root() / "var" / "observations.jsonl"
+    return repo_root() / "var" / f"observations.{_site_name(site_name)}.jsonl"
 
 
 def learning_enabled() -> bool:
@@ -57,14 +61,15 @@ def _now_iso() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
-def record(entry: dict) -> bool:
+def record(entry: dict, site_name=None) -> bool:
     """Append one observation (deduped); returns False when skipped/failed."""
     try:
         if not learning_enabled():
             return False
-        path = observations_path()
+        path = observations_path(site_name)
         path.parent.mkdir(parents=True, exist_ok=True)
         entry = dict(entry)
+        entry.setdefault("site", _site_name(site_name))
         entry.setdefault("ts", _now_iso())
         entry.setdefault("host", socket.gethostname())
         entry.setdefault("user", getpass.getuser())
@@ -198,7 +203,7 @@ def record_discovery(site: SiteConfig, state: ClusterState) -> int:
         return 0
     written = 0
     for entry in discovery_observations(site, state):
-        if record(entry):
+        if record(entry, site_name=site.cluster_name):
             written += 1
     return written
 
@@ -250,10 +255,10 @@ def parse_reason_evidence(reason: str, job_account: Optional[str] = None) -> Lis
     return out
 
 
-def record_job_reason(reason: str, job_account: Optional[str] = None) -> int:
+def record_job_reason(reason: str, job_account: Optional[str] = None, site_name=None) -> int:
     written = 0
     for entry in parse_reason_evidence(reason, job_account):
-        if record(entry):
+        if record(entry, site_name=site_name):
             written += 1
     return written
 
@@ -275,7 +280,7 @@ RAN_STATES = frozenset(
 )
 
 
-def record_job_success(state, account, partition, qos, jobid) -> int:
+def record_job_success(state, account, partition, qos, jobid, site_name=None) -> int:
     """Positive evidence: a job that reached a node proves its account/
     partition/QOS combination is schedulable — the strongest possible proof,
     and the one thing `sbatch --test-only` can never provide."""
@@ -293,7 +298,7 @@ def record_job_success(state, account, partition, qos, jobid) -> int:
                   + (f"/QOS" if qos else "") +
                   " combination is schedulable",
         "source": "job record",
-    })
+    }, site_name=site_name)
     return int(written)
 
 

@@ -1,4 +1,5 @@
 cluster: kiac
+rule_prefix: KIAC
 
 policy:
   compute_via_slurm_only: true

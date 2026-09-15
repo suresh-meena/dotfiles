@@ -1,17 +1,21 @@
 # slurm-helper
 
-A KIAC-aware Slurm skill: template-driven batch script generation plus a
-static linter and live scheduler preflight for the KIAC GPU cluster.
+A multi-site Slurm skill: template-driven batch script generation plus a
+static linter and live scheduler preflight for two clusters — the **KIAC**
+GPU cluster (default) and the **AMD MI210** GPU cluster (`--site amd`).
 
-The KIAC user manual contradicts itself (partition time limits, node counts,
-storage quotas) and ships examples that must not be copied (`--partition=general`,
-`--mem=16GB`). This skill encodes that distrust structurally: Slurm syntax is
-validated offline against SchedMD semantics, site facts (partitions, GRES
-types, MaxTime, accounts) come from the live controller or a dated
-`verified_live` section in `config/kiac.yaml` (confirmed by real jobs on
-2026-09-14), and only operational site policy comes from the manual — with
-every diagnostic labeled `verified-live`, `documented`, `document-conflict`,
-or `inferred`.
+Both site manuals contradict themselves or omit the facts that matter, and
+both ship examples that must not be copied (KIAC: `--partition=general`,
+`--mem=16GB`; AMD: `nvidia-smi` on MI210 hardware, a partition table that
+exists only in examples, `/scratch` purged weekly). This skill encodes that
+distrust structurally: Slurm syntax is validated offline against SchedMD
+semantics, site facts (partitions, GRES types, MaxTime, accounts) come from
+the live controller or a dated `verified_live` section in
+`config/<site>.yaml` (KIAC's confirmed by real jobs on 2026-09-14), and only
+operational site policy comes from the manuals — with every diagnostic
+labeled `verified-live`, `documented`, `document-conflict`, or `inferred`.
+Each site gets its own rule-ID prefix (KIAC0xx / AMD0xx), cache, and
+learning log.
 
 A critical encoded fact: `sbatch --test-only` does **not** enforce
 account/partition or QOS policy (a `chiru`/`a100` request passes the dry run

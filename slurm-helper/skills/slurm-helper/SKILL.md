@@ -1,23 +1,51 @@
 ---
 name: slurm-helper
 description: >
-  Create, validate, submit, and debug Slurm batch scripts on the KIAC GPU
-  cluster with a bundled CLI (kiac-slurm / slurm-check) that generates
-  templates, lints #SBATCH directives, and preflights against the live
-  scheduler. Use when writing or fixing Slurm scripts, submitting or
-  inspecting jobs, choosing partitions/GPUs/accounts, or interpreting
-  pending/failed job states on KIAC. Not for the AMD MI210 cluster or
-  generic fleet/SSH work (remote-fleet-operator).
+  Create, validate, submit, and debug Slurm batch scripts on two sites —
+  the KIAC GPU cluster and the AMD MI210 GPU cluster — with a bundled CLI
+  (kiac-slurm / slurm-check) that generates templates, lints #SBATCH
+  directives, and preflights against the live scheduler. Use when writing
+  or fixing Slurm scripts, submitting or inspecting jobs, choosing
+  partitions/GPUs/accounts, or interpreting pending/failed job states on
+  either cluster. Not for generic fleet/SSH orchestration work
+  (remote-fleet-operator).
 ---
 
-# Slurm Helper (KIAC)
+# Slurm Helper (KIAC + AMD MI210)
 
-Generate and validate Slurm batch scripts for the KIAC cluster. The bundled
-CLI lives in this skill's directory; run it via `bin/slurm-check` and
+Generate and validate Slurm batch scripts for the KIAC cluster (default
+site `kiac`) and the AMD MI210 GPU cluster (site `amd`). The bundled CLI
+lives in this skill's directory; run it via `bin/slurm-check` and
 `bin/kiac-slurm`, or install it (`pip install <skill-dir>`, which puts
 `kiac-slurm` on PATH). All examples below use `kiac-slurm`; substitute
 `python3 -m kiac_slurm` with the skill's `src/` on `PYTHONPATH` if neither
-entry point is on PATH.
+entry point is on PATH. The binary name predates multi-site support and is
+kept for compatibility — it serves both sites via `--site`.
+
+## Sites
+
+Each site has its own config (`config/<site>.yaml`), its own rule-ID
+prefix (KIAC0xx / AMD0xx; rule numbers are shared), its own cluster-state
+cache, and its own learning log. Select with `--site <name>` or
+`KIAC_SLURM_SITE=<name>`; the default is `kiac`.
+
+**kiac** (NVIDIA GPUs, 6 partitions, Slurm with accounts/QOS): see the
+verified facts below and
+[references/kiac-manual-audit.md](references/kiac-manual-audit.md).
+
+**amd** (3× 4-GPU MI210 nodes gn01–gn03, master mn01, storage sn01,
+Slurm 22.05.8 — old enough that `--live` will use the `scontrol` fallback;
+home is 20 GB under `/rhome/<user>`, `/scratch/<user>` is cleaned WEEKLY;
+Policy A: no non-Slurm jobs, violators blocked; Policy B: GPU queues are
+GPU-only and monitored). The manual gives **no partition table** —
+`GPU` and `jobgn01` are example-only names, no time limits documented, no
+accounts/QOS model described. Never run `nvidia-smi` there (the manual's
+own example does — use `rocm-smi`). Full audit:
+[references/amd-cluster.md](references/amd-cluster.md).
+
+Determine which site a request refers to from context (hostname, paths
+like `/rhome`, GPU vendor, or the user saying so); when genuinely
+ambiguous, ask. Per-site facts must never leak across sites.
 
 ## Source-of-truth model (read this first)
 
@@ -212,6 +240,9 @@ username accordingly, and re-verify after cluster changes.
   the KIAC manual says, where it conflicts, what the 2026-09-14 live
   verification resolved, and what remains unverified. Read before overriding
   any checker verdict "because the manual says so".
+- [references/amd-cluster.md](references/amd-cluster.md) — the AMD MI210
+  site audit: hardware, policies, storage reality, the manual's example
+  errors, and its explicit unknowns. Read before doing AMD work.
 - [references/SOURCES.md](references/SOURCES.md) — authoritative SchedMD
   pages (sbatch, GRES, sinfo/scontrol/squeue/sacct, job arrays, reason
   codes). Prefer these over random tutorials when answering Slurm syntax
