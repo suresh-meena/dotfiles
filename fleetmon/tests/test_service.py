@@ -13,13 +13,13 @@ import fleetmon.service as service_module
 from fleetmon.config import ConfigError, HubConfig
 from fleetmon.discovery import Inventory, Protocol, Target
 from fleetmon.poller import PollResult
-from fleetmon.protocol import encode_snapshot
+from fleetmon.protocol import SCHEMA_VERSION, encode_snapshot
 from fleetmon.service import HubRuntime
 
 
-def document(helper_version="1"):
+def document(helper_version=str(SCHEMA_VERSION)):
     return {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "observation_duration_seconds": 0.25,
         "collection_duration_seconds": 0.3,
@@ -40,7 +40,8 @@ def document(helper_version="1"):
             "swap_total_bytes": 0,
             "swap_used_bytes": 0,
         },
-        "disk": {"total_bytes": 100, "free_bytes": 50},
+        "disks": [{"mount": "/", "total_bytes": 100, "free_bytes": 50}],
+        "network": {"addresses": ["10.0.0.5"]},
         "gpus": [],
         "users": [],
         "processes": [],
@@ -194,8 +195,37 @@ def test_valid_poll_uses_explicit_target_and_commits_atomically(tmp_path):
     ]
     assert len(runtime.db.query("SELECT * FROM host_samples")) == 1
     assert runtime.db.hosts()[0]["state"] == "live"
-    assert runtime.db.hosts()[0]["helper_version"] == "1"
+    assert runtime.db.hosts()[0]["helper_version"] == str(SCHEMA_VERSION)
     assert runtime.db.hosts()[0]["last_success"] is not None
+    runtime.close()
+
+
+def test_valid_poll_surfaces_self_reported_addresses_and_disks(tmp_path):
+    doc = document()
+    doc["network"] = {"addresses": ["100.64.1.2", "10.0.0.5"]}
+    doc["disks"] = [
+        {"mount": "/", "total_bytes": 100, "free_bytes": 50},
+        {"mount": "/data", "total_bytes": 500, "free_bytes": 200},
+    ]
+    controller = Controller(PollResult(0, encode_snapshot(doc), b""))
+    runtime = HubRuntime(
+        config(tmp_path),
+        discover_fn=inventory,
+        poll_controller=controller,
+    )
+    runtime.refresh_inventory()
+    target = runtime.inventory.direct_targets[0]
+
+    result = asyncio.run(runtime.poll_target(target, "/opt/fleetmon/snapshot"))
+
+    assert result == "ok"
+    host = runtime.host("gpu1")
+    assert host["addresses"] == ["100.64.1.2", "10.0.0.5"]
+    assert host["disks"] == [
+        {"mount": "/", "total_bytes": 100, "free_bytes": 50},
+        {"mount": "/data", "total_bytes": 500, "free_bytes": 200},
+    ]
+    assert runtime.hosts()[0]["addresses"] == ["100.64.1.2", "10.0.0.5"]
     runtime.close()
 
 
@@ -318,7 +348,7 @@ def test_disk_guard_prevents_launch(tmp_path):
 
 def test_helper_version_mismatch_is_rejected(tmp_path):
     controller = Controller(
-        PollResult(0, encode_snapshot(document(helper_version="2")), b"")
+        PollResult(0, encode_snapshot(document(helper_version="1")), b"")
     )
     runtime = HubRuntime(
         config(tmp_path),

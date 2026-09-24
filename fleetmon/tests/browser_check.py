@@ -42,7 +42,11 @@ now = time.time()
 for index in range(25):
     doc = gpu_document(idle_gpus=2, busy_gpus=2)
     doc["memory"] = {"total_bytes": 128 * 2**30, "used_bytes": 68 * 2**30}
-    doc["disk"] = {"total_bytes": 1800 * 2**30, "free_bytes": 800 * 2**30}
+    doc["disks"] = [
+        {"mount": "/", "total_bytes": 1800 * 2**30, "free_bytes": 800 * 2**30},
+        {"mount": "/data", "total_bytes": 4000 * 2**30, "free_bytes": 900 * 2**30},
+    ]
+    doc["network"] = {"addresses": ["100.103.185.14", "10.0.0.21"]}
     doc["processes"] = [
         {
             "pid": 2200 + i,

@@ -1,6 +1,9 @@
 import pytest
 
 from fleetmon.protocol import (
+    MAX_ADDRESSES,
+    MAX_DISKS,
+    SCHEMA_VERSION,
     ProtocolError,
     decode_snapshot,
     encode_snapshot,
@@ -10,7 +13,7 @@ from fleetmon.protocol import (
 
 def minimal():
     return {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "captured_at": "2026-01-01T00:00:00Z",
         "observation_duration_seconds": 0.25,
         "collection_duration_seconds": 0.5,
@@ -19,7 +22,8 @@ def minimal():
         "status": "ok",
         "cpu": {"logical_count": 2, "busy_fraction": 0.5},
         "memory": {},
-        "disk": {},
+        "disks": [],
+        "network": {"addresses": []},
         "visibility": {
             "partial": False,
             "permission_denied": 0,
@@ -41,7 +45,7 @@ def minimal():
 
 def test_round_trip_and_validation():
     blob = encode_snapshot(minimal())
-    assert decode_snapshot(blob)["schema_version"] == 1
+    assert decode_snapshot(blob)["schema_version"] == SCHEMA_VERSION
     assert validate_snapshot(minimal())["status"] == "ok"
 
 
@@ -85,16 +89,65 @@ def test_rejects_integer_that_sqlite_cannot_store():
         validate_snapshot(document)
 
 
-@pytest.mark.parametrize(
-    "section,total_key,value_key",
-    [
-        ("memory", "total_bytes", "used_bytes"),
-        ("disk", "total_bytes", "free_bytes"),
-    ],
-)
-def test_rejects_used_or_free_values_above_total(section, total_key, value_key):
+def test_rejects_used_or_free_values_above_total():
     document = minimal()
-    document[section].update({total_key: 1, value_key: 2})
+    document["memory"].update({"total_bytes": 1, "used_bytes": 2})
+    with pytest.raises(ProtocolError):
+        validate_snapshot(document)
+
+
+def test_accepts_multiple_disks_and_rejects_free_above_total():
+    document = minimal()
+    document["disks"] = [
+        {"mount": "/", "total_bytes": 100, "free_bytes": 40},
+        {"mount": "/data", "total_bytes": 200, "free_bytes": 150},
+    ]
+    assert len(validate_snapshot(document)["disks"]) == 2
+
+    document["disks"][1]["free_bytes"] = 999
+    with pytest.raises(ProtocolError):
+        validate_snapshot(document)
+
+
+def test_rejects_duplicate_disk_mount_and_excess_disk_count():
+    document = minimal()
+    document["disks"] = [
+        {"mount": "/", "total_bytes": 1, "free_bytes": 1},
+        {"mount": "/", "total_bytes": 1, "free_bytes": 1},
+    ]
+    with pytest.raises(ProtocolError, match="duplicate disk"):
+        validate_snapshot(document)
+
+    document = minimal()
+    document["disks"] = [
+        {"mount": f"/m{i}", "total_bytes": 1, "free_bytes": 1}
+        for i in range(MAX_DISKS + 1)
+    ]
+    with pytest.raises(ProtocolError):
+        validate_snapshot(document)
+
+
+def test_accepts_self_reported_addresses_and_rejects_invalid_ones():
+    document = minimal()
+    document["network"]["addresses"] = ["100.64.1.2", "192.168.1.5"]
+    assert validate_snapshot(document)["network"]["addresses"] == [
+        "100.64.1.2",
+        "192.168.1.5",
+    ]
+
+    document["network"]["addresses"] = ["not-an-ip"]
+    with pytest.raises(ProtocolError):
+        validate_snapshot(document)
+
+
+def test_rejects_duplicate_address_and_excess_address_count():
+    document = minimal()
+    document["network"]["addresses"] = ["10.0.0.1", "10.0.0.1"]
+    with pytest.raises(ProtocolError, match="duplicate network"):
+        validate_snapshot(document)
+
+    document = minimal()
+    document["network"]["addresses"] = [f"10.0.0.{i}" for i in range(MAX_ADDRESSES + 1)]
     with pytest.raises(ProtocolError):
         validate_snapshot(document)
 

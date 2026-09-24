@@ -6,19 +6,19 @@ from fleetmon import cli
 from fleetmon.config import HubConfig
 from fleetmon.discovery import Inventory, Protocol, Target
 from fleetmon.poller import PollResult
-from fleetmon.protocol import encode_snapshot
+from fleetmon.protocol import SCHEMA_VERSION, encode_snapshot
 from fleetmon.smoke import PHASES, poll_gap_seconds, run_smoke
 from fleetmon.state import OperationalState
 
 
 def document():
     return {
-        "schema_version": 1,
+        "schema_version": SCHEMA_VERSION,
         "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "observation_duration_seconds": 0.25,
         "collection_duration_seconds": 0.3,
         "boot_id": "boot",
-        "helper_version": "1",
+        "helper_version": str(SCHEMA_VERSION),
         "status": "ok",
         "cpu": {
             "logical_count": 4,
@@ -34,7 +34,8 @@ def document():
             "swap_total_bytes": 0,
             "swap_used_bytes": 0,
         },
-        "disk": {"total_bytes": 100, "free_bytes": 50},
+        "disks": [{"mount": "/", "total_bytes": 100, "free_bytes": 50}],
+        "network": {"addresses": ["10.0.0.5"]},
         "gpus": [
             {
                 "uuid": "GPU-1",

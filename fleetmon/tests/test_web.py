@@ -57,6 +57,12 @@ def test_api_is_bounded_and_ranges_validated():
     assert body["bounded"] is True and body["count"] == 1
 
 
+def test_trusted_bind_serves_without_token():
+    app = create_app(Queries(), bind="10.218.99.41", trusted=True)
+    assert request(app, "GET", "/healthz").status_code == 200
+    assert request(app, "GET", "/api/overview").status_code == 200
+
+
 def test_non_loopback_requires_authentication():
     with pytest.raises(ValueError):
         create_app(bind="0.0.0.0")

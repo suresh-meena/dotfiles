@@ -243,6 +243,58 @@ class HubRuntime:
     def _gpu_freshness_seconds(self) -> float:
         return max(10.0, self.config.poll_interval_seconds * STALE_AFTER_POLL_INTERVALS)
 
+    async def _notify_host_health(self, target: str, *, skew: float | None) -> None:
+        if not self.config.notify_url:
+            return
+        try:
+            await self._notify_host_health_inner(target, skew=skew)
+        except Exception:
+            LOG.exception("host-health notification evaluation failed")
+
+    async def _notify_host_health_inner(
+        self, target: str, *, skew: float | None
+    ) -> None:
+        now = time.time()
+        target_state = self.state.target(target)
+        if skew is not None:
+            await self._local(
+                self.state.update_target, target, last_capture_skew=float(skew)
+            )
+        else:
+            stored = target_state.get("last_capture_skew")
+            skew = float(stored) if isinstance(stored, (int, float)) else None
+        failures = int(target_state.get("failures", 0) or 0)
+        events, notified = notify.evaluate_host_health(
+            failures,
+            target_state.get("last_error"),
+            skew,
+            target_state.get("health_notified") or {},
+        )
+        old_notified = target_state.get("health_notified") or {}
+        if not events and notified == old_notified:
+            return
+        if events:
+            notified, next_retry = await asyncio.to_thread(
+                notify.notify_host_events,
+                target,
+                events,
+                notified,
+                float(target_state.get("health_next_retry", 0) or 0),
+                now,
+                self.config.notify_url,
+                self.notify_poster,
+            )
+            await self._local(
+                self.state.update_target,
+                target,
+                health_notified=notified,
+                health_next_retry=next_retry,
+            )
+        else:
+            await self._local(
+                self.state.update_target, target, health_notified=notified
+            )
+
     async def _notify_gpu_free_inner(self, target: str) -> None:
         if not self.config.notify_url:
             return
@@ -432,6 +484,9 @@ class HubRuntime:
                     last_error=None,
                 )
                 await self._notify_gpu_free(target.name)
+                await self._notify_host_health(
+                    target.name, skew=received - captured
+                )
                 return "ok"
             except ProtocolError as exc:
                 code = self._protocol_error_code(exc)
@@ -467,6 +522,7 @@ class HubRuntime:
             delay,
         )
         await self._local(self._invalidate_gpu_window)
+        await self._notify_host_health(target.name, skew=None)
         return code
 
     async def _poll_slurm_command(
@@ -742,8 +798,10 @@ class HubRuntime:
         return create_app(
             self,
             bind=self.config.bind_host,
-            authenticated=bool(self.config.auth_token),
+            authenticated=bool(self.config.auth_token)
+            and not self.config.bind_is_trusted(),
             auth_token=self.config.auth_token,
+            trusted=self.config.bind_is_trusted(),
         )
 
     def hosts(self, **_: Any) -> list[dict[str, Any]]:
@@ -969,6 +1027,16 @@ class HubRuntime:
 
     def _freshen_host(self, row: dict[str, Any]) -> dict[str, Any]:
         """Derive freshness at read time without mutating persisted history."""
+
+        addresses = row.get("addresses")
+        if isinstance(addresses, str):
+            try:
+                decoded = json.loads(addresses)
+            except ValueError:
+                decoded = []
+            row["addresses"] = decoded if isinstance(decoded, list) else []
+        elif not isinstance(addresses, list):
+            row["addresses"] = []
 
         state = row.get("state")
         now = time.time()

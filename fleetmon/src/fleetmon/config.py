@@ -8,7 +8,7 @@ import shutil
 import stat as stat_module
 from collections.abc import Mapping
 from dataclasses import dataclass
-from ipaddress import ip_address, ip_network
+from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,7 @@ MAX_STDERR_BYTES = 64 * 1024
 MAX_API_ROWS = 1_000
 MAX_TARGET_NAME_LENGTH = 256
 MAX_TARGET_FILTERS = 1_000
+MAX_TRUSTED_NETWORKS = 16
 
 
 class ConfigError(ValueError):
@@ -47,6 +48,7 @@ class HubConfig:
     bind_host: str = "127.0.0.1"
     bind_port: int = 8088
     auth_token: str | None = None
+    trusted_networks: tuple[IPv4Network | IPv6Network, ...] = ()
     notify_url: str | None = None
     polling_enabled: bool = True
     disabled_targets: tuple[str, ...] = ()
@@ -65,6 +67,28 @@ class HubConfig:
     retention_days: int = 30
     disk_reserve_bytes: int = 512 * 1024 * 1024
     backup_dir: Path | None = None
+
+    def bind_is_trusted(self) -> bool:
+        """Whether this bind sits inside a network trusted to skip the token.
+
+        Loopback and the mesh-VPN CGNAT range are always trusted. A bind
+        inside a configured ``trusted_networks`` range is trusted the same
+        way: the network, not this application, is the authentication
+        boundary. The wildcard bind is trusted only when explicit trusted
+        networks are configured, because it spans every interface at once.
+        """
+
+        if _is_loopback_bind(self.bind_host) or _is_vpn_bind(self.bind_host):
+            return True
+        if not self.trusted_networks:
+            return False
+        if self.bind_host in {"0.0.0.0", "::"}:
+            return True
+        try:
+            address = ip_address(self.bind_host)
+        except ValueError:
+            return False
+        return any(address in net for net in self.trusted_networks)
 
     @classmethod
     def defaults(cls) -> HubConfig:
@@ -194,17 +218,23 @@ class HubConfig:
             raise ConfigError(f"stderr_bytes must be <= {MAX_STDERR_BYTES}")
         if not 1 <= self.bind_port <= 65_535:
             raise ConfigError("bind_port must be 1..65535")
-        if (
-            not _is_loopback_bind(self.bind_host)
-            and not _is_vpn_bind(self.bind_host)
-            and (
-                not self.auth_token
-                or not self.auth_token.strip()
-                or len(self.auth_token) < 32
+        if not isinstance(self.trusted_networks, tuple) or any(
+            not isinstance(net, (IPv4Network, IPv6Network))
+            for net in self.trusted_networks
+        ):
+            raise ConfigError("hub.trusted_networks must be a tuple of networks")
+        if len(self.trusted_networks) > MAX_TRUSTED_NETWORKS:
+            raise ConfigError(
+                f"hub.trusted_networks must contain <= {MAX_TRUSTED_NETWORKS} networks"
             )
+        if not self.bind_is_trusted() and (
+            not self.auth_token
+            or not self.auth_token.strip()
+            or len(self.auth_token) < 32
         ):
             raise ConfigError(
-                "non-loopback bind requires FLEETMON_AUTH_TOKEN with at least 32 characters"
+                "non-loopback bind requires FLEETMON_AUTH_TOKEN with at least 32 "
+                "characters, or the bind address must be inside hub.trusted_networks"
             )
         if not 1 <= self.retention_days <= 365:
             raise ConfigError("retention_days must be 1..365")
@@ -258,6 +288,34 @@ def _is_vpn_bind(host: str) -> bool:
         return ip_address(host) in ip_network("100.64.0.0/10")
     except ValueError:
         return False
+
+
+def _trusted_networks_from_config(
+    value: Any,
+) -> tuple[IPv4Network | IPv6Network, ...]:
+    """Parse ``hub.trusted_networks``: a bounded list of CIDR strings.
+
+    Bare addresses are accepted and become single-host networks. Everything
+    invalid fails closed: a mistyped range must never silently widen or
+    narrow the authentication boundary.
+    """
+
+    if value is None:
+        return ()
+    if not isinstance(value, list) or len(value) > MAX_TRUSTED_NETWORKS:
+        raise ConfigError(
+            "hub.trusted_networks must be an array of at most "
+            f"{MAX_TRUSTED_NETWORKS} CIDR strings"
+        )
+    networks: list[IPv4Network | IPv6Network] = []
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ConfigError("hub.trusted_networks entries must be non-empty strings")
+        try:
+            networks.append(ip_network(entry.strip(), strict=False))
+        except ValueError as exc:
+            raise ConfigError(f"hub.trusted_networks: invalid CIDR {entry!r}") from exc
+    return tuple(networks)
 
 
 def _stat_dev(path: Path) -> int | None:
@@ -399,6 +457,7 @@ def load_config(path: Path | None = None) -> HubConfig:
             "database_path",
             "bind_host",
             "bind_port",
+            "trusted_networks",
             "backup_dir",
         },
         "hub",
@@ -444,6 +503,7 @@ def load_config(path: Path | None = None) -> HubConfig:
     backup_dir = None
     if hub.get("backup_dir") is not None:
         backup_dir = Path(_string(hub.get("backup_dir"), "hub.backup_dir")).expanduser()
+    trusted_networks = _trusted_networks_from_config(hub.get("trusted_networks"))
 
     return HubConfig(
         fleetctl_path=Path(
@@ -457,6 +517,7 @@ def load_config(path: Path | None = None) -> HubConfig:
         bind_host=_string(hub.get("bind_host", defaults.bind_host), "hub.bind_host"),
         bind_port=_integer(hub.get("bind_port", defaults.bind_port), "hub.bind_port"),
         auth_token=auth_token,
+        trusted_networks=trusted_networks,
         notify_url=_notify_url_from_environment(),
         polling_enabled=_boolean(
             polling.get("enabled", defaults.polling_enabled), "polling.enabled"

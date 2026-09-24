@@ -340,3 +340,117 @@ def test_mesh_vpn_bind_needs_no_token() -> None:
     lan = HubConfig(**{**defaults.__dict__, "bind_host": "10.0.0.5"})
     with pytest.raises(ConfigError, match="FLEETMON_AUTH_TOKEN"):
         lan.validate()
+
+
+def test_trusted_network_lets_lan_bind_skip_the_token() -> None:
+    from ipaddress import ip_network
+
+    defaults = HubConfig.defaults()
+    config = HubConfig(
+        **{
+            **defaults.__dict__,
+            "bind_host": "10.218.99.41",
+            "trusted_networks": (ip_network("10.0.0.0/8"),),
+        }
+    )
+    assert config.validate().bind_is_trusted() is True
+
+
+def test_lan_bind_without_trusted_networks_still_requires_token() -> None:
+    defaults = HubConfig.defaults()
+    unsafe = HubConfig(**{**defaults.__dict__, "bind_host": "10.218.99.41"})
+    with pytest.raises(ConfigError, match="FLEETMON_AUTH_TOKEN"):
+        unsafe.validate()
+
+
+def test_wildcard_bind_is_trusted_only_with_explicit_networks() -> None:
+    from ipaddress import ip_network
+
+    defaults = HubConfig.defaults()
+    trusted = HubConfig(
+        **{
+            **defaults.__dict__,
+            "bind_host": "0.0.0.0",
+            "trusted_networks": (ip_network("10.0.0.0/8"), ip_network("100.64.0.0/10")),
+        }
+    )
+    assert trusted.validate().bind_is_trusted() is True
+    untrusted = HubConfig(**{**defaults.__dict__, "bind_host": "0.0.0.0"})
+    with pytest.raises(ConfigError, match="FLEETMON_AUTH_TOKEN"):
+        untrusted.validate()
+
+
+def test_bind_outside_configured_trusted_networks_is_untrusted() -> None:
+    from ipaddress import ip_network
+
+    defaults = HubConfig.defaults()
+    config = HubConfig(
+        **{
+            **defaults.__dict__,
+            "bind_host": "192.168.5.5",
+            "trusted_networks": (ip_network("10.0.0.0/8"),),
+        }
+    )
+    assert config.bind_is_trusted() is False
+    with pytest.raises(ConfigError, match="FLEETMON_AUTH_TOKEN"):
+        config.validate()
+
+
+def test_load_parses_trusted_networks_and_rejects_bad_entries(
+    tmp_path: Path,
+) -> None:
+    fleetctl = tmp_path / "fleetctl"
+    fleetctl.write_text("#!/bin/sh\nexit 0\n")
+    fleetctl.chmod(0o700)
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f"""
+[hub]
+state_dir = "{tmp_path}/state"
+fleetctl_path = "{fleetctl}"
+bind_host = "10.218.99.41"
+trusted_networks = ["10.0.0.0/8", "192.168.1.14"]
+""".lstrip()
+    )
+    config = load_config(path)
+    assert config.bind_host == "10.218.99.41"
+    assert len(config.trusted_networks) == 2
+    assert config.bind_is_trusted() is True
+
+    path.write_text(
+        f"""
+[hub]
+state_dir = "{tmp_path}/state"
+fleetctl_path = "{fleetctl}"
+trusted_networks = ["not-a-cidr"]
+""".lstrip()
+    )
+    with pytest.raises(ConfigError, match="invalid CIDR"):
+        load_config(path)
+
+    path.write_text(
+        f"""
+[hub]
+state_dir = "{tmp_path}/state"
+fleetctl_path = "{fleetctl}"
+trusted_networks = "10.0.0.0/8"
+""".lstrip()
+    )
+    with pytest.raises(ConfigError, match="array"):
+        load_config(path)
+
+
+def test_trusted_networks_cap_fails_closed() -> None:
+    from ipaddress import ip_network
+
+    defaults = HubConfig.defaults()
+    bloated = HubConfig(
+        **{
+            **defaults.__dict__,
+            "trusted_networks": tuple(
+                ip_network(f"10.{i}.0.0/16") for i in range(17)
+            ),
+        }
+    )
+    with pytest.raises(ConfigError, match="<= 16"):
+        bloated.validate()

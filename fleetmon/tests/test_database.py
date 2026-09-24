@@ -1,9 +1,11 @@
+import json
 import sqlite3
 
 import pytest
 
 from fleetmon.database import (
     MAX_STORED_GPU_ALLOCATIONS,
+    SCHEMA_VERSION,
     Database,
     DatabaseVersionError,
 )
@@ -24,7 +26,8 @@ def sample():
             "load_15m": 3,
         },
         "memory": {"total_bytes": 100, "used_bytes": 50},
-        "disk": {"total_bytes": 200, "free_bytes": 100},
+        "disks": [{"mount": "/", "total_bytes": 200, "free_bytes": 100}],
+        "network": {"addresses": ["10.0.0.5"]},
         "gpus": [{"uuid": "u", "index": 0}],
         "users": [
             {
@@ -69,6 +72,53 @@ def test_atomic_snapshot_and_wire_keys(tmp_path):
     assert row["counters_truncated"] == 0 and row["limits_truncated"] == 0
     assert row["nvml_supported"] == 1
     assert row["nvml_error"] is None and row["psutil_error"] is None
+
+
+def test_snapshot_stores_every_disk_and_derives_root_from_the_slash_mount(tmp_path):
+    document = sample()
+    document["disks"] = [
+        {"mount": "/", "total_bytes": 200, "free_bytes": 100},
+        {"mount": "/data", "total_bytes": 1000, "free_bytes": 400},
+    ]
+    db = Database(tmp_path / "x.db")
+    db.upsert_host("h", "compute", "direct")
+    db.snapshot("p", "h", document, 10)
+    host_row = db.query("select root_total, root_free from host_samples")[0]
+    assert host_row["root_total"] == 200 and host_row["root_free"] == 100
+    rows = db.query(
+        "SELECT mount, total_bytes, free_bytes FROM current_disks "
+        "WHERE target='h' ORDER BY mount"
+    )
+    assert [dict(row) for row in rows] == [
+        {"mount": "/", "total_bytes": 200, "free_bytes": 100},
+        {"mount": "/data", "total_bytes": 1000, "free_bytes": 400},
+    ]
+    host = db.host("h")
+    assert host["disks"] == [dict(row) for row in rows]
+
+
+def test_snapshot_replaces_current_disks_and_stores_addresses(tmp_path):
+    db = Database(tmp_path / "x.db")
+    db.upsert_host("h", "compute", "direct")
+    first = sample()
+    first["disks"] = [{"mount": "/", "total_bytes": 200, "free_bytes": 100}]
+    first["network"] = {"addresses": ["10.0.0.5"]}
+    db.snapshot("p1", "h", first, 10)
+
+    second = sample()
+    second["disks"] = [
+        {"mount": "/", "total_bytes": 200, "free_bytes": 90},
+        {"mount": "/mnt/data", "total_bytes": 5000, "free_bytes": 1000},
+    ]
+    second["network"] = {"addresses": ["10.0.0.5", "100.64.1.2"]}
+    db.snapshot("p2", "h", second, 20)
+
+    rows = db.query(
+        "SELECT mount FROM current_disks WHERE target='h' ORDER BY mount"
+    )
+    assert [row["mount"] for row in rows] == ["/", "/mnt/data"]
+    stored = db.hosts()[0]
+    assert json.loads(stored["addresses"]) == ["10.0.0.5", "100.64.1.2"]
 
 
 def test_minimal_sample_defaults_keep_missing_operational_fields_unknown(tmp_path):
@@ -462,11 +512,79 @@ def test_backup_refuses_to_overwrite_an_existing_file(tmp_path):
 
 def test_schema_version_is_recorded(tmp_path):
     db = Database(tmp_path / "x.db")
-    assert db.query("select version from schema_migrations")[0]["version"] == 2
-    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert db.query("select version from schema_migrations")[0]["version"] == (
+        SCHEMA_VERSION
+    )
+    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert (tmp_path / "x.db").stat().st_mode & 0o777 == 0o600
     assert (tmp_path / "x.db-wal").stat().st_mode & 0o777 == 0o600
     assert (tmp_path / "x.db-shm").stat().st_mode & 0o777 == 0o600
+
+
+def test_v2_database_migrates_in_place_without_losing_history(tmp_path):
+    """A real pre-upgrade (v2) database gains the new column/table in place.
+
+    Simulates the shape a live v2 Fleetmon database actually has: no
+    ``hosts.addresses`` column and no ``current_disks`` table. Reopening it
+    must add both, keep every existing row, and never fall back to refusing
+    the file or discarding it.
+    """
+
+    path = tmp_path / "live.db"
+    db = Database(path)
+    db.upsert_host("gpu1", "compute", "direct")
+    db.snapshot("p1", "gpu1", sample(), 10)
+    db.close()
+
+    connection = sqlite3.connect(path)
+    connection.execute("ALTER TABLE hosts RENAME TO hosts_v2")
+    connection.execute(
+        """
+        CREATE TABLE hosts (
+            target TEXT PRIMARY KEY, role TEXT NOT NULL, protocol TEXT NOT NULL,
+            state TEXT NOT NULL, helper_path TEXT, helper_version TEXT,
+            last_captured TEXT, last_received REAL, last_success REAL,
+            last_error TEXT, backoff REAL NOT NULL DEFAULT 0, updated_at REAL NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO hosts (
+            target, role, protocol, state, helper_path, helper_version,
+            last_captured, last_received, last_success, last_error, backoff,
+            updated_at
+        )
+        SELECT target, role, protocol, state, helper_path, helper_version,
+               last_captured, last_received, last_success, last_error, backoff,
+               updated_at
+        FROM hosts_v2
+        """
+    )
+    connection.execute("DROP TABLE hosts_v2")
+    connection.execute("DROP TABLE current_disks")
+    connection.execute("DELETE FROM schema_migrations WHERE version=3")
+    connection.execute(
+        "INSERT INTO schema_migrations(version, applied_at) VALUES (2, 0)"
+    )
+    connection.execute("PRAGMA user_version=2")
+    connection.commit()
+    connection.close()
+
+    db = Database(path)
+    try:
+        assert db.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        versions = {row["version"] for row in db.query("SELECT version FROM schema_migrations")}
+        assert {2, 3}.issubset(versions)
+        host_row = db.hosts()[0]
+        assert host_row["target"] == "gpu1"
+        assert host_row["addresses"] is None
+        assert len(db.query("SELECT * FROM host_samples")) == 1
+        db.snapshot("p2", "gpu1", sample(), 20)
+        assert db.hosts()[0]["addresses"] is not None
+        assert db.query("SELECT * FROM current_disks WHERE target='gpu1'")
+    finally:
+        db.close()
 
 
 def test_unversioned_existing_database_is_refused(tmp_path):
@@ -481,20 +599,20 @@ def test_unversioned_existing_database_is_refused(tmp_path):
 def test_malformed_current_version_schema_is_refused_without_modification(tmp_path):
     path = tmp_path / "mismatch.db"
     connection = sqlite3.connect(path)
-    connection.execute("PRAGMA user_version=2")
+    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     connection.execute(
         "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at REAL)"
     )
     connection.execute("CREATE TABLE polls(poll_id TEXT PRIMARY KEY)")
     connection.execute(
-        "INSERT INTO schema_migrations(version, applied_at) VALUES (2, 0)"
+        f"INSERT INTO schema_migrations(version, applied_at) VALUES ({SCHEMA_VERSION}, 0)"
     )
     connection.commit()
     connection.close()
     with pytest.raises(DatabaseVersionError, match="schema"):
         Database(path)
     connection = sqlite3.connect(path)
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert (
         connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
@@ -524,7 +642,7 @@ def test_newer_version_database_is_refused(tmp_path):
     db = Database(path)
     db.close()
     connection = sqlite3.connect(path)
-    connection.execute("PRAGMA user_version=3")
+    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
     connection.commit()
     connection.close()
     with pytest.raises(DatabaseVersionError, match="newer"):

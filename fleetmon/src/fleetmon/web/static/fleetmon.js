@@ -608,6 +608,7 @@
     renderIssues(host, latest);
     renderGpus(host.gpus, host.processes);
     renderMeters(latest);
+    renderDisks(host.disks);
     renderCharts();
     renderWorkloads(host.processes);
     renderUsers(host.users, latest);
@@ -620,6 +621,12 @@
     bar.append(el("span", "host-name", target));
     bar.append(token(host.state));
     if (host.last_error) bar.append(token(host.last_error));
+    const addresses = Array.isArray(host.addresses)
+      ? host.addresses.filter((address) => typeof address === "string" && address)
+      : [];
+    if (addresses.length) {
+      bar.append(el("span", "host-ip", addresses.join(", ")));
+    }
     bar.append(
       el(
         "span",
@@ -778,6 +785,41 @@
       );
     });
     content.append(grid);
+  }
+
+  function diskItemFraction(disk) {
+    return _number(disk.total_bytes) &&
+      _number(disk.free_bytes) &&
+      disk.total_bytes > 0
+      ? (disk.total_bytes - disk.free_bytes) / disk.total_bytes
+      : null;
+  }
+
+  function renderDisks(disks) {
+    heading("Disks");
+    const list = Array.isArray(disks)
+      ? disks.filter((disk) => disk && typeof disk === "object")
+      : [];
+    if (!list.length) {
+      note(
+        Array.isArray(disks) ? "no disk data in the latest sample" : "disk data unknown for this host",
+      );
+      return;
+    }
+    const columns = [{label: "mount"}, {label: "used / total", num: true}];
+    const tbody = dataTable(columns, "disks");
+    list.forEach((disk) => {
+      const fraction = diskItemFraction(disk);
+      rowOf(tbody, columns, [
+        _text(disk.mount),
+        {
+          node: meter(fraction, rootDisk(disk.total_bytes, disk.free_bytes)),
+          raw: fraction,
+        },
+      ]);
+    });
+    tbody.applySavedSort();
+    content.append(scrollTable(tbody.parentNode));
   }
 
   function renderMeters(latest) {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import heapq
+import ipaddress
 import math
 import os
 import time
@@ -11,6 +12,8 @@ from contextlib import suppress
 from typing import Any
 
 from .protocol import (
+    MAX_ADDRESSES,
+    MAX_DISKS,
     MAX_GPU_ALLOCATIONS,
     MAX_GPUS,
     MAX_PROCESSES,
@@ -585,7 +588,6 @@ def collect_snapshot(
         "swap_total_bytes": None,
         "swap_used_bytes": None,
     }
-    disk: dict[str, int | None] = {"total_bytes": None, "free_bytes": None}
     if psutil:
         try:
             m = psutil.virtual_memory()
@@ -599,13 +601,8 @@ def collect_snapshot(
             memory.update(swap_total_bytes=s.total, swap_used_bytes=s.used)
         except Exception:
             pass
-    try:
-        st = os.statvfs("/")
-        disk.update(
-            total_bytes=st.f_blocks * st.f_frsize, free_bytes=st.f_bavail * st.f_frsize
-        )
-    except OSError:
-        pass
+    disks = _local_disks(psutil)
+    addresses = _local_addresses(psutil)
     visibility["processes_emitted"] = len(processes)
     collection_duration = time.monotonic() - started
     return {
@@ -626,7 +623,8 @@ def collect_snapshot(
             "load_15m": _load(2),
         },
         "memory": memory,
-        "disk": disk,
+        "disks": disks,
+        "network": {"addresses": addresses},
         "gpus": gpus,
         "users": users_list,
         "processes": processes,
@@ -649,6 +647,92 @@ def _load(index: int) -> float | None:
         return os.getloadavg()[index]
     except OSError:
         return None
+
+
+_NOISE_FSTYPES = {"squashfs"}
+
+
+def _local_disks(psutil: Any) -> list[dict[str, Any]]:
+    """Enumerate real mounted filesystems, bounded, root always included.
+
+    ``psutil.disk_partitions(all=False)`` already excludes pseudo/virtual
+    filesystems (proc, sysfs, tmpfs, overlay), but not read-only squashfs
+    loop mounts: a single snap-heavy host reports dozens of those, each a
+    fixed-size package image with permanently zero free space, which would
+    otherwise crowd out the real, informative mounts under ``MAX_DISKS``.
+    Root is added explicitly so a host is never reported with zero disks
+    when psutil is unavailable.
+    """
+
+    mounts: list[str] = []
+    if psutil is not None:
+        try:
+            mounts = [
+                partition.mountpoint
+                for partition in psutil.disk_partitions(all=False)
+                if isinstance(getattr(partition, "mountpoint", None), str)
+                and partition.fstype not in _NOISE_FSTYPES
+            ]
+        except Exception:
+            mounts = []
+    if "/" not in mounts:
+        mounts.append("/")
+    disks: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for mount in mounts:
+        if mount in seen or len(disks) >= MAX_DISKS:
+            continue
+        seen.add(mount)
+        try:
+            st = os.statvfs(mount)
+        except OSError:
+            continue
+        disks.append(
+            {
+                "mount": mount,
+                "total_bytes": st.f_blocks * st.f_frsize,
+                "free_bytes": st.f_bavail * st.f_frsize,
+            }
+        )
+    return disks
+
+
+def _local_addresses(psutil: Any) -> list[str]:
+    """Report this host's own non-loopback IPs, bounded and deduplicated.
+
+    Self-reported by the machine being monitored, the same as cpu/ram/disk,
+    rather than resolved from any connection secret fleetctl holds.
+    """
+
+    if psutil is None:
+        return []
+    addresses: list[str] = []
+    seen: set[str] = set()
+    try:
+        interfaces = psutil.net_if_addrs()
+    except Exception:
+        return []
+    for name, entries in interfaces.items():
+        if name == "lo":
+            continue
+        for entry in entries:
+            raw = getattr(entry, "address", None)
+            if not isinstance(raw, str) or not raw:
+                continue
+            try:
+                parsed = ipaddress.ip_address(raw.split("%", 1)[0])
+            except ValueError:
+                continue
+            if parsed.is_loopback or parsed.is_link_local:
+                continue
+            text = str(parsed)
+            if text in seen:
+                continue
+            seen.add(text)
+            addresses.append(text)
+            if len(addresses) >= MAX_ADDRESSES:
+                return addresses
+    return addresses
 
 
 def _boot_id() -> str:

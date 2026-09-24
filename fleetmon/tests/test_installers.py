@@ -147,7 +147,7 @@ case "$1" in
         if [ "$6" != "-m" ] || [ "$7" != "pip" ] || [ "$8" != "install" ]; then exit 1; fi
         ;;
       */fleetmon-snapshot)
-        printf '%s\n' '{"schema_version":1,"status":"ok","helper_version":"1","captured_at":"2026-09-04T00:00:00Z","limits":{"truncated":false}}'
+        printf '%s\n' '{"schema_version":2,"status":"ok","helper_version":"2","captured_at":"2026-09-04T00:00:00Z","limits":{"truncated":false}}'
         ;;
       *) exit 1 ;;
     esac
@@ -857,6 +857,148 @@ def test_helper_authorized_install_success_full_flow(tmp_path: Path) -> None:
         in result.stdout
     )
     assert f"installed: target=ada1 helper_version={version}" in result.stdout
+
+
+def _clear_version_dir_snippet() -> str:
+    """Extract the embedded remote Python for the clear-version-dir step.
+
+    Runs the exact snippet install-helper ships to the remote interpreter,
+    without any fleetctl mocking, so the test exercises the real check
+    rather than a hand-maintained stand-in for it.
+    """
+
+    text = HELPER.read_text()
+    marker = "# fleetmon: clear-version-dir\n"
+    start = text.index(marker)
+    end = text.index("\n'", start)
+    return text[start:end]
+
+
+def test_clear_version_dir_snippet_refuses_deleting_the_active_version(
+    tmp_path: Path,
+) -> None:
+    """Bash orchestration bug regression: this refusal previously never
+    reached the caller as ``version_dir_is_active`` because ``clear_status=$?``
+    was read right after ``if ! cmd; then``, which bash collapses to 0/1 and
+    discards the real exit code. The refusal itself (never deleting the
+    active version) always worked; only the diagnostic was wrong. This test
+    targets the underlying Python check directly, independent of that bash
+    bug or its fix.
+    """
+
+    version_dir = tmp_path / "helpers" / "0.3.0"
+    (version_dir / "venv" / "bin").mkdir(parents=True)
+    marker = version_dir / "venv" / "bin" / "fleetmon-snapshot"
+    marker.write_text("sentinel")
+    current = tmp_path / "helpers" / "current"
+    current.symlink_to(version_dir)
+
+    result = run(
+        sys.executable,
+        "-c",
+        _clear_version_dir_snippet(),
+        str(current),
+        str(version_dir),
+        env=dict(os.environ),
+    )
+
+    assert result.returncode == 2
+    assert version_dir.is_dir()
+    assert marker.read_text() == "sentinel"
+
+
+def test_clear_version_dir_snippet_removes_a_stale_failed_attempt(
+    tmp_path: Path,
+) -> None:
+    version_dir = tmp_path / "helpers" / "0.3.0"
+    version_dir.mkdir(parents=True)
+    (version_dir / "leftover").write_text("from a failed install")
+    current = tmp_path / "helpers" / "current"
+    other_version = tmp_path / "helpers" / "0.2.0"
+    other_version.mkdir(parents=True)
+    current.symlink_to(other_version)
+
+    result = run(
+        sys.executable,
+        "-c",
+        _clear_version_dir_snippet(),
+        str(current),
+        str(version_dir),
+        env=dict(os.environ),
+    )
+
+    assert result.returncode == 0
+    assert not version_dir.exists()
+    assert current.is_symlink()
+
+
+def _find_python_snippet() -> str:
+    """Extract the embedded remote python-discovery loop, unmocked.
+
+    Runs the exact POSIX-sh probe install-helper ships to the remote shell,
+    so the test exercises the real candidate loop rather than a
+    hand-maintained stand-in for it.
+    """
+
+    text = HELPER.read_text()
+    marker = "# fleetmon: find-python\n"
+    start = text.index(marker)
+    end = text.index("\n') || finder_status=$?", start)
+    return text[start:end]
+
+
+def test_find_python_snippet_skips_a_candidate_whose_venv_cannot_boot(
+    tmp_path: Path,
+) -> None:
+    """Regression test for a relocatable/portable interpreter build.
+
+    A real-world ``~/.local/bin/python3.12`` passed every check this probe
+    used to run (version >= 3.10, its own ``ensurepip --version``) yet any
+    venv it created failed at the most basic interpreter bootstrap
+    (``ModuleNotFoundError: No module named 'encodings'``) because its
+    baked-in prefix could not find the stdlib outside its original build
+    tree. The probe must create a throwaway venv and confirm *that* venv's
+    own interpreter actually starts, not just trust the launcher.
+    """
+
+    home = tmp_path / "home"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    # Tried first (.local/bin/python3.12 precedes .../python3.11 in the
+    # candidate order): claims a valid version, then fails venv creation
+    # every time, exactly like the real broken build.
+    fake_broken_python = local_bin / "python3.12"
+    fake_broken_python.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "  -c) exit 0 ;;\n"  # version check: claims to be >=3.10
+        "  -m) [ \"$2\" = venv ] && exit 1 ;;\n"  # venv creation always fails
+        "esac\n"
+        "exit 1\n"
+    )
+    fake_broken_python.chmod(0o700)
+    # Tried next, also via an absolute .local/bin path (no PATH lookup
+    # involved): a real, fully working interpreter.
+    working_python = local_bin / "python3.11"
+    working_python.symlink_to(sys.executable)
+
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "TMPDIR": str(tmp_path),
+    }
+    result = subprocess.run(
+        ["sh", "-c", _find_python_snippet()],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    selected = result.stdout.strip()
+    assert selected, result.stderr
+    assert Path(selected).resolve() == Path(sys.executable).resolve()
 
 
 def test_helper_refuses_remote_stage_hash_mismatch_before_install(

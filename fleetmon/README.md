@@ -38,6 +38,14 @@ clients may send the same token as a Bearer header. Put Fleetmon behind a
 maintained TLS reverse proxy before exposing such a bind beyond a trusted
 network.
 
+As an explicit alternative to the token, `hub.trusted_networks` names CIDR
+ranges that are trusted boundaries in their own right, exactly like the
+mesh-VPN range above: a bind inside one of them (or a wildcard bind when any
+range is configured) needs no token. This exists for fleets whose dashboard
+must open without a login on an already-secured lab LAN; listing a range
+there is an operator statement that the network itself authenticates every
+device on it. Unknown or malformed entries fail startup.
+
 The token never belongs in TOML, command arguments, logs, or this repository.
 Supply it in one of two ways, and set only one:
 

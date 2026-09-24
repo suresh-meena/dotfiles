@@ -25,6 +25,8 @@ GPU_IDLE = "idle"
 GPU_BUSY = "busy"
 GPU_UNKNOWN = "unknown"
 GPU_STALE = "stale"
+CLOCK_DRIFT_SECONDS = 120.0
+POLL_FAILURES_NOTIFY = 3
 MAX_NOTIFY_URL_BYTES = 512
 NOTIFY_TIMEOUT_SECONDS = 5.0
 NOTIFY_RETRY_SECONDS = 300.0
@@ -243,6 +245,84 @@ def evaluate_gpu_free(
             }
         )
     return events, new_counts, updated_notified
+
+
+def evaluate_host_health(
+    failures: int,
+    last_error: str | None,
+    capture_skew_seconds: float | None,
+    notified: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return (events, new_notified) for host-health transitions.
+
+    Built only from facts the hub already holds: the per-target consecutive
+    failure count and the latest capture skew (hub receipt minus host clock).
+    ``capture_skew_seconds`` is None when no new sample arrived, which leaves
+    the drift flag untouched instead of flapping during outages. The sent
+    flags are set by delivery, not here, so a failed POST is retried rather
+    than swallowed; each condition re-arms only after it clears.
+    """
+
+    events: list[dict[str, Any]] = []
+    updated = {k: v for k, v in (notified or {}).items()}
+    if failures >= POLL_FAILURES_NOTIFY:
+        if updated.get("poll_failures") != "sent":
+            events.append(
+                {
+                    "event": "poll_failures",
+                    "failures": failures,
+                    "error": last_error or "unknown",
+                }
+            )
+    elif failures == 0:
+        updated.pop("poll_failures", None)
+    if capture_skew_seconds is not None:
+        if abs(float(capture_skew_seconds)) >= CLOCK_DRIFT_SECONDS:
+            if updated.get("clock_drift") != "sent":
+                events.append(
+                    {
+                        "event": "clock_drift",
+                        "skew_seconds": round(float(capture_skew_seconds), 1),
+                    }
+                )
+        else:
+            updated.pop("clock_drift", None)
+    return events, updated
+
+
+def notify_host_events(
+    target: str,
+    events: list[dict[str, Any]],
+    notified: dict[str, Any],
+    next_retry: float,
+    now: float,
+    url: str,
+    poster: Callable[[str, dict[str, Any]], str] = default_poster,
+) -> tuple[dict[str, Any], float]:
+    """Deliver host-health events keyed by ``event``, with GPU backoff rules.
+
+    Same bounded behavior as :func:`notify_target`: at most one POST per
+    transition, a failed delivery backs off ``NOTIFY_RETRY_SECONDS`` and is
+    retried on a later cycle, and delivery never blocks polling.
+    """
+
+    if now < next_retry:
+        return notified, next_retry
+    updated = dict(notified)
+    retry = next_retry
+    for event in events:
+        kind = str(event["event"])
+        if updated.get(kind) == "sent":
+            continue
+        payload = {"target": target, **event}
+        result = poster(url, payload)
+        if result == "ok":
+            updated[kind] = "sent"
+        else:
+            updated[kind] = result
+            retry = now + NOTIFY_RETRY_SECONDS
+            break
+    return updated, retry
 
 
 def notify_target(

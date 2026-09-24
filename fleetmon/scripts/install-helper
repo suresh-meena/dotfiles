@@ -221,7 +221,7 @@ if ((dry_run)); then
   printf 'dry-run: would validate the remote staged wheel sha256 against the recorded hash before install\n'
   printf 'dry-run: would stage a versioned user-local venv at its final path <home>/.local/share/fleetmon/helpers/<version>/venv via the discovered remote python -m venv (never moved after creation)\n'
   printf 'dry-run: would install only the locked helper dependencies into the venv via remote pip -r requirements-helper.lock\n'
-  printf 'dry-run: would run one bounded snapshot canary and validate it locally (object, <=256 KiB, schema_version==1, status ok|partial)\n'
+  printf 'dry-run: would run one bounded snapshot canary and validate it locally (object, <=256 KiB, schema_version==2, status ok|partial)\n'
   printf 'dry-run: would read the previous helpers/current link, switch it atomically to the verified version, and verify the switched helper\n'
   printf 'dry-run: would roll back to the previous link on any post-switch failure\n'
   printf 'dry-run: would never use root, raw ssh/scp, system python, groups, pools, --all, or --tag\n'
@@ -302,17 +302,29 @@ lock_path=$root/requirements-helper.lock
 # first, then the common user-local shim locations.
 remote_python=$("$fleetctl" exec --target "$target" -- sh -c '
 # fleetmon: find-python
-# A candidate must be >=3.10 AND able to create venvs (ensurepip works;
-# Debian/Ubuntu pythons without the venv package print an error instead).
-# The ~/.local/bin shims are tried before PATH so a working user-local
-# interpreter wins over a crippled system one.
+# A candidate must be >=3.10 AND able to actually create a working venv.
+# A relocatable/portable interpreter build can pass a superficial check
+# (its own `ensurepip --version`) while a venv it creates fails to boot at
+# all (its own bundled prefix cannot find the stdlib); the only faithful
+# check is creating a throwaway venv and confirming its own interpreter
+# starts. `--without-pip` keeps the probe offline and fast; it is not
+# testing pip itself, only that the interpreter the real venv will run on
+# actually initializes. The ~/.local/bin shims are tried before PATH so a
+# working user-local interpreter wins over a crippled system one.
 for candidate in "$HOME/.local/bin/python3.14" "$HOME/.local/bin/python3.13" \
   "$HOME/.local/bin/python3.12" "$HOME/.local/bin/python3.11" \
   "$HOME/.local/bin/python3.10" \
   python3.14 python3.13 python3.12 python3.11 python3.10; do
   command -v "$candidate" >/dev/null 2>&1 || continue
   "$candidate" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null || continue
-  "$candidate" -m ensurepip --version >/dev/null 2>&1 || continue
+  probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/fleetmon-probe.XXXXXX") || continue
+  probe_ok=0
+  if "$candidate" -m venv --without-pip "$probe_dir" >/dev/null 2>&1 \
+    && "$probe_dir/bin/python3" -c "import encodings" >/dev/null 2>&1; then
+    probe_ok=1
+  fi
+  rm -rf "$probe_dir"
+  [ "$probe_ok" = 1 ] || continue
   "$candidate" -c "import sys; print(sys.executable)"
   exit 0
 done
@@ -435,7 +447,8 @@ printf 'remote artifact: staged wheel sha256 matches recorded %s\n' "$wheel_hash
 # creation; pip entrypoint shebangs are absolute). Any leftovers from a
 # previous failed install of the same version are removed first; the current
 # link never points at the version being installed.
-if ! "$fleetctl" exec --target "$target" -- "$remote_python" -c '
+clear_status=0
+"$fleetctl" exec --target "$target" -- "$remote_python" -c '
 # fleetmon: clear-version-dir
 import os, shutil, sys
 
@@ -443,9 +456,9 @@ link, version_dir = sys.argv[1], sys.argv[2]
 if os.path.islink(link) and os.path.realpath(link) == os.path.realpath(version_dir):
     raise SystemExit(2)
 shutil.rmtree(version_dir, ignore_errors=True)
-' "$current_link" "$version_dir"; then
-  clear_status=$?
-  if [[ "$clear_status" == "2" ]]; then
+' "$current_link" "$version_dir" || clear_status=$?
+if ((clear_status != 0)); then
+  if ((clear_status == 2)); then
     refuse 3 version_dir_is_active "helpers/current already points at version $wheel_version; reinstall would delete the active helper: $target"
   fi
   refuse 3 remote_step_failed "clearing the previous failed version directory failed for target: $target"
@@ -477,16 +490,16 @@ except (ValueError, UnicodeDecodeError):
 if not isinstance(value, dict):
     raise SystemExit(1)
 version = value.get("schema_version")
-if isinstance(version, bool) or version != 1:
+if isinstance(version, bool) or version != 2:
     raise SystemExit(1)
 if value.get("status") not in {"ok", "partial"}:
     raise SystemExit(1)
 if not isinstance(value.get("helper_version"), str):
     raise SystemExit(1)
 '; then
-  refuse 3 snapshot_canary_invalid "snapshot canary output is not a bounded schema_version==1 document: $target"
+  refuse 3 snapshot_canary_invalid "snapshot canary output is not a bounded schema_version==2 document: $target"
 fi
-printf 'canary: one bounded snapshot validated (schema_version==1, status ok|partial, <=256 KiB)\n'
+printf 'canary: one bounded snapshot validated (schema_version==2, status ok|partial, <=256 KiB)\n'
 
 # Step 8: read the previous current link so every post-switch failure can be
 # restored (previous==null means the link did not exist before this install).

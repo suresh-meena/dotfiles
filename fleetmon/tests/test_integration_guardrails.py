@@ -74,7 +74,7 @@ def test_retention_does_not_leave_current_process_from_deleted_poll(tmp_path):
         .replace("+00:00", "Z"),
         "cpu": {},
         "memory": {},
-        "disk": {},
+        "disks": [],
         "gpus": [],
         "users": [],
         "processes": [{"pid": 7, "name": "worker"}],

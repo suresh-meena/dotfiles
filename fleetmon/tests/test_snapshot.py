@@ -592,3 +592,75 @@ def test_supplement_eviction_marks_truncation(monkeypatch):
     assert 5000 in pids, "GPU process outranks non-GPU evictees"
     assert len(doc["processes"]) == snapshot.MAX_PROCESSES
     assert doc["limits"]["truncated"] is True
+
+
+def test_local_disks_filters_squashfs_snap_noise_and_dedupes(tmp_path):
+    Partition = namedtuple("Partition", ["mountpoint", "fstype"])
+    partitions = [
+        Partition(str(tmp_path), "ext4"),
+        Partition(str(tmp_path), "ext4"),  # duplicate mount must be deduped
+        Partition("/snap/core22/100", "squashfs"),
+        Partition("/snap/firefox/200", "squashfs"),
+    ]
+    fake_psutil = SimpleNamespace(disk_partitions=lambda all=False: partitions)
+
+    disks = snapshot._local_disks(fake_psutil)
+
+    mounts = [d["mount"] for d in disks]
+    assert mounts.count(str(tmp_path)) == 1
+    assert not any(m.startswith("/snap/") for m in mounts)
+    assert "/" in mounts  # always included even when not reported by psutil
+
+
+def test_local_disks_is_bounded_to_max_disks(tmp_path):
+    Partition = namedtuple("Partition", ["mountpoint", "fstype"])
+    partitions = [
+        Partition(str(tmp_path), "ext4") for _ in range(snapshot.MAX_DISKS + 10)
+    ]
+    fake_psutil = SimpleNamespace(disk_partitions=lambda all=False: partitions)
+
+    disks = snapshot._local_disks(fake_psutil)
+
+    assert len(disks) <= snapshot.MAX_DISKS
+
+
+def test_local_disks_without_psutil_falls_back_to_root():
+    disks = snapshot._local_disks(None)
+    assert [d["mount"] for d in disks] == ["/"]
+    assert disks[0]["total_bytes"] > 0
+
+
+def test_local_addresses_skips_loopback_link_local_and_dedupes():
+    Address = namedtuple("Address", ["address"])
+    interfaces = {
+        "lo": [Address("127.0.0.1"), Address("::1")],
+        "eth0": [
+            Address("10.0.0.5"),
+            Address("10.0.0.5"),  # duplicate
+            Address("169.254.1.2"),  # link-local, must be skipped
+            Address("fe80::1%eth0"),  # link-local IPv6 with zone id
+        ],
+        "tailscale0": [Address("100.64.1.2")],
+    }
+    fake_psutil = SimpleNamespace(net_if_addrs=lambda: interfaces)
+
+    addresses = snapshot._local_addresses(fake_psutil)
+
+    assert addresses == ["10.0.0.5", "100.64.1.2"]
+
+
+def test_local_addresses_is_bounded_to_max_addresses():
+    Address = namedtuple("Address", ["address"])
+    interfaces = {
+        f"eth{i}": [Address(f"10.0.{i}.1")]
+        for i in range(snapshot.MAX_ADDRESSES + 5)
+    }
+    fake_psutil = SimpleNamespace(net_if_addrs=lambda: interfaces)
+
+    addresses = snapshot._local_addresses(fake_psutil)
+
+    assert len(addresses) == snapshot.MAX_ADDRESSES
+
+
+def test_local_addresses_without_psutil_is_empty():
+    assert snapshot._local_addresses(None) == []

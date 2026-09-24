@@ -290,3 +290,172 @@ def test_config_errors_never_contain_the_url(monkeypatch):
     with pytest.raises(ConfigError) as excinfo:
         _notify_url_from_environment()
     assert secret not in str(excinfo.value)
+
+
+def _health_cycle(failures, last_error, skew, notified, poster=None):
+    """One hub cycle: evaluate, deliver, persist exactly like the service."""
+
+    events, updated = notify.evaluate_host_health(failures, last_error, skew, notified)
+    if not events:
+        return events, updated  # the service persists the (possibly cleared) map
+    delivered, _retry = notify.notify_host_events(
+        "ada1",
+        events,
+        updated,
+        0.0,
+        100.0,
+        "https://ntfy/topic",
+        poster or (lambda url, payload: "ok"),
+    )
+    return events, delivered
+
+
+def test_health_poll_failure_streak_fires_once_and_rearms_after_success():
+    calls = []
+    events, notified = _health_cycle(
+        3, "transport", None, {},
+        lambda u, p: calls.append(p) or "ok",
+    )
+    assert [e["event"] for e in events] == ["poll_failures"]
+    assert events[0]["failures"] == 3 and events[0]["error"] == "transport"
+    assert notified["poll_failures"] == "sent" and len(calls) == 1
+
+    # A fourth failure while already notified emits and delivers nothing new.
+    events, notified = _health_cycle(4, "transport", None, notified)
+    assert events == [] and len(calls) == 1
+
+    # Success clears the streak and re-arms the alert.
+    events, notified = _health_cycle(0, None, None, notified)
+    assert events == [] and "poll_failures" not in notified
+    events, notified = _health_cycle(
+        3, "timeout", None, notified, lambda u, p: calls.append(p) or "ok"
+    )
+    assert [e["event"] for e in events] == ["poll_failures"]
+    assert events[0]["error"] == "timeout" and len(calls) == 2
+
+
+def test_health_failure_streak_below_threshold_never_fires():
+    events, notified = _health_cycle(1, "transport", None, {})
+    assert events == [] and notified == {}
+    events, notified = _health_cycle(2, "transport", None, notified)
+    assert events == [] and notified == {}
+    # A recovered streak without reaching the threshold leaves nothing armed.
+    events, notified = _health_cycle(0, None, None, notified)
+    assert events == [] and notified == {}
+
+
+def test_health_clock_drift_fires_once_and_rearms_within_threshold():
+    events, notified = _health_cycle(0, None, 2411.9, {})
+    assert [e["event"] for e in events] == ["clock_drift"]
+    assert events[0]["skew_seconds"] == 2411.9
+    assert notified["clock_drift"] == "sent"
+
+    # Drift persists (even worsening): exactly one notification.
+    events, notified = _health_cycle(0, None, -2500.0, notified)
+    assert events == []
+
+    # No new sample (failed poll) must neither fire nor clear the flag.
+    events, notified = _health_cycle(0, None, None, notified)
+    assert events == [] and notified.get("clock_drift") == "sent"
+
+    # Back within the threshold clears and re-arms.
+    events, notified = _health_cycle(0, None, 119.9, notified)
+    assert events == [] and "clock_drift" not in notified
+    events, _ = _health_cycle(0, None, -120.0, notified)
+    assert [e["event"] for e in events] == ["clock_drift"]
+
+
+def test_health_boundary_is_inclusive_and_events_can_combine():
+    events, _ = notify.evaluate_host_health(
+        notify.POLL_FAILURES_NOTIFY, "timeout", -notify.CLOCK_DRIFT_SECONDS, {}
+    )
+    assert [e["event"] for e in events] == ["poll_failures", "clock_drift"]
+
+
+def test_health_failed_delivery_retries_on_a_later_cycle():
+    attempts = []
+
+    def failing(url, payload):
+        attempts.append(payload)
+        return "notify_unreachable"
+
+    events, notified = _health_cycle(3, "transport", None, {}, failing)
+    assert notified["poll_failures"] == "notify_unreachable"
+    first_attempt = len(attempts)
+
+    # While backed off, nothing is re-sent; after the window, delivery retries.
+    notified, retry = notify.notify_host_events(
+        "ada1",
+        events,
+        notified,
+        retry if (retry := 100.0 + notify.NOTIFY_RETRY_SECONDS) else 0.0,
+        150.0,
+        "https://ntfy/topic",
+        failing,
+    )
+    assert len(attempts) == first_attempt  # still inside the backoff window
+    notified, _retry = notify.notify_host_events(
+        "ada1",
+        events,
+        notified,
+        retry,
+        retry + 1.0,
+        "https://ntfy/topic",
+        lambda u, p: attempts.append(p) or "ok",
+    )
+    assert notified["poll_failures"] == "sent" and len(attempts) == first_attempt + 1
+
+
+def test_host_delivery_sends_once_and_backs_off_on_failure():
+    calls = []
+
+    def poster(url, payload):
+        calls.append(payload)
+        return "ok"
+
+    events = [{"event": "clock_drift", "skew_seconds": 2400.0}]
+    notified, retry = notify.notify_host_events(
+        "ada1", events, {}, 0.0, 100.0, "https://ntfy/topic", poster
+    )
+    assert notified["clock_drift"] == "sent" and retry == 0.0 and len(calls) == 1
+    assert calls[0] == {"target": "ada1", "event": "clock_drift", "skew_seconds": 2400.0}
+
+    def failing(url, payload):
+        return "notify_unreachable"
+
+    events = [
+        {"event": "poll_failures", "failures": 3, "error": "transport"},
+        {"event": "clock_drift", "skew_seconds": 2400.0},
+    ]
+    notified, retry = notify.notify_host_events(
+        "ada1", events, {}, 0.0, 100.0, "https://ntfy/topic", failing
+    )
+    assert notified["poll_failures"] == "notify_unreachable"
+    assert "clock_drift" not in notified  # delivery stops after first failure
+    assert retry == 100.0 + notify.NOTIFY_RETRY_SECONDS
+    notified, retry = notify.notify_host_events(
+        "ada1", events, notified, retry, retry + 1, "https://ntfy/topic", failing
+    )
+    assert notified["poll_failures"] == "notify_unreachable"
+    assert "clock_drift" not in notified  # the failed event is retried first
+    notified, retry = notify.notify_host_events(
+        "ada1", events, notified, retry, retry + 1, "https://ntfy/topic", poster
+    )
+    assert notified["poll_failures"] == "sent"
+    assert notified["clock_drift"] == "sent"  # later events follow in the same pass
+
+
+def test_host_delivery_honors_backoff_window():
+    def poster(url, payload):
+        raise AssertionError("must not deliver while backed off")
+
+    notified, retry = notify.notify_host_events(
+        "ada1",
+        [{"event": "poll_failures", "failures": 3, "error": "transport"}],
+        {},
+        200.0,
+        150.0,
+        "https://ntfy/topic",
+        poster,
+    )
+    assert notified == {} and retry == 200.0

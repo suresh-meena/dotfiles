@@ -302,6 +302,11 @@ h3 {
   color: #5b6470;
   font-size: 0.8rem;
 }
+.host-ip {
+  color: #5b6470;
+  font-size: 0.8rem;
+  font-family: ui-monospace, monospace;
+}
 .issues {
   display: flex;
   flex-direction: column;

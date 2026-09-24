@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 from datetime import datetime
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_JSON_BYTES = 256 * 1024
 MAX_JSON_DEPTH = 8
 MAX_STRING_BYTES = 1024
@@ -15,6 +16,8 @@ MAX_PROCESSES = 80
 MAX_USERS = 128
 MAX_GPUS = 32
 MAX_GPU_ALLOCATIONS = 32
+MAX_DISKS = 16
+MAX_ADDRESSES = 8
 MAX_WIRE_INTEGER = 2**63 - 1
 
 # The helper is deliberately a closed, small protocol.  Unknown fields are
@@ -31,7 +34,8 @@ _TOP_LEVEL_FIELDS = {
     "status",
     "cpu",
     "memory",
-    "disk",
+    "disks",
+    "network",
     "gpus",
     "users",
     "processes",
@@ -47,7 +51,8 @@ _MEMORY_FIELDS = {
     "swap_total_bytes",
     "swap_used_bytes",
 }
-_DISK_FIELDS = {"total_bytes", "free_bytes"}
+_DISK_FIELDS = {"mount", "total_bytes", "free_bytes"}
+_NETWORK_FIELDS = {"addresses"}
 _GPU_FIELDS = {
     "uuid",
     "index",
@@ -249,6 +254,14 @@ def _validate_gpu(gpu: dict[str, Any]) -> None:
     _string(gpu.get("error"), "gpu.error", nullable=True)
 
 
+def _validate_disk(disk: dict[str, Any]) -> None:
+    _known_fields(disk, _DISK_FIELDS, "disk")
+    _string(disk.get("mount"), "disk.mount")
+    for field in ("total_bytes", "free_bytes"):
+        _integer(disk.get(field), f"disk.{field}", minimum=0)
+    _not_greater(disk.get("free_bytes"), disk.get("total_bytes"), "disk.free_bytes")
+
+
 def _not_greater(value: Any, total: Any, field: str) -> None:
     if value is not None and total is not None and value > total:
         raise ProtocolError(f"invalid {field}")
@@ -381,11 +394,25 @@ def validate_snapshot(
         "memory.swap_used_bytes",
     )
 
-    disk = _object(document, "disk")
-    _known_fields(disk, _DISK_FIELDS, "disk")
-    for field in ("total_bytes", "free_bytes"):
-        _integer(disk.get(field), f"disk.{field}", minimum=0)
-    _not_greater(disk.get("free_bytes"), disk.get("total_bytes"), "disk.free_bytes")
+    disks = _list(document, "disks", MAX_DISKS)
+    for disk in disks:
+        _validate_disk(disk)
+    if len({disk["mount"] for disk in disks}) != len(disks):
+        raise ProtocolError("duplicate disk mount")
+
+    network = _object(document, "network")
+    _known_fields(network, _NETWORK_FIELDS, "network")
+    addresses = network.get("addresses")
+    if not isinstance(addresses, list) or len(addresses) > MAX_ADDRESSES:
+        raise ProtocolError("invalid network.addresses")
+    for address in addresses:
+        _string(address, "network.addresses item")
+        try:
+            ipaddress.ip_address(address)
+        except ValueError as exc:
+            raise ProtocolError("invalid network.addresses item") from exc
+    if len(set(addresses)) != len(addresses):
+        raise ProtocolError("duplicate network address")
 
     visibility = _object(document, "visibility")
     _known_fields(visibility, _VISIBILITY_FIELDS, "visibility")

@@ -272,10 +272,21 @@ def create_app(
     bind: str = "127.0.0.1",
     authenticated: bool = False,
     auth_token: str | None = None,
+    trusted: bool = False,
 ) -> FastAPI:
-    """Build the app. Non-VPN non-loopback binds require authentication."""
+    """Build the app. Binds outside trusted networks require authentication.
 
-    if not _is_loopback_bind(bind) and not _is_vpn_bind(bind) and not authenticated:
+    ``trusted`` mirrors the config-level ``hub.trusted_networks`` decision:
+    a bind the operator declared trusted behaves like the mesh-VPN bind, and
+    the token, when one is configured, applies to every other bind.
+    """
+
+    if (
+        not _is_loopback_bind(bind)
+        and not _is_vpn_bind(bind)
+        and not trusted
+        and not authenticated
+    ):
         raise ValueError("non-loopback web binding requires authentication")
     if authenticated and (
         not isinstance(auth_token, str)
@@ -452,7 +463,7 @@ def create_app(
             # Current processes and other collection fields are also remote
             # data. Keep every returned collection bounded, even for a custom
             # query provider that forgot to apply a SQL LIMIT.
-            for key in ("processes", "gpus", "users", "jobs"):
+            for key in ("processes", "gpus", "users", "jobs", "disks", "addresses"):
                 if key in result:
                     result[key] = _bounded(result[key], MAX_ROWS)
             return result

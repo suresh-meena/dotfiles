@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 # This project has not shipped a migration runner yet.  Existing databases
 # therefore need to prove that they have exactly the schema this code knows
 # how to use; silently applying CREATE TABLE IF NOT EXISTS is not sufficient
@@ -34,6 +34,7 @@ _REQUIRED_COLUMNS = {
         "last_success",
         "last_error",
         "backoff",
+        "addresses",
         "updated_at",
     },
     "polls": {"poll_id", "target", "started_at", "ended_at", "outcome", "error"},
@@ -114,6 +115,13 @@ _REQUIRED_COLUMNS = {
         "gpu_index",
         "vram_bytes",
     },
+    "current_disks": {
+        "target",
+        "mount",
+        "total_bytes",
+        "free_bytes",
+        "poll_id",
+    },
     "slurm_jobs": {
         "cluster",
         "job_id",
@@ -125,8 +133,17 @@ _REQUIRED_COLUMNS = {
     },
     "slurm_poll_state": {"target", "watermark", "state", "error", "updated_at"},
 }
+# Ordered, additive-only migrations keyed by the version they produce. Every
+# statement here must be safe to apply to a live database that already holds
+# real history: add a column or a table, never rewrite or drop one. This
+# project ships no rollback path, so a migration that could lose data does
+# not belong here — it belongs in a fresh SCHEMA_VERSION bump instead.
+_MIGRATIONS: dict[int, tuple[str, ...]] = {
+    3: ("ALTER TABLE hosts ADD COLUMN addresses TEXT",),
+}
 MAX_STORED_SLURM_JOBS = 2_000
 MAX_STORED_GPU_ALLOCATIONS = 8
+MAX_STORED_DISKS = 16
 MAX_IDENTIFIER_BYTES = 256
 MAX_CHART_POINTS = 2_000
 MAX_CHART_GPUS = 16
@@ -256,6 +273,7 @@ CREATE TABLE IF NOT EXISTS hosts (
     last_success REAL,
     last_error TEXT,
     backoff REAL NOT NULL DEFAULT 0,
+    addresses TEXT,
     updated_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS polls (
@@ -359,6 +377,16 @@ CREATE TABLE IF NOT EXISTS current_process_allocations (
         REFERENCES current_processes(target, pid) ON DELETE CASCADE,
     PRIMARY KEY(target, pid, position)
 );
+CREATE TABLE IF NOT EXISTS current_disks (
+    target TEXT NOT NULL,
+    mount TEXT NOT NULL,
+    total_bytes INTEGER,
+    free_bytes INTEGER,
+    poll_id TEXT REFERENCES polls(poll_id) ON DELETE CASCADE,
+    PRIMARY KEY(target, mount)
+);
+CREATE INDEX IF NOT EXISTS current_disks_poll
+    ON current_disks(poll_id);
 CREATE TABLE IF NOT EXISTS slurm_jobs (
     cluster TEXT NOT NULL,
     job_id TEXT NOT NULL,
@@ -434,11 +462,15 @@ class Database:
                     "refusing to modify an unversioned Fleetmon database"
                 )
         if existed and version not in (0, SCHEMA_VERSION):
-            self.conn.close()
-            raise DatabaseVersionError(
-                f"database schema version {version} is older than this "
-                f"Fleetmon ({SCHEMA_VERSION}); refusing to migrate"
-            )
+            pending = range(version + 1, SCHEMA_VERSION + 1)
+            if version < 1 or any(step not in _MIGRATIONS for step in pending):
+                self.conn.close()
+                raise DatabaseVersionError(
+                    f"database schema version {version} is older than this "
+                    f"Fleetmon ({SCHEMA_VERSION}); refusing to migrate"
+                )
+            self._migrate(version)
+            version = SCHEMA_VERSION
         if existed and version == SCHEMA_VERSION:
             try:
                 self._validate_existing_schema()
@@ -456,6 +488,35 @@ class Database:
             (SCHEMA_VERSION, time.time()),
         )
         self._secure_files()
+
+    def _migrate(self, from_version: int) -> None:
+        """Apply additive migrations from ``from_version`` up to ``SCHEMA_VERSION``.
+
+        One transaction per open: a crash partway through leaves
+        ``PRAGMA user_version`` at ``from_version`` (it is set only after this
+        returns), so the next start retries the same steps rather than
+        silently skipping them.
+        """
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            for step in range(from_version + 1, SCHEMA_VERSION + 1):
+                for statement in _MIGRATIONS[step]:
+                    cursor.execute(statement)
+                cursor.execute(
+                    "INSERT OR IGNORE INTO schema_migrations(version, applied_at) "
+                    "VALUES (?, ?)",
+                    (step, time.time()),
+                )
+            cursor.execute("COMMIT")
+        except Exception:
+            cursor.execute("ROLLBACK")
+            raise
+        # A migrated version's new tables are additive-only (CREATE TABLE/
+        # INDEX IF NOT EXISTS) and safe to create outside that transaction,
+        # so a schema check right after this call sees the complete shape.
+        self.conn.executescript(SCHEMA)
 
     def _validate_existing_schema(self) -> None:
         """Reject a pre-release DB that only claims to be current.
@@ -703,6 +764,14 @@ class Database:
             )
         ]
         result["processes"] = [dict(row) for row in self.current_processes(target)]
+        result["disks"] = [
+            dict(row)
+            for row in self.query(
+                "SELECT mount, total_bytes, free_bytes FROM current_disks "
+                "WHERE target=? ORDER BY mount",
+                (target,),
+            )
+        ]
         allocations: dict[int, list[dict[str, Any]]] = {}
         for row in self.query(
             """
@@ -1005,7 +1074,13 @@ class Database:
         started = received if started_at is None else started_at
         cpu = sample["cpu"]
         memory = sample["memory"]
-        disk = sample["disk"]
+        disks = sample["disks"]
+        root = next((d for d in disks if d.get("mount") == "/"), None)
+        addresses = json.dumps(
+            (sample.get("network") or {}).get("addresses") or [],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
         visibility = sample.get("visibility") or {}
         limits = sample.get("limits") or {}
         capabilities = sample.get("capabilities") or {}
@@ -1049,8 +1124,8 @@ class Database:
                         cpu.get("load_15m"),
                         memory.get("total_bytes"),
                         memory.get("used_bytes"),
-                        disk.get("total_bytes"),
-                        disk.get("free_bytes"),
+                        root.get("total_bytes") if root else None,
+                        root.get("free_bytes") if root else None,
                         capture_skew,
                         sample.get("collection_duration_seconds"),
                         int(sample["status"] == "partial"),
@@ -1107,6 +1182,18 @@ class Database:
                             user["process_count"],
                             user["gpu_process_count"],
                             user["vram_bytes"],
+                        ),
+                    )
+                cursor.execute("DELETE FROM current_disks WHERE target=?", (target,))
+                for disk in disks[:MAX_STORED_DISKS]:
+                    cursor.execute(
+                        "INSERT INTO current_disks VALUES (?, ?, ?, ?, ?)",
+                        (
+                            target,
+                            disk.get("mount"),
+                            disk.get("total_bytes"),
+                            disk.get("free_bytes"),
+                            poll_id,
                         ),
                     )
                 cursor.execute(
@@ -1166,6 +1253,7 @@ class Database:
                         last_success=?,
                         last_error=NULL,
                         backoff=0,
+                        addresses=?,
                         updated_at=?
                     WHERE target=?
                     """,
@@ -1175,6 +1263,7 @@ class Database:
                         sample["captured_at"],
                         received,
                         received,
+                        addresses,
                         received,
                         target,
                     ),
