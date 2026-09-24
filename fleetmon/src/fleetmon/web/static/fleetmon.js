@@ -11,7 +11,10 @@
 
   const page = document.body.dataset.page;
   const target = document.body.dataset.target;
-  const REFRESH_MS = {overview: 2000, host: 2000, "idle-gpus": 2000, jobs: 15000, "hub-status": 30000};
+  const REFRESH_MS = {overview: 2000, host: 2000, "idle-gpus": 2000, jobs: 15000, "hub-status": 30000, queue: 5000};
+  const params = new URLSearchParams(typeof location === "object" ? location.search : "");
+  const jobParam = /^[0-9]{1,18}$/.test(params.get("job") || "") ? params.get("job") : null;
+  const finishedParam = params.get("finished") === "1";
   const SIDEBAR_MS = 30000;
   const HISTORY_MS = 30000;
   const FETCH_TIMEOUT_MS = 8000;
@@ -28,7 +31,9 @@
       ? "/api/hub-status"
       : page === "idle-gpus"
         ? IDLE_ENDPOINT
-        : `/api/${page}`);
+        : page === "queue"
+          ? `/api/scheduler/queue${finishedParam ? "?finished=true" : ""}`
+          : `/api/${page}`);
   const chartsEndpoint = hostEndpoint ? `${hostEndpoint}/charts` : null;
   const sparkEndpoint = page === "overview" ? "/api/overview/sparklines" : null;
   const RANGES = [["1h", 1], ["6h", 6], ["24h", 24], ["7d", 7 * 24]];
@@ -1184,6 +1189,7 @@
       {label: "vram total", num: true},
       {label: "procs", num: true},
       {label: "age", num: true},
+      {label: "fleetq job"},
     ];
     const tbody = dataTable(columns, "idle-gpus");
     shown.forEach((item) => {
@@ -1200,6 +1206,7 @@
         num(_bytes(item.vram_total), item.vram_total),
         num(_int(item.compute_process_count), item.compute_process_count),
         num(idleAge(item), _ageRaw(item.received_at)),
+        _number(item.fleetq_job) ? {node: jobLink(item.fleetq_job), raw: String(item.fleetq_job)} : DASH,
       ]);
     });
     tbody.applySavedSort();
@@ -1281,6 +1288,151 @@
     note(`${list.length} jobs`);
   }
 
+  // ---- queue: fleetq's jobs, read-only (fq cancel/hold/modify change them) ----
+  const ST_TONES = {R: "st-ok", CD: "st-ok", SB: "st-ok", PD: "st-stale", HD: "st-stale", DS: "st-stale",
+    CA: "st-stale", FN: "st-stale", BL: "st-bad", F: "st-bad", TO: "st-bad", OOM: "st-bad", NF: "st-bad",
+    UX: "st-bad", SU: "st-bad", RC: "st-bad", CG: "st-stale"};
+  function schedulerNote(doc) {
+    if (!doc || typeof doc !== "object") return "scheduler view unavailable";
+    if (doc.configured === false) return "no scheduler configured: set [scheduler] url in the fleetmon config";
+    return `scheduler unavailable: ${_text(doc.error)}`;
+  }
+  function jobStToken(st, phase) {
+    const node = el("span", `st ${ST_TONES[st] || ""}`, typeof st === "string" ? st : "?");
+    if (typeof phase === "string") node.title = phase;
+    return node;
+  }
+  function jobLink(id) {
+    const link = el("a", "", String(id));
+    link.href = `/queue?job=${encodeURIComponent(id)}${finishedParam ? "&finished=1" : ""}`;
+    return link;
+  }
+  function decodeTail(b64) {
+    if (typeof b64 !== "string" || !b64) return "";
+    try {
+      const bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+      return new TextDecoder("utf-8", {fatal: false}).decode(bytes);
+    } catch (_error) {
+      return "";
+    }
+  }
+  function renderQueue(doc, jobDoc) {
+    clear();
+    if (!doc || !doc.available) {
+      note(schedulerNote(doc));
+      return;
+    }
+    const toggle = el("a", "", finishedParam ? "hide finished jobs" : "show finished jobs");
+    toggle.href = finishedParam ? "/queue" : "/queue?finished=1";
+    const bar = el("p", "note", "");
+    bar.append(toggle, el("span", "", ` · ${_int(doc.pending_in_line)} waiting to be placed · change jobs with fq (cancel, hold, modify, top)`));
+    content.append(bar);
+    if (jobParam) renderQueueJob(jobDoc);
+    const jobs = Array.isArray(doc.jobs) ? doc.jobs : [];
+    if (!jobs.length) {
+      note(finishedParam ? "no jobs" : "no running or waiting jobs");
+      return;
+    }
+    const columns = [
+      {label: "job", num: true}, {label: "name"}, {label: "user"}, {label: "st"}, {label: "where"},
+      {label: "gpus", num: true}, {label: "time", num: true}, {label: "limit", num: true},
+      {label: "prio", num: true}, {label: "pos", num: true}, {label: "reason"},
+    ];
+    const tbody = dataTable(columns, "queue");
+    jobs.forEach((job) => {
+      if (!job || typeof job !== "object") return;
+      const where = typeof job.where === "string" && job.where
+        ? (job.backend === "slurm" ? _text(job.where) : hostLink(job.where.split(":")[0]))
+        : DASH;
+      rowOf(tbody, columns, [
+        {node: jobLink(job.id), raw: String(job.id)},
+        _text(job.name),
+        _text(job.owner),
+        {node: jobStToken(job.st, job.phase), raw: _text(job.st)},
+        where,
+        num(_int(job.gpus), job.gpus),
+        num(job.started ? _dur(job.elapsed_s) : DASH, job.elapsed_s || 0),
+        num(_dur(job.limit_s), job.limit_s || 0),
+        num(_int(job.effective_priority), job.effective_priority),
+        num(job.position ? _int(job.position) : DASH, job.position || 0),
+        _text(job.reason || (job.phase === "HELD" ? "held" : "")),
+      ]);
+    });
+    tbody.applySavedSort();
+    content.append(scrollTable(tbody.parentNode));
+    note(`${jobs.length} jobs`);
+  }
+  function renderQueueJob(doc) {
+    heading(`Job ${jobParam}`);
+    if (!doc || !doc.available || !doc.job) {
+      note(doc && doc.error ? `job unavailable: ${_text(doc.error)}` : "loading job…");
+      return;
+    }
+    const job = doc.job;
+    const place = job.placement || {};
+    const exec = job.execution || {};
+    const times = job.times || {};
+    content.append(kvTable([
+      ["name", _text(job.name)],
+      ["owner", _text(job.owner)],
+      ["phase", `${_text(job.phase)}${job.reason ? ` — ${job.reason}` : ""}`],
+      ["where", place.target ? `${place.target}${place.queue ? `:${place.queue}` : ""}` : DASH],
+      ["gpus", Array.isArray(place.gpus) && place.gpus.length ? place.gpus.join(", ") : DASH],
+      ["slurm job", place.backend === "slurm" && place.remote_id ? _text(place.remote_id) : DASH],
+      ["outcome", exec.outcome ? `${exec.outcome}${exec.exit && exec.exit.code !== null ? ` (exit ${exec.exit.code})` : ""}` : DASH],
+      ["attempts", _int(job.attempts)],
+      ["submitted", times.submitted ? _clockIso(times.submitted) : DASH],
+      ["started", times.started ? _clockIso(times.started) : DASH],
+      ["ended", times.ended ? _clockIso(times.ended) : DASH],
+    ]));
+    const explain = doc.explain;
+    if (explain && Array.isArray(explain.decisions) && explain.decisions.length && job.phase !== "TERMINAL") {
+      heading("Why it is waiting");
+      const list = el("ul", "", "");
+      explain.decisions.slice(0, 3).forEach((d) => {
+        const detail = Array.isArray(d.detail)
+          ? d.detail.map((r) => `${_text(r.target)}: ${_text(r.reason)}`).join("; ")
+          : _text(JSON.stringify(d.detail));
+        list.append(el("li", "", `${_text(d.decision)} — ${detail}`));
+      });
+      content.append(list);
+    }
+    const logs = doc.logs || {};
+    ["stdout", "stderr"].forEach((stream) => {
+      const tail = logs[stream] || {};
+      const text = decodeTail(tail.data_b64);
+      heading(`${stream} (last 16 KiB${tail.complete ? "" : ", still collecting"})`);
+      const pre = el("pre", "log-tail", text || "(nothing yet)");
+      content.append(pre);
+    });
+  }
+
+  function renderSchedulerCard(doc) {
+    heading("Scheduler (fleetq)");
+    if (!doc || !doc.available) {
+      note(schedulerNote(doc));
+      return;
+    }
+    const phases = doc.phases && typeof doc.phases === "object"
+      ? Object.entries(doc.phases).map(([k, v]) => `${k} ${_int(v)}`).join(", ") : DASH;
+    const calls = Array.isArray(doc.remote_calls_today) ? doc.remote_calls_today : [];
+    content.append(kvTable([
+      ["version", _text(doc.version)],
+      ["controller epoch", _int(doc.epoch)],
+      ["jobs by phase", phases || DASH],
+      ["restore discovery", doc.restore_pending ? el("span", "st st-bad", "pending") : "complete"],
+    ]));
+    if (calls.length) {
+      const columns = [{label: "cluster"}, {label: "class"}, {label: "calls today", num: true}, {label: "rpc", num: true}];
+      const tbody = dataTable(columns, "scheduler-calls");
+      calls.forEach((c) => rowOf(tbody, columns, [_text(c.target), _text(c.op_class), num(_int(c.calls), c.calls),
+                                                  num(_int(c.rpc), c.rpc)]));
+      content.append(scrollTable(tbody.parentNode));
+    } else {
+      note("no cluster calls today");
+    }
+  }
+
   // ---- hub status ----
   function renderHubStatus(doc) {
     clear();
@@ -1328,6 +1480,7 @@
         ["version", _text(hub.version)],
       ]),
     );
+    if (lastScheduler !== undefined) renderSchedulerCard(lastScheduler);
   }
 
   // ---- charts: one tiny local SVG renderer, one request per chart group ----
@@ -1635,6 +1788,7 @@
     else if (page === "overview") renderOverview(lastData, lastIdleDoc);
     else if (page === "idle-gpus") renderIdle(lastIdleDoc);
     else if (page === "jobs") renderJobs(lastData);
+    else if (page === "queue") renderQueue(lastData, lastJob);
     else renderHubStatus(lastData);
     scroll.forEach(([key, left]) => {
       const node = tableScrolls.get(key);
@@ -1699,6 +1853,8 @@
   let missedWhileHidden = false;
   let missedChartsWhileHidden = false;
   let lastData = null;
+  let lastJob = null;
+  let lastScheduler = undefined;
   let lastSparks = null;
   let lastIdleDoc = null;
   let lastCharts = null;
@@ -1728,6 +1884,12 @@
         data = await fetchJson(endpoint);
       }
       const idle = idlePromise ? await idlePromise : null;
+      if (page === "queue" && jobParam) {
+        lastJob = await fetchJson(`/api/scheduler/jobs/${jobParam}`).catch(() => null);
+      }
+      if (page === "hub-status") {
+        lastScheduler = await fetchJson("/api/scheduler/status").catch(() => null);
+      }
       if (page === "overview") lastIdleDoc = idle;
       if (page === "idle-gpus") lastIdleDoc = data;
       lastData = data;

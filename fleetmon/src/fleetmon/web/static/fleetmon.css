@@ -776,3 +776,14 @@ main > * {
     min-height: 2.6rem;
   }
 }
+
+/* fleetq queue: job output tails */
+pre.log-tail {
+  max-height: 20rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 0.85em;
+  padding: 0.5rem;
+  border: 1px solid #e2e6ea;
+}

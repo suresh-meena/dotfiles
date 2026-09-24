@@ -864,4 +864,48 @@ const cardValues = (content) =>
   assert.equal(range("7d")._attrs["aria-pressed"], "true");
 }
 
+// ---- queue: fleetq jobs as text, job panel with an output tail, scheduler down ----
+{
+  const QUEUE = {
+    available: true, configured: true, schema: "fq.queue/v1", pending_in_line: 1,
+    jobs: [
+      {id: 7, name: HOSTILE, owner: "suresh", st: "R", phase: "RUNNING", where: "rtx4090", backend: "bare",
+       gpus: 1, gpu_ids: ["GPU-aaaa"], started: "2026-09-24T01:00:00.000000Z", elapsed_s: 3725, limit_s: 7200,
+       effective_priority: 3, position: null, reason: null},
+      {id: 8, name: "wait", owner: "suresh", st: "PD", phase: "PENDING", where: null, backend: null, gpus: 4,
+       started: null, elapsed_s: null, limit_s: 3600, effective_priority: 0, position: 1,
+       reason: "waiting: no_placeable_gpus"},
+    ],
+  };
+  const tail = Buffer.from(`step 41 <script>alert(1)</script> ${HOSTILE}\n`).toString("base64");
+  const JOB = {
+    available: true, job: {id: 7, name: HOSTILE, owner: "suresh", phase: "RUNNING", reason: null,
+      placement: {target: "rtx4090", gpus: ["GPU-aaaa"], backend: "bare"}, execution: {},
+      times: {submitted: "2026-09-24T00:59:00.000000Z"}, attempts: 1},
+    explain: null, logs: {stdout: {data_b64: tail, complete: false}, stderr: {data_b64: "", complete: false}},
+  };
+  globalThis.location = {search: "?job=7"};
+  const {shim, fetches, specs} = await run("queue", "", {"/api/scheduler/queue": QUEUE, "/api/scheduler/jobs/7": JOB});
+  delete globalThis.location;
+  assert.ok(fetches.includes("/api/scheduler/jobs/7"), "the job panel is fetched");
+  assert.equal(specs[0], 5000, "queue refreshes every 5s");
+  const text = textOf(shim.content);
+  assert.ok(text.includes(HOSTILE), "hostile job name rendered as text");
+  assert.ok(text.includes("<script>alert(1)</script>"), "log tail rendered as text");
+  assert.ok(text.includes("1 h 2 m") && text.includes("waiting: no_placeable_gpus"), `queue columns: ${text}`);
+  assert.ok(collect(shim.content, "PRE").length === 2, "stdout and stderr tails");
+
+  const down = await run("queue", "", {"/api/scheduler/queue": {available: false, configured: false}});
+  assert.match(textOf(down.shim.content), /no scheduler configured/, "unconfigured scheduler explained");
+}
+
+// ---- idle GPUs link the fleetq job holding a GPU ----
+{
+  const held = JSON.parse(JSON.stringify(IDLE));
+  held.items.forEach((item) => { item.fleetq_job = 42; });
+  const {shim} = await run("idle-gpus", "", {[IDLE_URL]: held});
+  const links = collect(shim.content, "A").map((a) => a._attrs && a._attrs.href || a.href).filter(Boolean);
+  assert.ok(links.some((h) => String(h).startsWith("/queue?job=42")), `fleetq job link: ${links}`);
+}
+
 console.log("js harness ok");

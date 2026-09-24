@@ -11,6 +11,7 @@ import shutil
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
@@ -22,6 +23,7 @@ from typing import Any
 from . import __version__, notify
 from .config import HubConfig, ensure_backup_filesystem
 from .database import Database, observation_slots
+from .scheduler import SchedulerClient
 from .discovery import (
     MAX_TARGETS,
     Inventory,
@@ -98,6 +100,15 @@ class HubRuntime:
         )
         self._local_capacity = threading.BoundedSemaphore(MAX_TARGETS + 8)
         self._gpu_window_lock = threading.Lock()
+        self.scheduler = (
+            SchedulerClient(self.config.scheduler_url, self.config.scheduler_token)
+            if self.config.scheduler_url
+            else None
+        )
+        # Recent observations for the capacity feed, kept before history thinning:
+        # fleetq's idle rule needs samples no more than ~65 s apart (see capacity_feed).
+        self._capacity_ring: dict[str, deque[dict[str, Any]]] = {}
+        self._capacity_lock = threading.Lock()
         self._gpu_window_cache = None
 
     async def _local(
@@ -466,6 +477,7 @@ class HubRuntime:
                     started_at=started,
                 )
                 await self._local(self._invalidate_gpu_window)
+                self._remember_capacity(poll_id, target.name, document, received)
                 # Classification keeps the latest two observations; thin the
                 # now-older history to the configured cadence so fast polling
                 # cannot multiply stored rows.
@@ -907,6 +919,133 @@ class HubRuntime:
 
     MAX_IDLE_GPU_OWNERS = 4
 
+    # ---- fleetq: capacity feed out, queue view in (both read-only) -----------------
+
+    CAPACITY_WINDOW_SECONDS = 180.0
+
+    def _remember_capacity(self, poll_id: str, target: str, document: dict[str, Any],
+                           received: float) -> None:
+        capabilities = document.get("capabilities") or {}
+        entry = {
+            "poll_id": poll_id,
+            "received_at": received,
+            "boot_id": document.get("boot_id"),
+            "nvml_supported": capabilities.get("nvml_supported"),
+            "nvml_error": capabilities.get("nvml_error"),
+            "gpus": {
+                gpu["uuid"]: {
+                    "utilization": gpu.get("utilization_fraction"),
+                    "vram_used": gpu.get("vram_used_bytes"),
+                    "compute_process_count": gpu.get("compute_process_count"),
+                    "supported": gpu.get("supported"),
+                    "mig_detected": gpu.get("mig_detected"),
+                    "error": gpu.get("error"),
+                }
+                for gpu in (document.get("gpus") or [])[:64]
+            },
+        }
+        with self._capacity_lock:
+            self._capacity_ring.setdefault(target, deque(maxlen=32)).append(entry)
+
+    def _capacity_observations(self, since: float) -> dict[str, list[dict[str, Any]]]:
+        """The ring's recent polls, merged with stored ones (all that is left after a restart)."""
+
+        merged = {t: {o["poll_id"]: o for o in obs} for t, obs in self.db.capacity_samples(since=since).items()}
+        with self._capacity_lock:
+            for target, ring in self._capacity_ring.items():
+                for obs in ring:
+                    if obs["received_at"] >= since:
+                        merged.setdefault(target, {})[obs["poll_id"]] = obs
+        return {t: sorted(obs.values(), key=lambda o: o["received_at"]) for t, obs in merged.items()}
+
+    def capacity_feed(self, **_: Any) -> dict[str, Any]:
+        """``fleetmon.capacity/v1``: raw per-GPU samples for fleetq's idle history.
+
+        Stored data only; no request triggers a remote call. Each sample is one
+        committed poll (``sample_id`` = poll id), timed by when the hub received
+        it -- the hub's own clock, so a skewed host clock can't make stale data
+        look fresh. Units are fixed by the contract: utilization in percent,
+        memory in MiB. ``complete`` is GPU-level: NVML answered for this GPU and
+        it is not MIG-partitioned. Hidden or truncated *host* process lists
+        don't make a GPU's NVML compute-process count incomplete.
+        """
+
+        now = time.time()
+        states = {
+            row["target"]: self._freshen_host(dict(row))["state"] for row in self.db.hosts()
+        }
+        hosts: list[dict[str, Any]] = []
+        for target, observations in sorted(self._capacity_observations(now - self.CAPACITY_WINDOW_SECONDS).items()):
+            per_gpu: dict[str, list[dict[str, Any]]] = {}
+            for obs in observations:
+                host_ok = bool(obs.get("nvml_supported")) and not obs.get("nvml_error")
+                for gpu_uuid, gpu in obs["gpus"].items():
+                    util, used = gpu.get("utilization"), gpu.get("vram_used")
+                    supported = bool(host_ok and gpu.get("supported") and util is not None and used is not None)
+                    per_gpu.setdefault(gpu_uuid, []).append({
+                        "sample_id": obs["poll_id"],
+                        "sample_time": obs["received_at"],
+                        "boot_id": obs.get("boot_id"),
+                        "supported": supported,
+                        "complete": bool(supported and not gpu.get("mig_detected") and not gpu.get("error")),
+                        "process_count": gpu.get("compute_process_count") if supported else None,
+                        "mem_used_mib": round(used / 2**20, 1) if supported else None,
+                        "utilization": round(float(util) * 100.0, 2) if supported else None,
+                        "error": gpu.get("error"),
+                    })
+            hosts.append({
+                "target": target,
+                "state": states.get(target),
+                "gpus": [{"uuid": u, "samples": samples[-32:]} for u, samples in sorted(per_gpu.items())
+                         if u.startswith("GPU-")][:64],
+            })
+        return {"schema": "fleetmon.capacity/v1", "generated_at": now, "hosts": hosts[:256]}
+
+    def _scheduler_get(self, path: str) -> dict[str, Any]:
+        if self.scheduler is None:
+            return {"available": False, "configured": False,
+                    "error": "no [scheduler] url in the fleetmon config"}
+        return {"configured": True, **self.scheduler.get(path)}
+
+    def scheduler_queue(self, *, finished: bool = False, **_: Any) -> dict[str, Any]:
+        return self._scheduler_get("/api/v1/queue?all_users=true&limit=300"
+                                   + ("&finished=true" if finished else ""))
+
+    def scheduler_status(self, **_: Any) -> dict[str, Any]:
+        return self._scheduler_get("/api/v1/status")
+
+    def scheduler_job(self, *, job_id: int, **_: Any) -> dict[str, Any]:
+        """One job: its document, why it waits, and the tail of its output."""
+
+        job = self._scheduler_get(f"/api/v1/jobs/{int(job_id)}")
+        if not job.get("available") or "job" not in job:
+            return job
+        explain = self._scheduler_get(f"/api/v1/jobs/{int(job_id)}/explain")
+        tails = {}
+        for stream in ("stdout", "stderr"):
+            head = self._scheduler_get(f"/api/v1/jobs/{int(job_id)}/logs?stream={stream}&max_bytes=0")
+            end = head.get("end") or 0
+            offset = max(head.get("base") or 0, end - 16384)
+            tail = self._scheduler_get(
+                f"/api/v1/jobs/{int(job_id)}/logs?stream={stream}&offset={offset}&max_bytes=16384")
+            tails[stream] = {k: tail.get(k) for k in ("data_b64", "complete", "age_s", "gap", "attempt")}
+        return {**job, "explain": explain if explain.get("available") else None, "logs": tails}
+
+    def _fleetq_holders(self) -> dict[tuple[str, str], int]:
+        """(node, GPU uuid) -> the fleetq job holding it, from the scheduler (cached)."""
+
+        if self.scheduler is None:
+            return {}
+        nodes = self.scheduler.get("/api/v1/nodes")
+        if not nodes.get("available"):
+            return {}
+        return {
+            (node["id"], gpu["uuid"]): gpu["fleetq_job"]
+            for node in nodes.get("nodes") or []
+            for gpu in node.get("gpus") or []
+            if gpu.get("fleetq_job")
+        }
+
     def idle_gpus(self, **_: Any) -> dict[str, Any]:
         """One bounded read-only listing of every known latest GPU.
 
@@ -924,6 +1063,7 @@ class HubRuntime:
             row["target"]: self._freshen_host(dict(row))["state"]
             for row in self.db.hosts()
         }
+        holders = self._fleetq_holders()
         for target, observations in sorted(self._gpu_window_cached().items()):
             owners_by_uuid = self._gpu_owners(target)
             rows: list[
@@ -983,6 +1123,7 @@ class HubRuntime:
                         "reason": reason,
                         "flag": flag,
                         "owners": owners_by_uuid.get(gpu_uuid, []),
+                        "fleetq_job": holders.get((target, gpu_uuid)),
                     }
                 )
                 summary[availability] += 1

@@ -6,6 +6,7 @@ import math
 import os
 import shutil
 import stat as stat_module
+import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
 from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
@@ -67,6 +68,10 @@ class HubConfig:
     retention_days: int = 30
     disk_reserve_bytes: int = 512 * 1024 * 1024
     backup_dir: Path | None = None
+    # fleetqd's read API, for the Queue page and GPU allocation marks. Read-only:
+    # fleetmon never mutates the queue, and a down scheduler only greys the page.
+    scheduler_url: str | None = None
+    scheduler_token: str | None = None
 
     def bind_is_trusted(self) -> bool:
         """Whether this bind sits inside a network trusted to skip the token.
@@ -358,48 +363,43 @@ def _notify_url_from_environment() -> str | None:
         raise ConfigError(f"FLEETMON_NOTIFY_URL: {exc}") from exc
 
 
-def _auth_token_from_environment() -> str | None:
-    """Read the authentication token from the environment or a token file.
+def _auth_token_from_environment(prefix: str = "FLEETMON_AUTH_TOKEN") -> str | None:
+    """Read a token from the environment or a token file.
 
     Tokens never come from TOML, argv, or logs. Exactly one source may be
     configured; the file must be owner-only (mode 0600) or startup fails.
+    Used for the dashboard's own token and for the scheduler read token.
     """
 
-    token = os.environ.get("FLEETMON_AUTH_TOKEN")
-    token_file = os.environ.get("FLEETMON_AUTH_TOKEN_FILE")
+    token = os.environ.get(prefix)
+    token_file = os.environ.get(f"{prefix}_FILE")
     if token and token_file:
-        raise ConfigError(
-            "set only one of FLEETMON_AUTH_TOKEN or FLEETMON_AUTH_TOKEN_FILE"
-        )
+        raise ConfigError(f"set only one of {prefix} or {prefix}_FILE")
     if token_file:
-        return _read_token_file(token_file)
+        return _read_token_file(token_file, f"{prefix}_FILE")
     return _optional_string(token)
 
 
-def _read_token_file(path_text: str) -> str:
+def _read_token_file(path_text: str, name: str = "FLEETMON_AUTH_TOKEN_FILE") -> str:
     """Read a token from an owner-only file, failing closed on any doubt."""
 
     path = Path(path_text).expanduser()
     if not path.is_absolute():
-        raise ConfigError("FLEETMON_AUTH_TOKEN_FILE must be an absolute path")
+        raise ConfigError(f"{name} must be an absolute path")
     try:
         stat_result = os.stat(path)
     except OSError as exc:
-        raise ConfigError("FLEETMON_AUTH_TOKEN_FILE must be an existing file") from exc
+        raise ConfigError(f"{name} must be an existing file") from exc
     if not stat_module.S_ISREG(stat_result.st_mode):
-        raise ConfigError("FLEETMON_AUTH_TOKEN_FILE must be a regular file")
+        raise ConfigError(f"{name} must be a regular file")
     if stat_result.st_uid not in {os.geteuid(), 0}:
-        raise ConfigError("FLEETMON_AUTH_TOKEN_FILE must be owned by the service user")
+        raise ConfigError(f"{name} must be owned by the service user")
     if stat_result.st_mode & 0o077:
-        raise ConfigError(
-            "FLEETMON_AUTH_TOKEN_FILE must not be group or world accessible"
-        )
+        raise ConfigError(f"{name} must not be group or world accessible")
     try:
         value = path.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError) as exc:
-        raise ConfigError(
-            "FLEETMON_AUTH_TOKEN_FILE must be readable UTF-8 text"
-        ) from exc
+        raise ConfigError(f"{name} must be readable UTF-8 text") from exc
     if not value or any(ord(char) < 32 or ord(char) == 0x7F for char in value):
         raise ConfigError("token file must contain one non-empty printable token")
     return value
@@ -445,8 +445,11 @@ def load_config(path: Path | None = None) -> HubConfig:
             raw = tomllib.load(handle)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError("invalid TOML configuration") from exc
-    _unknown_keys(raw, {"hub", "polling", "retention"}, "top-level")
+    _unknown_keys(raw, {"hub", "polling", "retention", "scheduler"}, "top-level")
     hub = _table(raw, "hub")
+    scheduler = _table(raw, "scheduler")
+    _unknown_keys(scheduler, {"url"}, "scheduler")
+    scheduler_url = _scheduler_url(scheduler.get("url"))
     polling = _table(raw, "polling")
     retention = _table(raw, "retention")
     _unknown_keys(
@@ -579,7 +582,25 @@ def load_config(path: Path | None = None) -> HubConfig:
             "retention.disk_reserve_bytes",
         ),
         backup_dir=backup_dir,
+        scheduler_url=scheduler_url,
+        scheduler_token=(
+            _auth_token_from_environment("FLEETMON_SCHEDULER_TOKEN") if scheduler_url else None
+        ),
     ).validate()
+
+
+def _scheduler_url(value: Any) -> str | None:
+    """fleetqd's base URL: plain http(s), no credentials, no path beyond the root."""
+
+    if value is None:
+        return None
+    text = _string(value, "scheduler.url").rstrip("/")
+    parsed = urllib.parse.urlsplit(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ConfigError("scheduler.url must be an http(s) URL like http://127.0.0.1:8089")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+        raise ConfigError("scheduler.url takes no credentials, path, query or fragment")
+    return text
 
 
 def _optional_string(value: Any) -> str | None:

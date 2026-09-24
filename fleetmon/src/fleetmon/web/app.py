@@ -45,6 +45,7 @@ PAGE_TITLES = {
     "jobs": "Jobs",
     "hub-status": "Hub Status",
     "idle-gpus": "Idle GPUs",
+    "queue": "Queue",
 }
 
 
@@ -534,6 +535,48 @@ def create_app(
             else {"status": "unknown", "details": value if value else {}}
         )
 
+    # ---- fleetq: the capacity feed it reads, and its queue shown here ------------
+    # Both read-only. The feed is stored samples only; the queue routes read the
+    # scheduler's API through one bounded, cached client (fleetmon/scheduler.py).
+
+    @app.get("/api/feed/v1/capacity")
+    async def capacity_feed():
+        value = await _invoke_with_executor(
+            app.state.query_executor,
+            app.state.query,
+            "capacity_feed",
+            capacity=app.state.query_capacity,
+        )
+        if not isinstance(value, dict) or value.get("schema") != "fleetmon.capacity/v1":
+            raise HTTPException(503, "capacity feed unavailable")
+        return value
+
+    async def _scheduler(name: str, **kwargs: Any) -> dict[str, Any]:
+        value = await _invoke_with_executor(
+            app.state.query_executor,
+            app.state.query,
+            name,
+            capacity=app.state.query_capacity,
+            **kwargs,
+        )
+        if not isinstance(value, dict):
+            return {"available": False, "configured": False, "error": "scheduler view unavailable"}
+        return value
+
+    @app.get("/api/scheduler/queue")
+    async def scheduler_queue(finished: bool = False):
+        return await _scheduler("scheduler_queue", finished=finished)
+
+    @app.get("/api/scheduler/status")
+    async def scheduler_status():
+        return await _scheduler("scheduler_status")
+
+    @app.get("/api/scheduler/jobs/{job_id}")
+    async def scheduler_job(job_id: int):
+        if job_id < 1 or job_id > 2**62:
+            raise HTTPException(404, "job not found")
+        return await _scheduler("scheduler_job", job_id=job_id)
+
     @app.get("/host/{target}", response_class=HTMLResponse)
     async def host_page(target: str):
         if not _valid_target(target):
@@ -543,7 +586,7 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     @app.get("/{page}", response_class=HTMLResponse)
     async def page(page: str = "overview"):
-        if page not in {"overview", "jobs", "hub-status", "idle-gpus"}:
+        if page not in {"overview", "jobs", "hub-status", "idle-gpus", "queue"}:
             raise HTTPException(404, "page not found")
         return _html_page(page, PAGE_TITLES[page])
 

@@ -1421,6 +1421,52 @@ class Database:
         ]
         return {target: self._latest_observations(target, 2) for target in targets}
 
+    def capacity_samples(
+        self,
+        *,
+        since: float,
+        max_per_target: int = 32,
+        max_targets: int = MAX_GPU_WINDOW_TARGETS,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Committed observations received since ``since``, oldest first, per target.
+
+        For the capacity feed: only polls that produced a host sample count (an
+        error poll is a gap, never an observation), each with its GPU rows.
+        """
+
+        max_per_target = min(max(int(max_per_target), 1), 32)
+        max_targets = min(max(int(max_targets), 1), MAX_GPU_WINDOW_TARGETS)
+        out: dict[str, list[dict[str, Any]]] = {}
+        targets = [
+            row["target"]
+            for row in self.query(
+                "SELECT target FROM hosts ORDER BY target LIMIT ?", (max_targets,)
+            )
+        ]
+        for target in targets:
+            observations = [
+                dict(row)
+                for row in self.query(
+                    """
+                    SELECT poll_id, received_at, boot_id, nvml_supported, nvml_error
+                    FROM host_samples WHERE target=? AND received_at>=?
+                    ORDER BY received_at DESC LIMIT ?
+                    """,
+                    (target, float(since), max_per_target),
+                )
+            ]
+            for observation in observations:
+                observation["gpus"] = {
+                    gpu["uuid"]: dict(gpu)
+                    for gpu in self.query(
+                        "SELECT * FROM gpu_samples WHERE poll_id=? ORDER BY idx LIMIT ?",
+                        (observation["poll_id"], MAX_GPU_ROWS_PER_POLL),
+                    )
+                }
+            if observations:
+                out[target] = list(reversed(observations))
+        return out
+
     def gpu_recent(
         self, target: str, per_gpu: int = 2
     ) -> dict[str, list[dict[str, Any] | None]]:

@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fleetmon.capacity/v1",
+  "title": "fleetmon capacity feed, consumed read-only by fleetqd (REFINED_PLAN \u00a77)",
+  "description": "Raw per-GPU samples with their own identity, time and boot. A response's generation time is NOT a sample time; fleetqd builds idle windows only from distinct sample_ids. Additive changes only within v1.",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "hosts"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fleetmon.capacity/v1"
+    },
+    "generated_at": {
+      "type": "number",
+      "description": "When fleetmon built this response (epoch s). Never used as a sample time."
+    },
+    "hosts": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "required": [
+          "target",
+          "gpus"
+        ],
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "fleetctl target name"
+          },
+          "state": {
+            "type": "string"
+          },
+          "gpus": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "required": [
+                "uuid",
+                "samples"
+              ],
+              "properties": {
+                "uuid": {
+                  "type": "string",
+                  "pattern": "^GPU-"
+                },
+                "samples": {
+                  "type": "array",
+                  "maxItems": 32,
+                  "description": "Recent samples, oldest first, from at least the last 180 s, including polls the hub's history thinning would drop. fleetq's idle rule needs samples no more than ~65 s apart, so shared hosts should be polled every 30 s or faster.",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "sample_id",
+                      "sample_time",
+                      "boot_id",
+                      "supported",
+                      "complete",
+                      "process_count",
+                      "mem_used_mib",
+                      "utilization"
+                    ],
+                    "properties": {
+                      "sample_id": {
+                        "type": "string",
+                        "description": "The fleetmon poll id: stable per poll, so a cached re-read is never a new observation"
+                      },
+                      "sample_time": {
+                        "type": "number",
+                        "description": "When the hub received the measurement (epoch s, on the hub's clock, within one poll round-trip of the measurement), so a skewed host clock cannot make old data look fresh. Never the response's generated_at."
+                      },
+                      "boot_id": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "supported": {
+                        "type": "boolean",
+                        "description": "NVML answered for this GPU and every required metric was read"
+                      },
+                      "complete": {
+                        "type": "boolean",
+                        "description": "The GPU's NVML compute-process count is trustworthy: supported, no GPU error, not MIG-partitioned. Hidden or truncated host process tables do not affect it."
+                      },
+                      "process_count": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "description": "NVML compute processes on this GPU; null when not supported (unknown is never zero)"
+                      },
+                      "mem_used_mib": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Device memory in use, MiB (not bytes); null when not supported"
+                      },
+                      "utilization": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "GPU utilization, percent 0-100 (not a 0-1 fraction); null when not supported"
+                      },
+                      "error": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

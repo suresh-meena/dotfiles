@@ -165,3 +165,39 @@ The hub discovers the managed inventory with `fleetctl list --json`, admits
 only enabled workstation/compute targets using the direct protocol, and treats
 unsupported Python, missing helpers, unreachable hosts, partial snapshots, and
 data gaps as explicit states.
+
+## Fleet queue (fleetq)
+
+Fleetmon and fleetqd, the fleet's job scheduler, exchange data in both
+directions, and neither direction can change anything:
+
+- **Capacity feed, fleetmon → fleetq.** `GET /api/feed/v1/capacity` serves
+  recent raw per-GPU samples (`contracts/fleetmon-capacity-v1.schema.json`)
+  from stored and just-received polls only; no request triggers a remote call.
+  fleetq uses it to decide when a GPU on a *shared* workstation has been idle
+  long enough to use. Point fleetqd at it with
+  `fleetmon_feed_url = "http://127.0.0.1:8088/api/feed/v1/capacity"` under
+  `[daemon]`. Its idle rule needs samples no more than about 65 s apart, so
+  poll shared hosts every 30 s or faster (`polling.interval_seconds`).
+- **Queue view, fleetq → fleetmon.** The Queue page lists running and waiting
+  jobs in dispatch order, with each job's reason, output tail and "why it is
+  waiting"; Idle GPUs link the fleetq job holding a GPU; Hub Status shows the
+  scheduler's per-cluster call counts. Enable it with
+
+  ```toml
+  [scheduler]
+  url = "http://127.0.0.1:8089"
+  ```
+
+  and a read-only token, created on the scheduler host and given to fleetmon
+  through its environment file (never TOML):
+
+  ```bash
+  fleetqd token create --owner fleetmon --kind service --label fleetmon \
+      --scopes read,read_all --out ~/.config/fleetmon/scheduler.token
+  # fleetmon.env:  FLEETMON_SCHEDULER_TOKEN_FILE=/home/<you>/.config/fleetmon/scheduler.token
+  ```
+
+  Reads are cached for 2 s with a 2 s timeout; a scheduler that is down, slow,
+  or refuses the token greys the page with the reason. Jobs are changed with
+  `fq` (cancel, hold, modify, top), not from the dashboard.
