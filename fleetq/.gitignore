@@ -1,0 +1,5 @@
+# Local environment and test scratch. scripts/test removes its .fleetq-test.*
+# directory on exit, but an interrupted run leaves one behind.
+.venv/
+.pytest_cache/
+.fleetq-test.*/

@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Fake `systemctl --user` over the fake systemd-run state directory."""
+import json, os, sys, time
+from pathlib import Path
+
+state_dir = Path(os.environ["FAKE_SYSTEMD_DIR"])
+args = [a for a in sys.argv[1:] if a != "--user"]
+verb = args[0]
+if verb == "is-system-running":
+    print("running")
+    sys.exit(0)
+unit = args[1]
+st_path = state_dir / f"{unit}.json"
+state = json.loads(st_path.read_text()) if st_path.exists() else None
+if verb == "show":
+    props = args[args.index("-p") + 1].split(",") if "-p" in args else []
+    for p in props:
+        if state is None:
+            print(f"{p}=" + ("not-found" if p == "LoadState" else "inactive" if p == "ActiveState" else ""))
+        else:
+            print(f"{p}={state.get(p, '')}")
+elif verb == "stop":
+    if state and state.get("ActiveState") in ("active", "activating"):
+        state["_stop"] = True
+        st_path.write_text(json.dumps(state))
+        t0 = time.time()
+        while time.time() - t0 < 10:
+            cur = json.loads(st_path.read_text())
+            if cur.get("ActiveState") in ("inactive", "failed"):
+                break
+            time.sleep(0.05)
+elif verb == "reset-failed":
+    if state and state.get("ActiveState") in ("inactive", "failed"):
+        st_path.unlink()

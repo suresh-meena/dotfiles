@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# Install fleetqd as a user service on this machine (numpi), one immutable release at a time.
+#
+#   scripts/install-daemon [--dry-run] [--python PYTHON]
+#
+# Builds <root>/releases/<stamp>/ with its venv at its final path (entrypoint
+# shebangs are absolute), installs requirements-daemon.lock then the project
+# with --no-deps, ships the built fq-node shim beside it, backs up an existing
+# database before anything switches, then repoints <root>/current atomically and
+# places the user unit. It never enables, starts or restarts the service and
+# never contacts another machine: the operator does that, after reading the plan.
+set -euo pipefail
+
+usage() { echo 'usage: install-daemon [--dry-run] [--python PYTHON]' >&2; }
+dry_run=0
+python_override=${FLEETQ_PYTHON:-}
+source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+while (($#)); do
+  case "$1" in
+    --dry-run) dry_run=1 ;;
+    --python) shift; (($#)) || { echo '--python requires a value' >&2; exit 2; }; python_override=$1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
+  esac
+  shift
+done
+for f in pyproject.toml requirements-daemon.lock packaging/fleetq.service scripts/build.py; do
+  [[ -f "$source_dir/$f" ]] || { echo "source is missing $f: $source_dir" >&2; exit 2; }
+done
+
+version_ok() {
+  local major minor
+  read -r major minor < <("$1" -c 'import sys; print(sys.version_info[0], sys.version_info[1])' 2>/dev/null) || return 1
+  (( major > 3 || (major == 3 && minor >= 11) ))
+}
+python=
+if [[ -n "$python_override" ]]; then
+  version_ok "$python_override" || { echo "Python 3.11+ is required: $python_override" >&2; exit 2; }
+  python=$python_override
+else
+  for candidate in python3.14 python3.13 python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && version_ok "$candidate"; then python=$candidate; break; fi
+  done
+  [[ -n "$python" ]] || { echo 'no Python 3.11+ interpreter found (set FLEETQ_PYTHON)' >&2; exit 2; }
+fi
+
+root="$HOME/.local/share/fleetq"
+releases="$root/releases"
+current="$root/current"
+unit_dir="$HOME/.config/systemd/user"
+unit="$unit_dir/fleetq.service"
+state_dir="$HOME/.local/state/fleetq"
+config="${FLEETQ_CONFIG:-$HOME/.config/fleetq/fleetqd.toml}"
+
+# Every component below HOME must be a real, user-owned directory nobody else can write.
+check_chain() {
+  local path=$1 current_path=$HOME rest component owner mode
+  [[ "$HOME" == /* && -d "$HOME" && ! -L "$HOME" ]] || { echo "HOME must be a real absolute directory" >&2; exit 2; }
+  rest=${path#"$HOME"/}
+  while [[ -n "$rest" ]]; do
+    component=${rest%%/*}
+    [[ "$rest" == */* ]] && rest=${rest#*/} || rest=
+    current_path="$current_path/$component"
+    [[ ! -L "$current_path" ]] || { echo "refusing a symlink in the path: $current_path" >&2; exit 2; }
+    if [[ -e "$current_path" ]]; then
+      [[ -d "$current_path" ]] || { echo "not a directory: $current_path" >&2; exit 2; }
+      read -r owner mode < <(stat -c '%u %a' -- "$current_path")
+      [[ "$owner" == "$EUID" ]] || { echo "not owned by you: $current_path" >&2; exit 2; }
+      (( (8#$mode & 0022) == 0 )) || { echo "writable by another user: $current_path" >&2; exit 2; }
+    fi
+  done
+}
+check_chain "$releases"
+check_chain "$unit_dir"
+check_chain "$state_dir"
+[[ ! -e "$current" || -L "$current" ]] || { echo "$current must be a symlink or absent" >&2; exit 2; }
+[[ ! -L "$unit" ]] || { echo "refusing a symlinked unit file: $unit" >&2; exit 2; }
+
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+release="$releases/$stamp"
+upgrade=0
+[[ -L "$current" && -f "$state_dir/fleetq.db" ]] && upgrade=1
+if ((upgrade)) && systemctl --user is-active --quiet fleetq.service 2>/dev/null; then
+  echo 'fleetq.service is still active; pause admission/dispatch and stop it before switching releases' >&2
+  exit 2
+fi
+
+if ((dry_run)); then
+  printf 'dry-run: source %s, python %s (%s)\n' "$source_dir" "$python" "$("$python" --version 2>&1)"
+  printf 'dry-run: would build %s with venv/, fq-node and the plan documents\n' "$release"
+  printf 'dry-run: would pip install --require-hashes -r requirements-daemon.lock, then the project with --no-deps\n'
+  ((upgrade)) && printf 'dry-run: existing database found: would back it up before switching\n'
+  printf 'dry-run: would repoint %s atomically and place %s (not enabled, not started)\n' "$current" "$unit"
+  printf 'dry-run: config expected at %s\n' "$config"
+  exit 0
+fi
+
+mkdir -p -m 0700 "$releases" "$unit_dir" "$state_dir"
+[[ ! -e "$release" ]] || { echo "release already exists: $release" >&2; exit 2; }
+mkdir -m 0700 "$release"
+release_id=$(stat -c '%d:%i' -- "$release")
+unit_tmp=
+current_tmp_dir=
+cleanup() {
+  if [[ -n "$unit_tmp" ]]; then rm -f -- "$unit_tmp"; fi
+  if [[ -n "$current_tmp_dir" ]]; then
+    rm -f -- "$current_tmp_dir/link"
+    rmdir -- "$current_tmp_dir" 2>/dev/null || true
+  fi
+  if [[ -z "${keep_release:-}" && -d "$release" && ! -L "$release" && \
+        "$(stat -c '%d:%i' -- "$release" 2>/dev/null || true)" == "$release_id" ]]; then
+    rm -rf -- "$release"
+  fi
+}
+trap cleanup EXIT
+
+"$python" "$source_dir/scripts/build.py" --check >/dev/null 2>&1 || "$python" "$source_dir/scripts/build.py"
+install -m 0755 "$source_dir/build/fq-node" "$release/fq-node"
+install -m 0755 "$source_dir/bin/fq" "$release/fq"
+install -m 0644 "$source_dir/REFINED_PLAN.md" "$release/REFINED_PLAN.md"
+"$python" -m venv "$release/venv"
+"$release/venv/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes -r "$source_dir/requirements-daemon.lock"
+"$release/venv/bin/python" -m pip install --quiet --disable-pip-version-check --no-deps "$source_dir"
+"$release/venv/bin/fleetqd" --help >/dev/null
+if ((upgrade)); then
+  "$release/venv/bin/fleetqd" --config "$config" doctor >/dev/null
+fi
+
+if ((upgrade)); then
+  backup="$state_dir/backups/pre-upgrade-$stamp.db"
+  mkdir -p -m 0700 "$state_dir/backups"
+  # Use SQLite's backup API without loading either release's config/schema.
+  # The old daemon is stopped and the new release has not migrated the DB.
+  "$python" - "$state_dir/fleetq.db" "$backup" <<'PY'
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+source = sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)
+backup_fd = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+os.close(backup_fd)
+target = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(target)
+    if target.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+        raise SystemExit("pre-upgrade backup failed quick_check")
+finally:
+    target.close()
+    source.close()
+os.chmod(sys.argv[2], 0o600)
+with open(sys.argv[2], "rb") as backup_file:
+    os.fsync(backup_file.fileno())
+directory_fd = os.open(str(Path(sys.argv[2]).parent), os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(directory_fd)
+finally:
+    os.close(directory_fd)
+PY
+  echo "backed up the database to $backup"
+fi
+
+current_tmp_dir=$(mktemp -d "$root/.current.XXXXXXXX")
+ln -s "releases/$stamp" "$current_tmp_dir/link"
+mv -Tf "$current_tmp_dir/link" "$current"
+rmdir -- "$current_tmp_dir"
+current_tmp_dir=
+unit_tmp=$(mktemp "$unit_dir/.fleetq.service.XXXXXXXX")
+install -m 0644 "$source_dir/packaging/fleetq.service" "$unit_tmp"
+mv -f -- "$unit_tmp" "$unit"
+unit_tmp=
+keep_release=1
+
+linger=$(loginctl show-user "$USER" -p Linger 2>/dev/null || true)
+echo "installed $release (current -> releases/$stamp)"
+[[ "$linger" == "Linger=yes" ]] || echo "warning: lingering is off; fleetqd would stop when you log out (loginctl enable-linger)"
+cat <<EOF
+next steps (not done for you):
+  systemctl --user daemon-reload
+  $([[ $upgrade == 1 ]] && echo "systemctl --user restart fleetq.service   # restart runs full reconciliation" \
+                        || echo "fleetqd init --config $config && systemctl --user enable --now fleetq.service")
+EOF

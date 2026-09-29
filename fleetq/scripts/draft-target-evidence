@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Print an unapproved target-evidence record for an operator to review.
+
+Usage: draft-target-evidence CONFIG TARGET CAPTURE_FILE
+The capture file and final JSON record must live in the same private directory.
+This command does not approve a target or contact it.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from fleetq.config import NodeConfig  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) != 4:
+        print(__doc__, file=sys.stderr)
+        return 2
+    config, target, capture = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+    with config.open("rb") as handle:
+        raw = tomllib.load(handle)
+    items = [item for item in raw.get("node", []) if item.get("id") == target]
+    if len(items) != 1 or not capture.is_file() or capture.stat().st_size > 4 * 1024 * 1024:
+        print("target must occur once and capture must be a file of at most 4 MiB", file=sys.stderr)
+        return 2
+    node = NodeConfig(**items[0])
+    profile = json.dumps(node.config_json(), sort_keys=True, separators=(",", ":")).encode()
+    checks = {name: False for name in (
+        "owner_approval", "control_root", "cancellation", "result_durability",
+        "uuid_inventory", "process_visibility", "linger", "cgroup_memory", "systemd_user",
+        "shared_map", "gpu_baselines", "post_launch_contention", "automation_policy",
+        "control_budget", "controller_identity", "account_partition_qos",
+        "accounting_visibility", "no_requeue", "query_cancel")}
+    doc = {
+        "schema": "fq.target-evidence/v1", "target": node.id, "backend": node.backend,
+        "mode": node.mode, "captured_at": datetime.now(timezone.utc).isoformat(),
+        "command_profile_version": "", "capture_file": capture.name,
+        "capture_sha256": hashlib.sha256(capture.read_bytes()).hexdigest(),
+        "config_sha256": hashlib.sha256(profile).hexdigest(), "checks": checks,
+        "reviewer": "", "approved_at": None, "approved": False,
+    }
+    print(json.dumps(doc, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

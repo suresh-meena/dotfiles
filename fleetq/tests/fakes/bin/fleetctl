@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Fake fleetctl for fleetq integration tests: runs "remote" commands locally.
+
+Each target is a sandbox in $FAKE_FLEET_ROOT/<target>/ with:
+  env.json     environment the node's commands run with (FQ_NODE_* overrides)
+  faults.json  {"unreachable": bool, "drop_after_exec": bool, "timeout": bool,
+                "timeout_detach_on_script": string}
+Every invocation is appended to $FAKE_FLEET_ROOT/calls.jsonl.
+Emits the fleetctl.result/v1 envelope that the real fleetctl produces with --json.
+"""
+import json, os, shutil, subprocess, sys, time
+from pathlib import Path
+
+root = Path(os.environ["FAKE_FLEET_ROOT"])
+argv = sys.argv[1:]
+while argv and argv[0] in ("--config-home", "--state-home", "--cache-home"):
+    argv = argv[2:]
+verb = argv[0]
+
+
+def opt(name, default=None):
+    return argv[argv.index(name) + 1] if name in argv else default
+
+
+target = opt("--target")
+with open(root / "calls.jsonl", "a") as log:
+    log.write(json.dumps({"ts": time.time(), "argv": argv, "caller": os.environ.get("FLEETCTL_CALLER")}) + "\n")
+sandbox = root / (target or "_none")
+faults = json.loads((sandbox / "faults.json").read_text()) if (sandbox / "faults.json").exists() else {}
+node_env = json.loads((sandbox / "env.json").read_text()) if (sandbox / "env.json").exists() else {}
+
+
+def envelope(outcome, may, rc=0, remote_rc=None, stdout="", stderr="", **details):
+    print(json.dumps({"schema": "fleetctl.result/v1", "ok": outcome == "ok", "verb": verb, "target": target,
+                      "route": "direct", "outcome": outcome, "may_have_executed": may, "exit_code": rc,
+                      "remote_exit_code": remote_rc, "stdout": stdout, "stderr": stderr,
+                      "stdout_truncated": False, "stderr_truncated": False, "duration_s": 0.0,
+                      "error": None if outcome == "ok" else {"class": outcome, "message": outcome},
+                      "details": details}, indent=2, sort_keys=True))  # as the real one prints it
+    sys.exit(rc)
+
+
+if faults.get("unreachable"):
+    envelope("transport_failed", False, rc=255)
+if opt("--expected-role") and faults.get("role") and opt("--expected-role") != faults["role"]:
+    envelope("refused", False, rc=2, stderr="target role changed")
+if verb == "exec":
+    cmd = argv[argv.index("--") + 1:]
+    if "--json" not in argv:
+        # Plain `fleetctl exec [--tty]`: the remote command owns the terminal, as with ssh -t.
+        os.environ.update(node_env)
+        os.execvp(cmd[0], cmd)
+    if faults.get("timeout"):
+        envelope("timeout", True, rc=124)
+    # Simulate fleetctl timing out after its remote command has started. Keep
+    # that command in a separate session so returning the timeout envelope does
+    # not kill it, as a lost SSH client must not imply remote cancellation.
+    detach_on = faults.get("timeout_detach_on_script")
+    if detach_on and len(cmd) > 2 and cmd[:2] == ["sh", "-c"] and detach_on in cmd[2]:
+        marker = sandbox / "detached_once"
+        if not marker.exists():
+            marker.write_text("1")
+            subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, env={**os.environ, **node_env},
+                             start_new_session=True)
+            envelope("timeout", True, rc=124)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, **node_env}, timeout=120)
+    if faults.get("drop_after_exec"):
+        envelope("may_have_executed", True, rc=255)
+    once = faults.get("drop_once_on")
+    marker = sandbox / "dropped_once"
+    if once and once in cmd and not marker.exists():
+        marker.write_text("1")          # the command ran; the reply is "lost"
+        envelope("may_have_executed", True, rc=255)
+    # The same, keyed on text inside an `sh -c SCRIPT` argument (Slurm scripts).
+    in_script = faults.get("drop_once_on_script")
+    if in_script and len(cmd) > 2 and cmd[:2] == ["sh", "-c"] and in_script in cmd[2] and not marker.exists():
+        marker.write_text("1")
+        envelope("may_have_executed", True, rc=255)
+    # As the real classify_returncode: a clean 0 is certain; any other exit may have run.
+    outcome = "ok" if proc.returncode == 0 else "remote_failed"
+    envelope(outcome, outcome != "ok", rc=proc.returncode, remote_rc=proc.returncode,
+             stdout=proc.stdout, stderr=proc.stderr)
+elif verb == "sync":
+    # Positionals after the push/pull word, skipping flags (and the values of those that take one).
+    takes_value = {"--target", "--timeout", "--route", "--compress-level", "--budget-wait", "--budget-bytes", "--capture-limit",
+                   "--stderr-capture-limit", "--require", "--tag", "--jobs", "--expected-role"}
+    rest, positionals = argv[2:], []
+    while rest:
+        item = rest.pop(0)
+        if item in takes_value:
+            rest.pop(0)
+        elif not item.startswith("--"):
+            positionals.append(item)
+    local, remote = positionals
+    if faults.get("sync_fails"):
+        envelope("transport_failed", False, rc=255)
+    src, dest = (Path(local), Path(remote)) if argv[1] == "push" else (Path(remote), Path(local))
+    if not src.is_dir():
+        envelope("remote_failed", False, rc=23, stderr=f"rsync: change_dir {src} failed")
+    dest.mkdir(parents=True, exist_ok=True)
+    for item in src.iterdir():
+        if item.is_dir():
+            shutil.copytree(item, dest / item.name, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, dest / item.name)
+    corrupt_marker = sandbox / "corrupted_once"
+    if argv[1] == "pull" and faults.get("pull_corrupt_once") and not corrupt_marker.exists():
+        victim = next((f for f in sorted(dest.iterdir()) if f.name.isdigit()), None)
+        if victim is not None:
+            corrupt_marker.write_text(victim.name)
+            victim.write_bytes(b"X" + victim.read_bytes()[1:])   # same size, different bytes
+    envelope("ok", False)
+elif verb == "preflight":
+    # Offline lint: its own report document, not a result envelope (as the real one).
+    errors = faults.get("preflight_errors") or []
+    print(json.dumps({"file": argv[1], "strict": False, "exit_code": 2 if errors else 0, "summary": {},
+                      "diagnostics": [{"level": "ERROR", "rule_id": r, "message": r} for r in errors]}, indent=2))
+    sys.exit(2 if errors else 0)
+else:
+    envelope("refused", False, rc=2)

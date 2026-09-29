@@ -1,0 +1,17 @@
+#!/bin/sh
+# Run the fleetq test suite with no network route anywhere (§13.1).
+#
+# `unshare -rn` gives an empty network namespace: only a loopback device,
+# brought up here so in-process servers work. No test can reach a university
+# host, numpi, or the internet, whatever it tries — PATH fakes are a
+# convenience, this namespace is the boundary.
+set -eu
+cd "$(dirname "$0")/.."
+# Use the workspace filesystem: fleetq enforces a 2 GiB free-space reserve,
+# which a small or busy /tmp tmpfs may not have.
+test_tmp=$(mktemp -d -p "$PWD" .fleetq-test.XXXXXX)
+trap 'rm -rf "$test_tmp"' EXIT HUP INT TERM
+# Keep only the executable search path and an empty temporary HOME. In
+# particular, do not inherit SSH agents, fleetctl permits, or user config.
+unshare -rn sh -c 'set -e; ip link set lo up; test_tmp=$1; shift; exec env -i PATH="$PATH" HOME="$test_tmp" TMPDIR="$test_tmp" .venv/bin/python -m pytest "$@"' \
+  sh "$test_tmp" "$@"

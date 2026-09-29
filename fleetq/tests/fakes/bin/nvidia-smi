@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Scriptable fake nvidia-smi. Scenario comes from $FAKE_NVSMI_FILE (JSON).
+
+{"gpus":[{"uuid":"GPU-a","index":0,"pci":"00000000:01:00.0","name":"RTX 4090",
+          "total":24564,"used":0,"util":0,"mode":"Default","mig":"[N/A]"}],
+ "apps":[{"uuid":"GPU-a","pid":1234,"mem":800}],
+ "fail": false, "hang": false}
+"""
+import json, os, sys, time
+
+scenario = json.load(open(os.environ["FAKE_NVSMI_FILE"]))
+if scenario.get("hang"):
+    time.sleep(3600)
+if scenario.get("fail"):
+    print("NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.", file=sys.stderr)
+    sys.exit(9)
+query = next((a for a in sys.argv if a.startswith("--query")), "")
+if query.startswith("--query-gpu"):
+    for g in scenario["gpus"]:
+        print(", ".join(str(x) for x in (g["uuid"], g["index"], g.get("pci", "0"), g.get("name", "GPU"),
+                                          g.get("total", 24564), g.get("used", 0), g.get("util", 0),
+                                          g.get("mode", "Default"), g.get("mig", "[N/A]"))))
+elif query.startswith("--query-compute-apps"):
+    for a in scenario.get("apps", []):
+        print(f"{a['uuid']}, {a['pid']}, {a.get('mem', 0)}")

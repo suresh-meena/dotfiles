@@ -1,0 +1,48 @@
+[Unit]
+Description=fleetq scheduler (fleetqd): queue, placement and dispatch for the fleet
+Documentation=file://%h/.local/share/fleetq/current/REFINED_PLAN.md
+After=network-online.target
+Wants=network-online.target
+# Never start on an empty SD-card directory when the state SSD is missing (§5);
+# fleetqd also checks its .fleetq-volume sentinel before touching the database.
+RequiresMountsFor=%h/.local/state/fleetq
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/fleetq/current
+Environment=HOME=%h
+Environment=PATH=%h/.local/share/fleetq/current/venv/bin:%h/.local/bin:/usr/bin:/bin
+Environment=FLEETQ_CONFIG=%h/.config/fleetq/fleetqd.toml
+Environment=FLEETQ_SHIM=%h/.local/share/fleetq/current/fq-node
+# Shared with fleetmon on purpose: one set of SSH ControlMaster sockets and one
+# fleetctl audit log per host.
+Environment=FLEET_CONFIG_HOME=%h/.config/fleet
+Environment=FLEET_STATE_HOME=%h/.local/state/fleet
+Environment=FLEET_CACHE_HOME=%h/.cache/fleet
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+# Local checks only (no remote contact): SQLite fix, state volume sentinel,
+# fleetctl present, DB integrity. A failure keeps the scheduler down.
+ExecStartPre=%h/.local/share/fleetq/current/venv/bin/fleetqd doctor
+ExecStart=%h/.local/share/fleetq/current/venv/bin/fleetqd serve
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+# Jobs run detached on the nodes and clusters; stopping fleetqd stops only
+# fleetqd and its in-flight fleetctl children, never the work (§11).
+KillMode=mixed
+MemoryMax=384M
+Nice=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/fleetq %h/.local/state/fleet %h/.cache/fleet
+LimitNOFILE=4096
+
+[Install]
+WantedBy=default.target

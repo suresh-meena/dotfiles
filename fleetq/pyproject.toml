@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fleetq"
+version = "0.1.0"
+description = "Slurm-like scheduler for a personal fleet of workstations and university Slurm clusters, hosted on numpi"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-or-later" }
+# The client (bin/fq) and the node shim (fq-node) are stdlib-only and do not
+# use these; only the daemon does.  Versions match fleetmon's vetted
+# requirements-hub.lock, and fleetq keeps its own validated lock
+# (requirements-daemon.lock) rather than trusting that file blindly.
+dependencies = [
+  "fastapi==0.115.14",
+  "starlette==0.46.2",
+  "pydantic==2.13.5",
+  "uvicorn==0.34.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx==0.28.1"]
+
+[project.scripts]
+fleetqd = "fleetq.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+  # FastAPI 0.115 (pinned to fleetmon's vetted lock) calls a function Python
+  # 3.14 deprecates. Not ours; silenced by exact message only.
+  "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning",
+]
+markers = [
+  "crash: crash-injection tests that restart the controller",
+  "model: randomized model/property tests",
+  "systemd_it: real local systemd integration (opt-in, FQ_SYSTEMD_IT=1)",
+]

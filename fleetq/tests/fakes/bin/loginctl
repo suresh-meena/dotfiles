@@ -1,0 +1,4 @@
+#!/usr/bin/env python3
+"""Fake loginctl: reports linger from $FAKE_LINGER (default yes)."""
+import os
+print("Linger=" + os.environ.get("FAKE_LINGER", "yes"))

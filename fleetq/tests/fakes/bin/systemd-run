@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Fake `systemd-run --user`: a real supervisor for one transient service.
+
+Enough of systemd's contract for fq-node's tests, with real processes:
+
+* one unit name at a time (refuses a second start of an active unit);
+* ``RuntimeMaxSec`` → SIGTERM, then SIGKILL → ``SERVICE_RESULT=timeout``;
+* ``ExecStopPost`` runs after the main process with ``SERVICE_RESULT``,
+  ``EXIT_CODE`` and ``EXIT_STATUS``, like systemd.service(5);
+* ``INVOCATION_ID`` is set for the main process;
+* a fake cgroup file lists the main pid while it runs.
+State lives in ``$FAKE_SYSTEMD_DIR``.
+"""
+import json, os, shlex, signal, subprocess, sys, time, secrets
+from pathlib import Path
+
+state_dir = Path(os.environ["FAKE_SYSTEMD_DIR"])
+cg_root = Path(os.environ["FQ_NODE_CGROUP_ROOT"])
+args = sys.argv[1:]
+unit, props, cmd = None, {}, []
+i = 0
+while i < len(args):
+    a = args[i]
+    if a == "--":
+        cmd = args[i + 1:]
+        break
+    if a.startswith("--unit="):
+        unit = a.split("=", 1)[1]
+    elif a == "-p":
+        k, _, v = args[i + 1].partition("=")
+        props[k] = v
+        i += 1
+    i += 1
+if "--scope" in args:
+    # A scope runs the command itself, in the foreground, with the caller's terminal
+    # and environment; systemd only tracks it. Record what it was bound to.
+    with open(state_dir / "scopes.jsonl", "a") as log:
+        log.write(json.dumps({"unit": unit, "props": props, "cmd": cmd, "cwd": os.getcwd()}) + "\n")
+    os.execvp(cmd[0], cmd)
+st_path = state_dir / f"{unit}.json"
+if st_path.exists() and json.loads(st_path.read_text()).get("ActiveState") in ("active", "activating"):
+    print(f"Failed to start transient service unit: Unit {unit} already exists.", file=sys.stderr)
+    sys.exit(1)
+if os.environ.get("FAKE_SYSTEMD_REFUSE"):
+    print("Failed to start transient service unit: Access denied", file=sys.stderr)
+    sys.exit(1)
+cg = cg_root / "fake" / unit
+cg.mkdir(parents=True, exist_ok=True)
+(cg / "cgroup.procs").write_text("")
+invocation = secrets.token_hex(8)
+
+
+def save(**kw):
+    cur = json.loads(st_path.read_text()) if st_path.exists() else {}
+    cur.update(kw)
+    tmp = st_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cur))
+    os.replace(tmp, st_path)
+
+
+save(ActiveState="activating", SubState="start", Result="success", ControlGroup=f"/fake/{unit}",
+     InvocationID=invocation, LoadState="loaded")
+pid = os.fork()
+if pid:
+    # Parent: `--no-block` returns once the unit is queued.
+    time.sleep(0.05)
+    sys.exit(0)
+os.setsid()
+fd = os.open(os.devnull, os.O_RDWR)
+for n in (0, 1, 2):
+    os.dup2(fd, n)
+env = {**os.environ, "INVOCATION_ID": invocation}
+child = subprocess.Popen(cmd, env=env, start_new_session=True)
+(cg / "cgroup.procs").write_text(f"{child.pid}\n")
+save(ActiveState="active", SubState="running", MainPID=child.pid)
+limit = float(props.get("RuntimeMaxSec", "0") or 0)
+result = "success"
+start = time.time()
+while True:
+    rc = child.poll()
+    if rc is not None:
+        break
+    stop = json.loads(st_path.read_text()).get("_stop")
+    if stop or (limit and time.time() - start > limit):
+        if not stop:
+            result = "timeout"
+        try:
+            os.killpg(child.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        grace = float(props.get("TimeoutStopSec", "5"))
+        t0 = time.time()
+        while child.poll() is None and time.time() - t0 < grace:
+            time.sleep(0.05)
+        if child.poll() is None:
+            os.killpg(child.pid, signal.SIGKILL)
+        rc = child.wait()
+        break
+    time.sleep(0.05)
+if rc < 0:
+    exit_code, exit_status = "killed", signal.Signals(-rc).name[3:]
+    if result == "success" and not json.loads(st_path.read_text()).get("_stop") and -rc != signal.SIGTERM:
+        result = "signal"
+else:
+    exit_code, exit_status = "exited", str(rc)
+    if rc != 0 and result == "success":
+        result = "exit-code"
+if os.environ.get("FAKE_SYSTEMD_OOM"):
+    result = "oom-kill"
+(cg / "cgroup.procs").write_text("")
+save(ActiveState="deactivating", SubState="stop-post")
+post = props.get("ExecStopPost")
+if post:
+    subprocess.run(shlex.split(post), env={**env, "SERVICE_RESULT": result, "EXIT_CODE": exit_code,
+                                          "EXIT_STATUS": exit_status})
+save(ActiveState="failed" if result != "success" else "inactive", SubState="dead", Result=result,
+     ExecMainStatus=exit_status, ExecMainCode=exit_code)
