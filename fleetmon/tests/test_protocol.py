@@ -216,6 +216,14 @@ def test_accepts_partial_optional_capability_metadata():
     assert validate_snapshot(document)["status"] == "partial"
 
 
+def test_absent_optional_capability_errors_read_as_null():
+    # Validated as nullable, so a helper that omits them must not crash the
+    # hub with a KeyError that escapes the ProtocolError handler.
+    document = minimal()
+    document["capabilities"] = {"nvml_supported": True}
+    assert validate_snapshot(document)["status"] == "ok"
+
+
 def test_rejects_duplicate_storage_identities_and_inconsistent_counts():
     document = minimal()
     document["gpus"] = [

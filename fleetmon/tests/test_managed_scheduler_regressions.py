@@ -210,3 +210,33 @@ def test_managed_snapshot_status_reaches_queue_and_never_polls_slurm_directly(tm
         assert controller.calls == []
     finally:
         runtime.close()
+
+
+def test_missing_managed_target_is_reported_without_freezing_the_inventory(tmp_path):
+    campus = Target("campus", True, "login", "slurm")
+    gpu1 = Target("gpu1", True, "compute", "direct")
+    gpu2 = Target("gpu2", True, "compute", "direct")
+    protocols = {"slurm": Protocol("slurm", "slurm"), "direct": Protocol("direct", "direct")}
+    scans = iter([
+        Inventory([campus, gpu1], protocols),
+        # One scan loses the managed cluster and gains a new host.
+        Inventory([gpu1, gpu2], protocols),
+        Inventory([campus, gpu1, gpu2], protocols),
+    ])
+    runtime = HubRuntime(
+        config(tmp_path, managed_scheduler_targets=("campus",)),
+        discover_fn=lambda *_: next(scans), poll_controller=NoRemoteCalls(),
+    )
+    try:
+        runtime.refresh_inventory()
+        assert runtime.state.data["inventory_error"] is None
+
+        runtime.refresh_inventory()
+        assert "gpu2" in runtime.admitted_names
+        assert "gpu2" in {row["target"] for row in runtime.db.hosts()}
+        assert "campus" in runtime.state.data["inventory_error"]
+
+        runtime.refresh_inventory()
+        assert runtime.state.data["inventory_error"] is None
+    finally:
+        runtime.close()

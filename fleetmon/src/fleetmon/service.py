@@ -198,12 +198,17 @@ class HubRuntime:
             )
         }
         scheduler_names = {target.name for target in inventory.scheduler_targets}
+        # A managed target missing from one discovery pass (a rename, a flaky
+        # scan) must not freeze every other host. The legacy poller skips
+        # managed names by config, so reporting the gap is enough.
         missing_managed = set(self.config.managed_scheduler_targets) - scheduler_names
+        inventory_error = None
         if missing_managed:
-            raise ValueError(
+            inventory_error = (
                 "configured managed scheduler targets missing from inventory: "
                 + ", ".join(sorted(missing_managed))
             )
+            LOG.warning("%s", inventory_error)
         self.inventory = inventory
         self.admitted_names = admitted_names
         self.last_inventory = time.time()
@@ -270,7 +275,7 @@ class HubRuntime:
                     "retired",
                 )
 
-        self.state.data["inventory_error"] = None
+        self.state.data["inventory_error"] = inventory_error
         self.state.save()
         return inventory
 

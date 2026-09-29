@@ -477,8 +477,8 @@ def validate_snapshot(
         visibility["partial"]
         or visibility["counters_truncated"]
         or limits["truncated"]
-        or capabilities["nvml_error"]
-        or capabilities["psutil_error"]
+        or capabilities.get("nvml_error")
+        or capabilities.get("psutil_error")
     )
     if partial_evidence and document["status"] != "partial":
         raise ProtocolError("partial data reported as ok")
