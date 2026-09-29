@@ -392,3 +392,35 @@ def test_after_a_restart_the_feed_falls_back_to_stored_samples(tmp_path):
     finally:
         runtime.close()
     assert len(samples) == 2
+
+
+def test_job_detail_reads_fleetqd_concurrently(tmp_path):
+    """A slow fleetqd costs a round trip per round, not per call (7 calls)."""
+
+    class SlowScheduler:
+        def __init__(self):
+            self.paths = []
+
+        def get(self, path):
+            time.sleep(0.2)
+            self.paths.append(path)
+            if "max_bytes=0" in path:
+                return {"available": True, "base": 0, "end": 20000}
+            if "offset=" in path:
+                return {"available": True, "data_b64": path.split("stream=")[1][:6]}
+            return {"available": True, "job": {"id": 7}}
+
+    runtime = HubRuntime(config(tmp_path), discover_fn=lambda *_: inventory(),
+                         poll_controller=Controller(None))
+    runtime.scheduler = SlowScheduler()
+    try:
+        start = time.monotonic()
+        detail = runtime.scheduler_job(job_id=7)
+        elapsed = time.monotonic() - start
+    finally:
+        runtime.close()
+    assert len(runtime.scheduler.paths) == 7
+    assert elapsed < 1.0, f"sequential reads took {elapsed:.2f}s"
+    assert detail["logs"]["stdout"]["data_b64"] == "stdout"
+    assert "offset=3616&" in next(p for p in runtime.scheduler.paths if "stderr&offset" in p)
+    assert detail["explain"] is not None and detail["artifacts"] is not None

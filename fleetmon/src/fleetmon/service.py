@@ -1448,24 +1448,33 @@ class HubRuntime:
     def scheduler_job(self, *, job_id: int, **_: Any) -> dict[str, Any]:
         """One job: its document, why it waits, and the tail of its output."""
 
-        job = self._scheduler_get(f"/api/v1/jobs/{int(job_id)}")
+        base = f"/api/v1/jobs/{int(job_id)}"
+        job = self._scheduler_get(base)
         if not job.get("available") or "job" not in job:
             return job
-        explain = self._scheduler_get(f"/api/v1/jobs/{int(job_id)}/explain")
-        artifacts = self._scheduler_get(f"/api/v1/jobs/{int(job_id)}/artifacts")
-        tails = {}
-        for stream in ("stdout", "stderr"):
-            head = self._scheduler_get(f"/api/v1/jobs/{int(job_id)}/logs?stream={stream}&max_bytes=0")
-            end = head.get("end") or 0
-            offset = max(head.get("base") or 0, end - 16384)
-            tail = self._scheduler_get(
-                f"/api/v1/jobs/{int(job_id)}/logs?stream={stream}&offset={offset}&max_bytes=16384")
-            tails[stream] = {k: tail.get(k) for k in ("data_b64", "complete", "age_s", "gap", "attempt")}
+        streams = ("stdout", "stderr")
+        # Independent reads run together, so a slow fleetqd costs one timeout
+        # per round instead of one per call on the hub's two query workers.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            explain, artifacts, *heads = pool.map(self._scheduler_get, [
+                f"{base}/explain",
+                f"{base}/artifacts",
+                *(f"{base}/logs?stream={stream}&max_bytes=0" for stream in streams),
+            ])
+            tail_paths = []
+            for stream, head in zip(streams, heads, strict=True):
+                end = head.get("end") or 0
+                offset = max(head.get("base") or 0, end - 16384)
+                tail_paths.append(f"{base}/logs?stream={stream}&offset={offset}&max_bytes=16384")
+            tails = dict(zip(streams, pool.map(self._scheduler_get, tail_paths), strict=True))
         return {
             **job,
             "explain": explain if explain.get("available") else None,
             "artifacts": artifacts if artifacts.get("available") else None,
-            "logs": tails,
+            "logs": {
+                stream: {k: tail.get(k) for k in ("data_b64", "complete", "age_s", "gap", "attempt")}
+                for stream, tail in tails.items()
+            },
         }
 
     def _fleetq_holders(self) -> dict[tuple[str, str], int]:
