@@ -232,6 +232,9 @@ def create_app(rt: Runtime) -> FastAPI:
     @app.head("/api/v1/bundles/{digest}")
     async def bundle_head(digest: str, request: Request):
         p = await principal(request)
+        # Same scope as the upload it precedes: a read-only token has no
+        # reason to probe which bundles are cached.
+        p.require("submit")
         digest = _check_digest(digest)
         row = await rt.store.run(lambda c: c.execute(
             "SELECT b.compressed_bytes FROM bundles b JOIN bundle_refs r ON r.digest=b.digest "

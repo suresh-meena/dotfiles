@@ -58,8 +58,10 @@ TERMINAL_MAP = {"COMPLETED": "COMPLETED", "FAILED": "FAILED", "CANCELLED": "CANC
 # Reasons that describe a request that can never run as submitted. Aggregate
 # association/QOS limits (AssocGrpGRES, QOSGrp*) are NOT here: they can clear (§3.7).
 BLOCKING_REASONS = {"AccountNotAllowed", "QOSNotAllowed", "PartitionTimeLimit", "PartitionNodeLimit",
-                    "InvalidAccount", "InvalidQOS", "BadConstraints", "ReqNodeNotAvail, UnavailableNodes",
+                    "InvalidAccount", "InvalidQOS", "BadConstraints",
                     "PartitionConfig", "AssocMaxWallDurationPerJobLimit", "QOSMaxWallDurationPerJobLimit"}
+# squeue appends the node list to this one ("...UnavailableNodes:node03"), so it matches by prefix.
+BLOCKING_REASON_PREFIXES = ("ReqNodeNotAvail, UnavailableNodes",)
 
 PermitFn = Callable[[str, str, int, dict[str, int] | None], Awaitable[tuple[bool, str | None, float | None]]]
 
@@ -511,7 +513,8 @@ def parse_observation(text: str, attempt_ids: list[str], *, accounting: bool) ->
             slurm_state = row[1]
             if slurm_state in PENDING_STATES:
                 reason = row[2] if len(row) > 2 else None
-                evidence.update(reason=reason, blocking=reason in BLOCKING_REASONS)
+                blocking = reason in BLOCKING_REASONS or (reason or "").startswith(BLOCKING_REASON_PREFIXES)
+                evidence.update(reason=reason, blocking=blocking)
                 out[aid] = AttemptObservation(aid, "pending", remote_id=receipt, evidence=evidence)
                 continue
             if slurm_state in RUNNING_STATES:

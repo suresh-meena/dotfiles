@@ -257,11 +257,9 @@ class Controller:
     def _recover_interrupted(self, conn: sqlite3.Connection) -> None:
         """Attempts left mid-protocol by a crash (§9)."""
         for att in conn.execute("SELECT * FROM attempts WHERE state IN ('PLANNED','STAGING')").fetchall():
-            # Nothing past staging was sent; staging executes nothing.
-            state.update_attempt(conn, att["id"], state="NEVER_STARTED", event="recovered_unsent",
-                                 evidence={"why": "controller restarted before launch was sent"})
-            state.release_reservations(conn, att["id"], reason="recovered_unsent")
-            self._job_after_nonstart(conn, att["job_id"], reason="recovered after restart", backoff=0)
+            self._release_unsent(conn, att, event="recovered_unsent",
+                                 why="controller restarted before launch was sent",
+                                 reason="recovered after restart", backoff=0)
         for att in conn.execute("SELECT * FROM attempts WHERE state = 'LAUNCHING'").fetchall():
             state.update_attempt(conn, att["id"], state="START_UNKNOWN", event="recovered_launch_unknown",
                                  evidence={"why": "controller restarted after the launch may have been sent"})
@@ -559,6 +557,11 @@ class Controller:
             "SELECT id, target, backend, state, remote_id, remote_may_be_live FROM attempts WHERE started_at IS NOT NULL"
             " AND state IN ('RUNNING','STOPPING','STOPPED','RELEASED') AND (ended_at IS NULL OR ended_at >= ?)"
             " ORDER BY started_at DESC LIMIT 64", (since,)).fetchall())
+        # Only attempts still in this window are read again; forget the rest
+        # so the map stays bounded over the daemon's lifetime.
+        in_window = {row["id"] for row in rows}
+        for attempt_id in self._last_log_read.keys() - in_window:
+            del self._last_log_read[attempt_id]
         now = asyncio.get_running_loop().time()
         done = 0
         for row in rows:
@@ -1272,7 +1275,35 @@ class Controller:
             array_index=job["array_index"],
         )
 
+    def _release_unsent(self, conn: sqlite3.Connection, att: sqlite3.Row, *, event: str, why: str,
+                        reason: str, backoff: int) -> None:
+        """Nothing past staging was sent; staging executes nothing."""
+        state.update_attempt(conn, att["id"], state="NEVER_STARTED", event=event, evidence={"why": why})
+        state.release_reservations(conn, att["id"], reason=event)
+        self._job_after_nonstart(conn, att["job_id"], reason=reason, backoff=backoff)
+
     async def _dispatch(self, attempt_id: str) -> None:
+        # The dispatch task is detached, so an exception would otherwise be
+        # dropped and leave the attempt PLANNED/STAGING, holding its
+        # reservations, until the next restart ran _recover_interrupted.
+        try:
+            await self._dispatch_attempt(attempt_id)
+        except Exception:
+            log.exception("dispatch of %s failed", attempt_id)
+
+            def release(conn):
+                att = state.get_attempt(conn, attempt_id)
+                if att["state"] in ("PLANNED", "STAGING"):
+                    self._release_unsent(conn, att, event="dispatch_failed",
+                                         why="dispatch failed before launch was sent",
+                                         reason="dispatch failed", backoff=self.config.stage_backoff_s)
+                # Past the launch boundary, observation reconciles the attempt.
+            try:
+                await self._tx(release)
+            except Exception:
+                log.exception("could not release attempt %s; startup recovery will", attempt_id)
+
+    async def _dispatch_attempt(self, attempt_id: str) -> None:
         att = await self.store.run(lambda c: state.get_attempt(c, attempt_id))
         executor = self._executor(att["backend"])
 
@@ -1346,7 +1377,7 @@ class Controller:
                 return
             op_state = {"started": "DONE", "unknown": "UNCERTAIN"}.get(res.kind.value, "FAILED")
             conn.execute("UPDATE operations SET state = ?, detail_json = ?, updated_at = ? WHERE id = ?",
-                         (op_state, json.dumps({"kind": res.kind.value, "reason": res.reason}), utcnow(),
+                         (op_state, json.dumps({"kind": res.kind.value, "reason": res.reason, **res.detail}), utcnow(),
                           att["launch_op_id"]))
             if res.kind is LaunchKind.STARTED:
                 next_state = "SUBMITTED" if slurm else "RUNNING"
@@ -1376,8 +1407,9 @@ class Controller:
                 backoff = self.config.refusal_backoff_s * (4 if refusals >= self.config.max_refusals_per_hour else 1)
                 self._job_after_nonstart(conn, job["id"], reason=f"placement refused: {res.reason}", backoff=backoff)
             elif res.kind is LaunchKind.NEVER_STARTED:
+                # detail carries why (e.g. sbatch's stderr), bounded by the executor.
                 state.update_attempt(conn, attempt_id, state="NEVER_STARTED", event="launch_never_started",
-                                     evidence={"reason": res.reason})
+                                     evidence={"reason": res.reason, **res.detail})
                 state.release_reservations(conn, attempt_id, reason="never_started")
                 self._job_after_nonstart(conn, job["id"], reason=f"not started: {res.reason}",
                                          backoff=self.config.stage_backoff_s, permanent=res.permanent)
@@ -1385,7 +1417,7 @@ class Controller:
                 unknown = "SUBMISSION_UNKNOWN" if slurm else "START_UNKNOWN"
                 if att["state"] in ("LAUNCHING", "SUBMITTING"):
                     state.update_attempt(conn, attempt_id, state=unknown, event="launch_unknown",
-                                         evidence={"reason": res.reason})
+                                         evidence={"reason": res.reason, **res.detail})
                 phase = "SUBMISSION_UNKNOWN" if slurm else "RECONCILING"
                 if job["phase"] in ("DISPATCHING",):
                     state.update_job(conn, job["id"], event="launch_unknown", actor="controller",

@@ -270,6 +270,8 @@ def test_bundle_upload_validates_and_scopes_to_owner(h, tmp_path):
     info = bundles.bundle_build(src, out)
     data = out.read_bytes()
     other_id, other = h.store.run_sync(lambda c: auth.create_token(c, owner="labmate", kind="human", label="lm"))
+    _, reader = h.store.run_sync(lambda c: auth.create_token(
+        c, owner="suresh", kind="service", label="ro", scopes=("read",)))
 
     async def go():
         _, app = _app(h)
@@ -285,6 +287,7 @@ def test_bundle_upload_validates_and_scopes_to_owner(h, tmp_path):
             assert (await c.put(url, content=data, headers=_auth(h.token))).status_code == 200
             # Knowing the digest grants a different owner nothing (§6.3).
             assert (await c.head(url, headers=_auth(other))).status_code == 404
+            assert (await c.head(url, headers=_auth(reader))).status_code == 403
             spec = _spec(workdir={"bundle": info.digest})
             ok = await c.post("/api/v1/jobs", json=spec, headers={**_auth(h.token), "Idempotency-Key": "b1"})
             assert ok.status_code == 201

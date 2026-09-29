@@ -527,3 +527,43 @@ def test_exclusive_preferred_over_shared(tmp_path):
     asyncio.run(go())
     assert h.attempts(jid)[0]["target"] == "excl1"          # spare labmates' machine
     h.close()
+
+
+def test_dispatch_failure_before_launch_releases_and_requeues(h):
+    jid = h.submit(key="k")["jobs"][0]
+
+    async def go():
+        ctl = h.start()
+        await ctl.startup()
+        real_context = ctl._context
+        failures = []
+
+        def fail_once(conn, att):
+            if not failures:
+                failures.append(att["id"])
+                raise OSError("disk I/O error")
+            return real_context(conn, att)
+        ctl._context = fail_once
+        await h.ticks(1)
+        first = h.attempts(jid)[0]
+        assert first["state"] == "NEVER_STARTED" and first["remote_may_be_live"] == 0
+        assert h.open_gpu_reservations() == []
+        assert h.job(jid)["phase"] == "PENDING"
+        await h.ticks(5)
+    asyncio.run(go())
+    assert h.job(jid)["execution_outcome"] == "COMPLETED"
+    assert h.job(jid)["executions_used"] == 1
+    assert h.invariants() == []
+
+
+def test_why_a_launch_never_started_is_kept_on_the_attempt(h):
+    from fleetq.executors.base import LaunchKind, LaunchResult
+    jid = h.submit(key="k")["jobs"][0]
+
+    async def rejected(_ctx):
+        return LaunchResult(LaunchKind.NEVER_STARTED, reason="sbatch_rejected", permanent=True,
+                            detail={"stderr": "sbatch: error: invalid partition specified: gpu"})
+    h.fake.launch = rejected
+    _drive(h, 2)
+    assert "invalid partition specified" in h.attempts(jid)[0]["evidence_json"]
+    assert h.job(jid)["phase"] == "BLOCKED"

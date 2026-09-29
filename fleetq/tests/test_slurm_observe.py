@@ -47,6 +47,9 @@ def test_pending_carries_the_reason_and_whether_it_can_ever_clear():
     assert grp.state == "pending" and grp.evidence["blocking"] is False
     never = one(session({"att_1": {"receipt": "1001"}}, squeue=["1001|PENDING|AccountNotAllowed||fq-att_1"]))
     assert never.state == "pending" and never.evidence["blocking"] is True
+    nodes = one(session({"att_1": {"receipt": "1001"}},
+                        squeue=["1001|PENDING|ReqNodeNotAvail, UnavailableNodes:node03||fq-att_1"]))
+    assert nodes.state == "pending" and nodes.evidence["blocking"] is True
 
 
 def test_running_and_a_receipt_with_a_cluster_suffix():
