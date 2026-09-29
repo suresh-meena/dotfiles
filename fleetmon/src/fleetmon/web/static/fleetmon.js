@@ -24,6 +24,10 @@
   const CLOCK_DRIFT_S = 120;
   const WORKLOAD_LIMIT = 10;
   const OK_STATES = {live: true, partial: true, scheduler: true, retired: true, polling_disabled: true};
+  // Hosts watched through their Slurm queue. Any machine snapshot they have is
+  // left over from helper polling they no longer get, as is its last_error.
+  const SCHEDULER_STATES = {scheduler: true, slurm_stale: true, scheduler_managed: true,
+    scheduler_snapshot_stale: true, scheduler_snapshot_unavailable: true};
   const hostEndpoint = page === "host" ? `/api/hosts/${encodeURIComponent(target)}` : null;
   const endpoint =
     (hostEndpoint ? `${hostEndpoint}?limit=1` : null) ||
@@ -135,7 +139,8 @@
   // ---- state tokens: lowercase text with a color class ----
   const TOKEN_COLORS = {
     live: "st-ok",
-    partial: "st-partial",
+    // Live with some detail withheld (permissions, collection limits): not a fault.
+    partial: "st-ok",
     partial_flag: "st-partial",
     stale: "st-stale",
     slurm_stale: "st-stale",
@@ -161,9 +166,10 @@
   };
   function token(value, raw) {
     const text = typeof value === "string" && value ? value : UNKNOWN;
-    const label = ({partial: "limited detail", retired: "not monitored", polling_disabled: "excluded", slurm_stale: "scheduler stale", scheduler_snapshot_stale: "managed Slurm snapshot stale", scheduler_snapshot_unavailable: "managed; all-user snapshot unavailable"})[text] || text;
+    const label = ({partial: "live · limited", retired: "not monitored", polling_disabled: "excluded", slurm_stale: "scheduler stale", scheduler_snapshot_stale: "managed Slurm snapshot stale", scheduler_snapshot_unavailable: "managed; all-user snapshot unavailable"})[text] || text.replace(/_/g, " ");
     const span = el("span", "st " + (TOKEN_COLORS[text] || "st-bad"), label);
     span.dataset.raw = raw === undefined ? text : String(raw);
+    if (text === "partial") span.title = "live; some detail is withheld by permissions or collection limits";
     return span;
   }
 
@@ -413,7 +419,7 @@
   }
   function hostLink(value) {
     if (typeof value !== "string" || !value) return DASH;
-    const link = el("a", null, value);
+    const link = el("a", "host-link", value);
     link.href = `/host/${encodeURIComponent(value)}`;
     return {node: link, raw: value};
   }
@@ -495,10 +501,24 @@
     });
     return map;
   }
+  function isSchedulerHost(host) {
+    return !!(host && SCHEDULER_STATES[host.state]);
+  }
+  // True when the host has a machine snapshot and it is older than a poll.
+  function snapshotStale(host, receivedAt) {
+    const age = _ageRaw(receivedAt === undefined ? host && host.last_received : receivedAt);
+    return _number(age) && age > STALE_SAMPLE_S;
+  }
+  // The poll error that describes the host now: a scheduler host's queue poll
+  // reports through its state, and its last_error is a helper error from before.
+  function currentError(host) {
+    return host && host.last_error && !isSchedulerHost(host) ? host.last_error : null;
+  }
   function hostNeedsAttention(host) {
     if (!host || typeof host !== "object") return false;
     const state = typeof host.state === "string" && host.state ? host.state : UNKNOWN;
     if (!OK_STATES[state]) return true;
+    if (isSchedulerHost(host)) return false;
     if (host.last_error) return true;
     const age = _ageRaw(host.last_received);
     if (_number(age) && age > STALE_SAMPLE_S) return true;
@@ -512,7 +532,7 @@
       return {node: none, raw: ""};
     }
     const entry = counts.get(host.target);
-    if (!entry) return {text: UNKNOWN, raw: ""};
+    if (!entry) return {node: el("span", "st st-muted", UNKNOWN), raw: ""};
     const wrap = el("span", "gpu-sum");
     if (entry.idle) wrap.append(el("span", "st-ok", `${entry.idle} idle`));
     if (entry.busy) wrap.append(el("span", "st-busy", `${entry.busy} busy`));
@@ -556,7 +576,7 @@
     list.forEach((host) => {
       if (!host || typeof host !== "object") return;
       const spark = sparks.get(host.target);
-      rowOf(tbody, columns, [
+      const tr = rowOf(tbody, columns, [
         hostLink(host.target),
         token(host.state),
         gpuSummary(host, counts),
@@ -601,8 +621,17 @@
           ),
           raw: host.gpu_vram_used,
         },
-        host.last_error ? token(host.last_error) : DASH,
+        currentError(host) ? token(currentError(host)) : DASH,
       ]);
+      // An old snapshot's numbers stay readable but must not pass for live:
+      // dim the measurements, keep host, state, age and error at full strength.
+      if (snapshotStale(host)) {
+        tr.className = "row-stale";
+        Array.from(tr.childNodes).forEach((td, index) => {
+          if (index === 3) td.className += " age-stale";
+          else if (index >= 2 && index < columns.length - 1) td.className += " dim";
+        });
+      }
     });
     tbody.applySavedSort();
     content.append(scrollTable(tbody.parentNode));
@@ -615,12 +644,23 @@
     const latest = Array.isArray(host.items) && host.items.length ? host.items[0] : null;
     renderHostBar(host, latest);
     renderIssues(host, latest);
+    const stale = latest && snapshotStale(host, latest.received_at);
+    if (stale) {
+      content.append(el("p", "stale-note",
+        `Everything below is from the last machine snapshot, ${_clock(latest.received_at)} (${_age(latest.received_at)} ago).`));
+    }
+    const firstSection = content.childNodes.length;
     renderGpus(host.gpus, host.processes);
     renderMeters(latest);
     renderDisks(host.disks);
     renderCharts();
     renderWorkloads(host.processes);
     renderUsers(host.users, latest);
+    if (stale) {
+      Array.from(content.childNodes).slice(firstSection).forEach((node) => {
+        node.className = `${node.className || ""} is-stale`.trim();
+      });
+    }
     renderDiagnostics(host, latest);
     if (!latest) note("no samples yet for this host");
   }
@@ -629,7 +669,7 @@
     const bar = el("div", "host-bar");
     bar.append(el("span", "host-name", target));
     bar.append(token(host.state));
-    if (host.last_error) bar.append(token(host.last_error));
+    if (currentError(host)) bar.append(token(currentError(host)));
     const addresses = Array.isArray(host.addresses)
       ? host.addresses.filter((address) => typeof address === "string" && address)
       : [];
@@ -640,7 +680,11 @@
       el(
         "span",
         "sample-age",
-        latest ? `sample ${_age(latest.received_at)} ago` : "no samples yet",
+        !latest
+          ? "no samples yet"
+          : snapshotStale(host, latest.received_at)
+            ? `last snapshot ${_age(latest.received_at)} ago`
+            : `sample ${_age(latest.received_at)} ago`,
       ),
     );
     content.append(bar);
@@ -650,8 +694,9 @@
     const issues = [];
     const state = typeof host.state === "string" && host.state ? host.state : UNKNOWN;
     if (!OK_STATES[state]) issues.push(`host state ${state}`);
-    if (host.last_error) issues.push(`last poll error: ${host.last_error}`);
-    if (latest) {
+    if (currentError(host)) issues.push(`last poll error: ${currentError(host)}`);
+    // A scheduler host is not expected to have a fresh machine snapshot.
+    if (latest && !isSchedulerHost(host)) {
       const disk = diskFraction(latest);
       if (disk !== null && disk >= DISK_ISSUE_FRACTION)
         issues.push(`Disk ${Math.round(disk * 100)}% full · ${_bytes(latest.root_free)} remaining`);
@@ -671,7 +716,17 @@
     } else {
       wrap.append(el("span", "issue-ok", "no issues flagged"));
     }
-    content.append(wrap);
+    // A healthy scheduler host gets the explanation below instead of a second box.
+    if (issues.length || !isSchedulerHost(host)) content.append(wrap);
+    if (isSchedulerHost(host)) {
+      const notice = el("div", "notice");
+      notice.append(el("span", "", "Watched through its Slurm queue: its jobs are on the "));
+      const jobs = el("a", "", "Jobs");
+      jobs.href = "/jobs";
+      notice.append(jobs);
+      notice.append(el("span", "", " page. fleetmon does not take machine snapshots of scheduler login nodes."));
+      content.append(notice);
+    }
   }
 
   function gpuProcessMap(processes) {
@@ -1260,6 +1315,48 @@
     return span;
   }
 
+  // A job row's payload is the scheduler's own record, shaped by where it came
+  // from: squeue --json, the squeue text fallback, or sacct. Take only plain
+  // strings and numbers from the few fields every shape can supply.
+  const MAX_JOB_PAYLOAD = 64 * 1024;
+  // Slurm durations: [D-][HH:]MM:SS.
+  function slurmSeconds(text) {
+    const match = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(text || "");
+    if (!match) return undefined;
+    return ((Number(match[1] || 0) * 24 + Number(match[2] || 0)) * 60 + Number(match[3])) * 60 + Number(match[4]);
+  }
+  function jobDetail(payload) {
+    let record = payload;
+    if (typeof payload === "string" && payload.length <= MAX_JOB_PAYLOAD) {
+      try {
+        record = JSON.parse(payload);
+      } catch (_err) {
+        record = null;
+      }
+    }
+    if (!record || typeof record !== "object" || Array.isArray(record)) return {};
+    const text = (value) => (typeof value === "string" && value && value !== "(null)" ? value : undefined);
+    const detail = {
+      user: text(record.user) || text(record.user_name),
+      partition: text(record.partition),
+      nodes: text(record.nodes),
+      elapsed: text(record.elapsed),
+    };
+    detail.elapsed_s = slurmSeconds(detail.elapsed);
+    const time = record.time && typeof record.time === "object" ? record.time : null;
+    // squeue --json gives a start instant (a number, or {set, number} since
+    // Slurm 23.02) rather than a duration; a future start is only expected.
+    const start = record.start_time && typeof record.start_time === "object"
+      ? record.start_time.number : record.start_time;
+    const running = _number(start) && start > 0 && start <= Date.now() / 1000;
+    const elapsed = time && _number(time.elapsed) ? time.elapsed : running ? Date.now() / 1000 - start : null;
+    if (!detail.elapsed && _number(elapsed)) {
+      detail.elapsed_s = elapsed;
+      detail.elapsed = _dur(elapsed);
+    }
+    return detail;
+  }
+
   function renderJobs(rows) {
     clear();
     const list = rowsOf(rows);
@@ -1273,18 +1370,27 @@
       {label: "array task"},
       {label: "step"},
       {label: "state"},
+      {label: "user"},
+      {label: "partition"},
+      {label: "nodes"},
+      {label: "elapsed", num: true},
       {label: "snapshot"},
       {label: "updated", num: true},
     ];
     const tbody = dataTable(columns, "jobs");
     list.forEach((job) => {
       if (!job || typeof job !== "object") return;
+      const detail = jobDetail(job.payload);
       rowOf(tbody, columns, [
         _text(job.cluster),
         num(_text(job.job_id), job.job_id),
         _text(job.array_task_id),
         _text(job.step_id),
         jobStateToken(job.state),
+        _text(detail.user),
+        _text(detail.partition),
+        _text(detail.nodes),
+        num(_text(detail.elapsed), detail.elapsed_s === undefined ? "" : detail.elapsed_s),
         job.snapshot_status ? `${_text(job.snapshot_status)}${_number(job.snapshot_age_s) ? ` · ${_dur(job.snapshot_age_s)}` : ""}` : DASH,
         num(_clock(job.updated_at), job.updated_at),
       ]);
@@ -2014,7 +2120,9 @@
     // The fetch time is the browser's; the sample age is the telemetry's.
     const age = sampleAgeText();
     const fetched = new Date().toLocaleTimeString();
-    status.textContent = age ? `sample ${age} · fetched ${fetched}` : `fetched ${fetched}`;
+    const items = page === "host" && lastData && Array.isArray(lastData.items) ? lastData.items : [];
+    const noun = items[0] && snapshotStale(null, items[0].received_at) ? "last snapshot" : "sample";
+    status.textContent = age ? `${noun} ${age} · fetched ${fetched}` : `fetched ${fetched}`;
     status.className = "";
   }
 

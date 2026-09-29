@@ -792,6 +792,66 @@ const cardValues = (content) =>
   assert.ok(text.includes(HOSTILE), "hub version as text");
 }
 
+// ---- stale snapshots are labelled as old, and a scheduler host's leftovers are not errors ----
+{
+  const OLD = Math.floor(Date.now() / 1000) - 8 * 86400;
+  const walk = (node, out = []) => {
+    out.push(node);
+    (node.childNodes || []).forEach((child) => walk(child, out));
+    return out;
+  };
+  const sched = {...HOST, target: "wf", role: "login", state: "scheduler", last_error: "transport",
+    items: HOST.items.map((item) => ({...item, received_at: OLD}))};
+  const {shim} = await run("host", "wf", {
+    "/api/hosts/wf?limit=1": sched,
+    "/api/hosts/wf/charts?hours=24": CHARTS,
+    "/api/overview": OVERVIEW,
+  });
+  const text = textOf(shim.content);
+  // Technical diagnostics keep the raw last_error; the page above them must not.
+  const visible = text.split("Technical diagnostics")[0];
+  assert.doesNotMatch(visible, /transport/, "a scheduler host's old helper error is not shown");
+  assert.doesNotMatch(text, /no issues flagged/, "the explanation replaces an empty issues box");
+  assert.match(text, /Watched through its Slurm queue/, "scheduler host explained");
+  assert.match(text, /last machine snapshot/, "the old snapshot is dated");
+  assert.match(text, /last snapshot 8 d/, "host bar says the snapshot is old");
+  assert.ok(walk(shim.content).some((n) => /\bis-stale\b/.test(n.className || "")),
+    "sections built from the old snapshot are dimmed");
+
+  const rows = [
+    {...OVERVIEW[0], target: "gone", state: "unreachable", last_received: OLD, last_error: "transport"},
+    {...OVERVIEW[0], target: "wf", state: "scheduler", last_received: OLD, last_error: "transport"},
+    {...OVERVIEW[0], target: "ok", state: "partial"},
+  ];
+  const overview = await run("overview", "", {
+    "/api/overview": rows, "/api/overview/sparklines": SPARKS, [IDLE_URL]: IDLE,
+  });
+  const stale = collect(overview.shim.content, "TR").filter((tr) => tr.className === "row-stale");
+  assert.equal(stale.length, 2, "both old snapshots are dimmed, the live row is not");
+  const overviewText = textOf(overview.shim.content);
+  assert.equal((overviewText.match(/transport/g) || []).length, 1, "only the current error is shown");
+  assert.match(overviewText, /live · limited/, "partial reads as live, not as a warning");
+  assert.doesNotMatch(overviewText, /_/, "state labels never show raw underscores");
+}
+
+// ---- jobs: user, partition, nodes and elapsed from every payload shape ----
+{
+  const jobs = [
+    {cluster: "wf", job_id: "1976", array_task_id: "58", step_id: "", state: "PENDING", updated_at: RECENT,
+      payload: JSON.stringify({user: "alice", partition: "med_24h_4gpu", nodes: null, elapsed: "1:02:03", account: "(null)"})},
+    {cluster: "amd", job_id: "8726", state: "RUNNING", updated_at: RECENT,
+      payload: JSON.stringify({user_name: "bob", partition: "jobgn01", nodes: "gn01", start_time: {set: true, number: RECENT}})},
+    {cluster: "x", job_id: "9", state: "FAILED", updated_at: RECENT, payload: "not json"},
+  ];
+  const {shim} = await run("jobs", "", {"/api/jobs": jobs});
+  const text = textOf(shim.content);
+  for (const expected of ["alice", "med_24h_4gpu", "1:02:03", "bob", "jobgn01", "gn01"]) {
+    assert.ok(text.includes(expected), `job detail shows ${expected}`);
+  }
+  assert.match(text, /2 m 0 s/, "a running job's elapsed time comes from its start");
+  assert.doesNotMatch(text, /\(null\)/, "Slurm's (null) reads as absent");
+}
+
 // ---- jobs ----
 {
   const {shim} = await run("jobs", "", {"/api/jobs": JOBS});

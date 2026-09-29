@@ -330,6 +330,36 @@ h3 {
   color: #1a7f37;
   font-size: 0.85rem;
 }
+/* A neutral explanation, not an issue: why a host looks the way it does. */
+.notice {
+  border: 1px solid #d6e0ec;
+  border-left: 3px solid var(--c1);
+  background: #f5f8fc;
+  padding: 0.4rem 0.6rem;
+  margin: 0.2rem 0 0.6rem;
+  font-size: 0.85rem;
+}
+/* Data from an old snapshot stays readable but must not pass for live. */
+.stale-note {
+  margin: 0.2rem 0 0.6rem;
+  color: #9a6700;
+  font-size: 0.85rem;
+}
+.is-stale {
+  opacity: 0.5;
+}
+tr.row-stale td.dim {
+  opacity: 0.45;
+}
+tr.row-stale td.age-stale {
+  color: #9a6700;
+  font-weight: 600;
+}
+/* State tokens and host names never split, even in the wrapping scroll tables. */
+.st,
+a.host-link {
+  white-space: nowrap;
+}
 
 /* GPU cards: responsive grid; every field stays on-screen at desktop width. */
 .gpu-grid {
