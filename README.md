@@ -8,6 +8,8 @@ one branch, `main`.
 
 - `codex/` contains Codex skills maintained in this repository.
 - `fleetmon/` contains the fleet monitoring project.
+- `fleetq/` contains the fleet scheduler: the `fleetqd` daemon, the `fq`
+  client, and the `fq-node` runner.
 - `how-to-ml-paper/` contains the machine-learning paper workflow skill.
 - `modelctl/` contains the model control-plane project and its skill.
 - `shared/fleet-dotfiles/` is the shared fleet tooling, tracked as a Git
