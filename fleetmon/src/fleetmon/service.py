@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import threading
@@ -21,9 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__, notify
-from .config import HubConfig, ensure_backup_filesystem
+from .config import HubConfig, _target_name, ensure_backup_filesystem
 from .database import Database, observation_slots
-from .scheduler import SchedulerClient
 from .discovery import (
     MAX_TARGETS,
     Inventory,
@@ -34,7 +34,9 @@ from .discovery import (
 )
 from .poller import PollController, PollResult, backoff_seconds
 from .protocol import SCHEMA_VERSION, ProtocolError, decode_snapshot
+from .scheduler import SchedulerClient
 from .slurm import (
+    MAX_SCHEDULER_ROWS,
     SACCT_COMPAT_FIELDS,
     fleetctl_slurm_argv,
     parse_sacct,
@@ -59,6 +61,19 @@ SCHEDULE_MAX_TICK_SECONDS = 1.0
 HUB_HEALTH_INTERVAL_SECONDS = 30.0
 BACKUP_INTERVAL_SECONDS = 24 * 60 * 60
 BACKUP_KEEP_COUNT = 7
+MAX_MANAGED_SLURM_SITES = 256
+
+
+def _aware_epoch(value: Any) -> float | None:
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        return None
+    return moment.timestamp()
 
 
 class HubRuntime:
@@ -105,6 +120,7 @@ class HubRuntime:
             if self.config.scheduler_url
             else None
         )
+        self._managed_slurm_details: dict[str, dict[str, Any]] = {}
         # Recent observations for the capacity feed, kept before history thinning:
         # fleetq's idle rule needs samples no more than ~65 s apart (see capacity_feed).
         self._capacity_ring: dict[str, deque[dict[str, Any]]] = {}
@@ -173,8 +189,7 @@ class HubRuntime:
         raise exc
 
     def _apply_inventory(self, inventory: Inventory) -> Inventory:
-        self.inventory = inventory
-        self.admitted_names = {
+        admitted_names = {
             target.name
             for target in admitted_targets(
                 inventory,
@@ -182,8 +197,19 @@ class HubRuntime:
                 self._exclude_tags(),
             )
         }
-        self.last_inventory = time.time()
         scheduler_names = {target.name for target in inventory.scheduler_targets}
+        missing_managed = set(self.config.managed_scheduler_targets) - scheduler_names
+        if missing_managed:
+            raise ValueError(
+                "configured managed scheduler targets missing from inventory: "
+                + ", ".join(sorted(missing_managed))
+            )
+        self.inventory = inventory
+        self.admitted_names = admitted_names
+        self.last_inventory = time.time()
+        managed_scheduler_names = scheduler_names.intersection(
+            self.config.managed_scheduler_targets
+        )
         current_names = {target.name for target in inventory.targets}
         existing = {row["target"]: row for row in self.db.hosts()}
 
@@ -205,7 +231,11 @@ class HubRuntime:
                     else "helper_missing"
                 )
             elif target.name in scheduler_names:
-                state = "scheduler"
+                state = (
+                    "scheduler_managed"
+                    if target.name in managed_scheduler_names
+                    else "scheduler"
+                )
             else:
                 state = "retired"
             self.db.upsert_host(
@@ -215,6 +245,21 @@ class HubRuntime:
                 state,
                 helper,
             )
+            if target.name in managed_scheduler_names:
+                previous = self.db.query(
+                    "SELECT watermark, state FROM slurm_poll_state WHERE target=?",
+                    (target.name,),
+                )
+                if not previous or not str(previous[0]["state"]).startswith("managed_"):
+                    # Existing rows came from fleetmon's old direct poller.
+                    # Never relabel them as fleetqd observations.
+                    watermark = previous[0]["watermark"] if previous else None
+                    self.db.set_slurm_state(
+                        target.name,
+                        watermark,
+                        "managed_stale" if watermark else "managed_error",
+                        "transport" if watermark else "invalid_schema",
+                    )
 
         for target, row in existing.items():
             if target not in current_names and row["state"] != "retired":
@@ -284,27 +329,19 @@ class HubRuntime:
         old_notified = target_state.get("health_notified") or {}
         if not events and notified == old_notified:
             return
+        if failures < notify.POLL_FAILURES_NOTIFY:
+            await self._local(self.db.resolve_notification, f"host:{target}:poll_failures")
+        if skew is None or abs(float(skew)) < notify.CLOCK_DRIFT_SECONDS:
+            await self._local(self.db.resolve_notification, f"host:{target}:clock_drift")
+        for event in events:
+            key = f"host:{target}:{event['event']}"
+            await self._local(self.db.enqueue_notification, key,
+                              notify.safe_payload({"target": target, **event}), now)
+            notified[event["event"]] = "sent"  # queued durably; dispatcher owns retries
+        await self._local(self.state.update_target, target, health_notified=notified)
         if events:
-            notified, next_retry = await asyncio.to_thread(
-                notify.notify_host_events,
-                target,
-                events,
-                notified,
-                float(target_state.get("health_next_retry", 0) or 0),
-                now,
-                self.config.notify_url,
-                self.notify_poster,
-            )
-            await self._local(
-                self.state.update_target,
-                target,
-                health_notified=notified,
-                health_next_retry=next_retry,
-            )
-        else:
-            await self._local(
-                self.state.update_target, target, health_notified=notified
-            )
+            await asyncio.to_thread(notify.dispatch_outbox, self.db, self.config.notify_url,
+                                    self.notify_poster, now)
 
     async def _notify_gpu_free_inner(self, target: str) -> None:
         if not self.config.notify_url:
@@ -335,31 +372,18 @@ class HubRuntime:
         old_notified = target_state.get("gpu_free_notified") or {}
         if not events and new_counts == old_counts and notified == old_notified:
             return
+        for uuid_key in set(old_notified) - set(notified):
+            await self._local(self.db.resolve_notification, f"gpu:{target}:{uuid_key}")
+        for event in events:
+            key = f"gpu:{target}:{event['gpu_uuid']}"
+            await self._local(self.db.enqueue_notification, key,
+                              notify.safe_payload({"target": target, **event}), now)
+            notified[event["gpu_uuid"]] = "sent"
+        await self._local(self.state.update_target, target,
+                          gpu_free_counts=new_counts, gpu_free_notified=notified)
         if events:
-            notified, next_retry = await asyncio.to_thread(
-                notify.notify_target,
-                target,
-                events,
-                notified,
-                float(target_state.get("gpu_free_next_retry", 0) or 0),
-                now,
-                self.config.notify_url,
-                self.notify_poster,
-            )
-            await self._local(
-                self.state.update_target,
-                target,
-                gpu_free_counts=new_counts,
-                gpu_free_notified=notified,
-                gpu_free_next_retry=next_retry,
-            )
-        else:
-            await self._local(
-                self.state.update_target,
-                target,
-                gpu_free_counts=new_counts,
-                gpu_free_notified=notified,
-            )
+            await asyncio.to_thread(notify.dispatch_outbox, self.db, self.config.notify_url,
+                                    self.notify_poster, now)
 
     def _helper_path(self, target: str) -> str | None:
         helper = self.state.target(target).get("helper_path")
@@ -556,6 +580,8 @@ class HubRuntime:
             return PollResult(None, b"", b"")
 
     async def poll_slurm_target(self, target: Target) -> str:
+        if target.name in self.config.managed_scheduler_targets:
+            return "managed_by_fleetqd"
         if (
             not self.config.polling_enabled
             or target.name in self.config.disabled_targets
@@ -834,7 +860,18 @@ class HubRuntime:
         return self.db.sparklines()
 
     def jobs(self, **kwargs: Any) -> list[dict[str, Any]]:
-        return [dict(row) for row in self.db.jobs(**kwargs)]
+        output = [dict(row) for row in self.db.jobs(**kwargs)]
+        managed = set(self.config.managed_scheduler_targets)
+        statuses = {
+            site["site_id"]: site
+            for site in self.managed_slurm_status().get("sites", [])
+        } if managed else {}
+        for job in output:
+            if job.get("cluster") in managed:
+                status = statuses.get(job["cluster"], {"state": "unavailable", "age_s": None})
+                job["snapshot_status"] = status["state"]
+                job["snapshot_age_s"] = status["age_s"]
+        return output
 
     def overview(self, **_: Any) -> list[dict[str, Any]]:
         rows = [self._freshen_host(dict(row)) for row in self.db.overview()]
@@ -1008,11 +1045,400 @@ class HubRuntime:
         return {"configured": True, **self.scheduler.get(path)}
 
     def scheduler_queue(self, *, finished: bool = False, **_: Any) -> dict[str, Any]:
-        return self._scheduler_get("/api/v1/queue?all_users=true&limit=300"
-                                   + ("&finished=true" if finished else ""))
+        value = self._scheduler_get("/api/v1/queue?all_users=true&limit=300"
+                                    + ("&finished=true" if finished else ""))
+        if not value.get("available"):
+            value["managed_slurm_snapshot"] = self.managed_slurm_status()
+            value["managed_slurm_jobs"] = self._managed_slurm_job_rows()
+            return value
+        value["ui_origin"] = self.config.scheduler_ui_origin
+        # fleetqd serves this from its local, cached scheduler status snapshot.
+        # Keep the queue useful if that endpoint is missing or malformed.
+        try:
+            status = self._scheduler_get("/api/v1/status")
+            ledger = status.get("remote_cost_ledger") if status.get("available") else None
+            if isinstance(ledger, list):
+                value["remote_cost_ledger"] = ledger[:256]
+        except Exception:
+            pass
+        value["managed_slurm_snapshot"] = self.managed_slurm_status()
+        value["managed_slurm_jobs"] = self._managed_slurm_job_rows()
+        return value
+
+    def _managed_slurm_job_rows(self) -> list[dict[str, Any]]:
+        targets = self.config.managed_scheduler_targets
+        if not targets:
+            return []
+        placeholders = ",".join("?" for _ in targets)
+        rows = self.db.query(
+            f"SELECT cluster, job_id, array_task_id, step_id, state, payload, updated_at "
+            f"FROM slurm_jobs WHERE cluster IN ({placeholders}) "
+            "ORDER BY updated_at DESC LIMIT 500",
+            targets,
+        )
+        output: list[dict[str, Any]] = []
+        statuses = {
+            site["site_id"]: site
+            for site in self.managed_slurm_status().get("sites", [])
+        }
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, ValueError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            site = statuses.get(row["cluster"], {"state": "unavailable", "age_s": None})
+
+            def field(*names: str, _payload: dict[str, Any] = payload) -> str:
+                for name in names:
+                    value = _payload.get(name)
+                    if isinstance(value, dict):
+                        value = value.get("name", value.get("value"))
+                    if isinstance(value, (str, int)) and not isinstance(value, bool):
+                        return str(value)[:256]
+                return ""
+
+            output.append({
+                "site_id": row["cluster"],
+                "job_id": row["job_id"],
+                "array_task_id": row["array_task_id"],
+                "user": field("user_name", "user", "username"),
+                "state": row["state"],
+                "partition": field("partition"),
+                "nodes": field("nodes", "node_list", "nodes_assigned"),
+                "updated_at": row["updated_at"],
+                "snapshot_status": site["state"],
+                "snapshot_age_s": site["age_s"],
+            })
+        return output
 
     def scheduler_status(self, **_: Any) -> dict[str, Any]:
-        return self._scheduler_get("/api/v1/status")
+        value = self._scheduler_get("/api/v1/status")
+        value["managed_slurm_snapshot"] = self.managed_slurm_status()
+        return value
+
+    def scheduler_nodes(self, **_: Any) -> dict[str, Any]:
+        """Read cached fleetq-managed node/allocation state; never poll Slurm."""
+        return self._scheduler_get("/api/v1/nodes")
+
+    def _set_managed_snapshot_failure(
+        self, target: str, state: str, error: str, watermark: str | None = None
+    ) -> None:
+        rows = self.db.query(
+            "SELECT watermark FROM slurm_poll_state WHERE target=?", (target,)
+        )
+        watermark = watermark or (rows[0]["watermark"] if rows else None)
+        managed_state = "managed_stale" if state == "stale" else "managed_error"
+        self.db.set_slurm_state(target, watermark, managed_state, error)
+
+    async def poll_managed_slurm(self) -> str:
+        """Consume fleetqd's cached managed Slurm snapshot; never contacts Slurm."""
+        if not self.config.managed_scheduler_targets:
+            return "not_configured"
+        if self.scheduler is None:
+            await self._local(
+                self._mark_managed_snapshot_failures,
+                "error",
+                "transport",
+                "fleetqd is not configured",
+            )
+            await self._dispatch_notifications()
+            return "unavailable"
+        document = await asyncio.to_thread(
+            self.scheduler.get, "/api/v1/managed-slurm"
+        )
+        if not document.get("available"):
+            await self._local(
+                self._mark_managed_snapshot_failures,
+                "error",
+                "transport",
+                str(document.get("error") or "fleetqd snapshot unavailable"),
+            )
+            await self._dispatch_notifications()
+            return "unavailable"
+        try:
+            snapshots = self._validate_managed_slurm_document(document)
+        except ValueError as exc:
+            await self._local(
+                self._mark_managed_snapshot_failures,
+                "error",
+                "invalid_schema",
+                str(exc),
+            )
+            await self._dispatch_notifications()
+            return "invalid_schema"
+
+        results: list[str] = []
+        for target in self.config.managed_scheduler_targets:
+            site = snapshots.get(target)
+            if site is None:
+                await self._local(
+                    self._mark_one_managed_snapshot_failure,
+                    target,
+                    "error",
+                    "invalid_schema",
+                    "managed Slurm site missing from fleetqd snapshot",
+                )
+                results.append("missing_site")
+                continue
+            state, reason = site["state"], site["reason"]
+            if state != "live":
+                await self._local(
+                    self._mark_one_managed_snapshot_failure,
+                    target,
+                    state,
+                    "transport" if state == "stale" else "invalid_schema",
+                    reason,
+                    site.get("last_success_at"),
+                )
+                results.append(state)
+                continue
+            rows = [dict(row, cluster=target) for row in site["jobs"]]
+            await self._local(
+                self.db.upsert_slurm_jobs,
+                target,
+                rows,
+                site["observed_epoch"],
+                replace=True,
+            )
+            await self._local(
+                self.db.set_slurm_state,
+                target,
+                site["observed_at"],
+                "managed_live",
+            )
+            await self._local(
+                self._save_managed_snapshot_detail,
+                target,
+                site,
+            )
+            results.append("live")
+        await self._dispatch_notifications()
+        return "live" if results and all(item == "live" for item in results) else "partial"
+
+    async def poll_fleetqd_health(self) -> str:
+        """Observe fleetqd availability when it owns no managed Slurm targets."""
+        if (
+            not self.config.polling_enabled
+            or self.scheduler is None
+            or self.config.managed_scheduler_targets
+        ):
+            return "not_configured"
+        document = await asyncio.to_thread(self.scheduler.get, "/healthz")
+        healthy = document.get("available") and document.get("ok") is True
+        key = "fleetqd:unavailable"
+        if healthy:
+            self.db.resolve_notification(key)
+            return "live"
+        if self.config.notify_url:
+            self.db.enqueue_notification(
+                key,
+                # Keep the outage event and its bounded service target in the
+                # notification schema.
+                notify.safe_payload({"event": "fleetqd_unavailable", "target": "fleetqd"}),
+                time.time(),
+            )
+            await self._dispatch_notifications()
+        return "unavailable"
+
+    async def _dispatch_notifications(self) -> None:
+        if self.config.notify_url:
+            await asyncio.to_thread(notify.dispatch_outbox, self.db,
+                                    self.config.notify_url, self.notify_poster, time.time())
+
+    def _validate_managed_slurm_document(
+        self, document: dict[str, Any]
+    ) -> dict[str, dict[str, Any]]:
+        if document.get("schema") != "fleetq.managed-slurm/v1":
+            raise ValueError("unsupported managed Slurm snapshot schema")
+        generated = _aware_epoch(document.get("generated_at"))
+        now = time.time()
+        max_age = max(120.0, 2 * self.config.scheduler_interval_seconds)
+        if generated is None or generated > now + 30 or now - generated > max_age:
+            raise ValueError("managed Slurm snapshot generation time is invalid or stale")
+        sites = document.get("sites")
+        if not isinstance(sites, list) or len(sites) > MAX_MANAGED_SLURM_SITES:
+            raise ValueError("managed Slurm sites must be a bounded array")
+        output: dict[str, dict[str, Any]] = {}
+        for site in sites:
+            if not isinstance(site, dict):
+                raise ValueError("managed Slurm site must be an object")
+            site_id = site.get("site_id")
+            if not isinstance(site_id, str):
+                raise ValueError("managed Slurm site_id must be text")
+            _target_name(site_id, "managed Slurm site_id")
+            if site_id in output:
+                raise ValueError("duplicate managed Slurm site_id")
+            if site_id not in self.config.managed_scheduler_targets:
+                continue
+            complete, stale = site.get("complete"), site.get("stale")
+            observed_text = site.get("observed_at")
+            last_success_text = site.get("last_success_at")
+            observed = _aware_epoch(observed_text)
+            last_success = _aware_epoch(last_success_text)
+            age = site.get("age_s")
+            raw_error = site.get("error")
+            if raw_error is not None and (
+                not isinstance(raw_error, str)
+                or len(raw_error) > 1024
+                or any(ord(char) < 32 and char not in "\t" for char in raw_error)
+            ):
+                raise ValueError("managed Slurm site error is invalid")
+            if not isinstance(complete, bool) or not isinstance(stale, bool):
+                raise ValueError("managed Slurm site freshness fields are invalid")
+            if (
+                (observed_text is not None and observed is None)
+                or (last_success_text is not None and last_success is None)
+                or (isinstance(age, bool))
+                or (age is not None and not isinstance(age, (int, float)))
+                or (isinstance(age, (int, float)) and not math.isfinite(float(age)))
+                or (isinstance(age, (int, float)) and age < 0)
+            ):
+                raise ValueError("managed Slurm site freshness fields are invalid")
+            if not complete or stale or raw_error:
+                state = "stale" if last_success is not None else "unavailable"
+                reason = str(raw_error or "site snapshot incomplete or stale")[:512]
+                jobs: list[dict[str, Any]] = []
+            else:
+                if (
+                    observed is None
+                    or last_success is None
+                    or observed > now + 30
+                    or last_success > observed + 30
+                    or isinstance(age, bool)
+                    or not isinstance(age, (int, float))
+                    or not math.isfinite(float(age))
+                    or age < 0
+                ):
+                    raise ValueError("managed Slurm site freshness fields are invalid")
+                if age > max_age or now - observed > max_age or now - last_success > max_age:
+                    state = "stale"
+                    reason = "site snapshot exceeds the freshness limit"
+                    jobs = []
+                    output[site_id] = {
+                        "state": state,
+                        "reason": reason,
+                        "jobs": jobs,
+                        "last_success_at": last_success_text,
+                        "last_success_epoch": last_success,
+                        "observed_at": observed_text,
+                        "observed_epoch": observed,
+                        "age_s": float(age),
+                    }
+                    continue
+                rows = site.get("jobs")
+                if not isinstance(rows, list) or len(rows) > MAX_SCHEDULER_ROWS:
+                    raise ValueError("managed Slurm jobs must be a bounded array")
+                try:
+                    jobs = parse_squeue({"jobs": rows})
+                except (ValueError, TypeError, RecursionError) as exc:
+                    raise ValueError("managed Slurm job rows are invalid") from exc
+                state = "live"
+                reason = ""
+            output[site_id] = {
+                "state": state,
+                "reason": reason,
+                "jobs": jobs,
+                "last_success_at": last_success_text,
+                "last_success_epoch": last_success,
+                "observed_at": observed_text,
+                "observed_epoch": observed,
+                "age_s": float(age) if isinstance(age, (int, float)) and not isinstance(age, bool) else None,
+            }
+        return output
+
+    def _mark_managed_snapshot_failures(
+        self, state: str, error: str, detail: str
+    ) -> None:
+        for target in self.config.managed_scheduler_targets:
+            self._mark_one_managed_snapshot_failure(target, state, error, detail)
+
+    def _mark_one_managed_snapshot_failure(
+        self,
+        target: str,
+        state: str,
+        error: str,
+        detail: str,
+        watermark: str | None = None,
+    ) -> None:
+        self._set_managed_snapshot_failure(target, state, error, watermark)
+        if self.config.notify_url:
+            self.db.enqueue_notification(
+                f"managed-slurm:{target}",
+                notify.safe_payload({"event": "managed_slurm_snapshot_unavailable",
+                                     "target": target}),
+                time.time(),
+            )
+        self._managed_slurm_details[target] = {
+            "state": "stale" if state == "stale" else "unavailable",
+            "reason": detail[:512],
+        }
+
+    def _save_managed_snapshot_detail(
+        self, target: str, site: dict[str, Any]
+    ) -> None:
+        self.db.resolve_notification(f"managed-slurm:{target}")
+        self._managed_slurm_details[target] = {
+            "state": "live",
+            "reason": None,
+            "observed_at": site["observed_at"],
+            "age_s": site["age_s"],
+        }
+
+    def managed_slurm_status(self) -> dict[str, Any]:
+        """Return persisted per-target freshness without making API-triggered calls."""
+        if not self.config.managed_scheduler_targets:
+            return {"available": False, "reason": "not configured", "sites": []}
+        now = time.time()
+        max_age = max(120.0, 2 * self.config.scheduler_interval_seconds)
+        details = [
+            self._managed_slurm_site_status(target, now=now, max_age=max_age)
+            for target in self.config.managed_scheduler_targets
+        ]
+        available = all(site["state"] == "live" for site in details)
+        return {
+            "available": available,
+            "sites": details,
+            "max_age_s": max_age,
+            "reason": None if available else "one or more managed Slurm snapshots are stale or unavailable",
+        }
+
+    def _managed_slurm_site_status(
+        self, target: str, *, now: float | None = None, max_age: float | None = None
+    ) -> dict[str, Any]:
+        current = time.time() if now is None else now
+        freshness_limit = (
+            max(120.0, 2 * self.config.scheduler_interval_seconds)
+            if max_age is None
+            else max_age
+        )
+        rows = self.db.query(
+            "SELECT watermark, state, error FROM slurm_poll_state WHERE target=?",
+            (target,),
+        )
+        row = rows[0] if rows else None
+        watermark = row["watermark"] if row else None
+        epoch = _aware_epoch(watermark)
+        age = max(0.0, current - epoch) if epoch is not None else None
+        state = row["state"] if row else "unavailable"
+        if state == "managed_live":
+            state = "stale" if age is None or age > freshness_limit else "live"
+        elif state == "managed_stale":
+            state = "stale"
+        elif state in {"managed_error", "managed"}:
+            state = "stale" if epoch is not None else "unavailable"
+        detail = self._managed_slurm_details.get(target, {})
+        reason = detail.get("reason")
+        if state in {"stale", "unavailable"}:
+            reason = reason or (row["error"] if row else None) or state
+        return {
+            "site_id": target,
+            "state": state,
+            "observed_at": watermark,
+            "age_s": age,
+            "error": reason,
+        }
 
     def scheduler_job(self, *, job_id: int, **_: Any) -> dict[str, Any]:
         """One job: its document, why it waits, and the tail of its output."""
@@ -1021,6 +1447,7 @@ class HubRuntime:
         if not job.get("available") or "job" not in job:
             return job
         explain = self._scheduler_get(f"/api/v1/jobs/{int(job_id)}/explain")
+        artifacts = self._scheduler_get(f"/api/v1/jobs/{int(job_id)}/artifacts")
         tails = {}
         for stream in ("stdout", "stderr"):
             head = self._scheduler_get(f"/api/v1/jobs/{int(job_id)}/logs?stream={stream}&max_bytes=0")
@@ -1029,7 +1456,12 @@ class HubRuntime:
             tail = self._scheduler_get(
                 f"/api/v1/jobs/{int(job_id)}/logs?stream={stream}&offset={offset}&max_bytes=16384")
             tails[stream] = {k: tail.get(k) for k in ("data_b64", "complete", "age_s", "gap", "attempt")}
-        return {**job, "explain": explain if explain.get("available") else None, "logs": tails}
+        return {
+            **job,
+            "explain": explain if explain.get("available") else None,
+            "artifacts": artifacts if artifacts.get("available") else None,
+            "logs": tails,
+        }
 
     def _fleetq_holders(self) -> dict[tuple[str, str], int]:
         """(node, GPU uuid) -> the fleetq job holding it, from the scheduler (cached)."""
@@ -1203,6 +1635,15 @@ class HubRuntime:
                     or now - updated > threshold
                 ):
                     row["state"] = "slurm_stale"
+        elif state == "scheduler_managed":
+            site = self._managed_slurm_site_status(row.get("target"))
+            row["state"] = (
+                "scheduler"
+                if site is not None and site["state"] == "live"
+                else "scheduler_snapshot_stale"
+                if site is not None and site["state"] == "stale"
+                else "scheduler_snapshot_unavailable"
+            )
         return row
 
     @staticmethod
@@ -1248,22 +1689,29 @@ class HubRuntime:
         self.state.data["hub_breach_streak"] = streak
         self.state.data["hub_cpu_percent"] = cpu_percent
         self.state.data["hub_overloaded"] = bool(streak >= 2)
+        if streak < 2:
+            # Clear incident-scoped delivery state so a later breach is a new
+            # incident, while a sustained breach sends only once after success.
+            self.state.data.pop("hub_health_notified", None)
+            self.state.data.pop("hub_health_next_retry", None)
+            self.db.resolve_notification("hub:overloaded")
         self.state.save()
         if streak < 2 or not self.config.notify_url:
             return
-        now = time.time()
-        if now < float(self.state.data.get("hub_health_next_retry", 0) or 0):
+        if self.state.data.get("hub_health_notified"):
             return
+        now = time.time()
         payload = {
             "event": "hub_overloaded",
             "cpu_percent": round(cpu_percent, 2) if cpu_percent is not None else None,
             "rss_mib": round(rss_bytes / (1024 * 1024), 1) if rss_bytes else None,
         }
-        code = self.notify_poster(self.config.notify_url, payload)
-        if code == "ok":
-            self.state.data["hub_health_notified"] = now
-        self.state.data["hub_health_next_retry"] = now + 300.0
+        self.db.enqueue_notification("hub:overloaded", notify.safe_payload(payload), now)
+        self.state.data["hub_health_notified"] = now
+        self.state.data.pop("hub_health_next_retry", None)
         self.state.save()
+        if self.config.notify_url:
+            notify.dispatch_outbox(self.db, self.config.notify_url, self.notify_poster, now)
 
     def _recent_poll_stats(self) -> dict[str, Any]:
         """Aggregate the last hour of polls with one bounded query."""
@@ -1363,8 +1811,12 @@ class HubRuntime:
         ]
         tasks = [self.poll_target(target) for target in direct]
         tasks.extend(
-            self.poll_slurm_target(target) for target in inventory.scheduler_targets
+            self.poll_slurm_target(target)
+            for target in inventory.scheduler_targets
+            if target.name not in self.config.managed_scheduler_targets
         )
+        if self.config.polling_enabled and self.config.managed_scheduler_targets:
+            tasks.append(self.poll_managed_slurm())
         if not tasks:
             return []
         return list(await asyncio.gather(*tasks))
@@ -1395,7 +1847,8 @@ class HubRuntime:
             if target.name in self.admitted_names:
                 desired[target.name] = (self.poll_target, target)
         for target in inventory.scheduler_targets:
-            desired[f"slurm:{target.name}"] = (self.poll_slurm_target, target)
+            if target.name not in self.config.managed_scheduler_targets:
+                desired[f"slurm:{target.name}"] = (self.poll_slurm_target, target)
         return desired
 
     async def _run_schedule(
@@ -1423,10 +1876,44 @@ class HubRuntime:
             elapsed = asyncio.get_running_loop().time() - started
             await asyncio.sleep(max(0.1, self._schedule_interval(key) - elapsed))
 
+    async def _run_managed_slurm_schedule(self) -> None:
+        interval = max(
+            SCHEDULER_MIN_INTERVAL_SECONDS, self.config.scheduler_interval_seconds
+        )
+        await asyncio.sleep(self._stagger("managed-slurm", min(5.0, interval)))
+        while True:
+            started = asyncio.get_running_loop().time()
+            try:
+                await self.poll_managed_slurm()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOG.exception("managed Slurm snapshot poll failed")
+            elapsed = asyncio.get_running_loop().time() - started
+            await asyncio.sleep(max(0.1, interval - elapsed))
+
+    async def _run_fleetqd_health_schedule(self) -> None:
+        interval = max(
+            SCHEDULER_MIN_INTERVAL_SECONDS, self.config.scheduler_interval_seconds
+        )
+        await asyncio.sleep(self._stagger("fleetqd-health", min(5.0, interval)))
+        while True:
+            started = asyncio.get_running_loop().time()
+            try:
+                await self.poll_fleetqd_health()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOG.exception("fleetqd health poll failed")
+            elapsed = asyncio.get_running_loop().time() - started
+            await asyncio.sleep(max(0.1, interval - elapsed))
+
     async def run_forever(self) -> None:
         """Poll continuously with one independent schedule per target."""
 
         schedules: dict[str, asyncio.Task[None]] = {}
+        managed_slurm_schedule: asyncio.Task[None] | None = None
+        fleetqd_health_schedule: asyncio.Task[None] | None = None
         last_health = 0.0
         try:
             while True:
@@ -1438,8 +1925,39 @@ class HubRuntime:
                         self._hub_cpu_percent(time.time()),
                         self._hub_rss_bytes(),
                     )
+                    await self._dispatch_notifications()
                 try:
                     inventory = await self._inventory()
+                    wants_managed_snapshot = (
+                        self.config.polling_enabled
+                        and self.scheduler is not None
+                        and bool(self.config.managed_scheduler_targets)
+                    )
+                    if wants_managed_snapshot and managed_slurm_schedule is None:
+                        managed_slurm_schedule = asyncio.create_task(
+                            self._run_managed_slurm_schedule()
+                        )
+                    elif not wants_managed_snapshot and managed_slurm_schedule is not None:
+                        managed_slurm_schedule.cancel()
+                        await asyncio.gather(
+                            managed_slurm_schedule, return_exceptions=True
+                        )
+                        managed_slurm_schedule = None
+                    wants_fleetqd_health = (
+                        self.config.polling_enabled
+                        and self.scheduler is not None
+                        and not self.config.managed_scheduler_targets
+                    )
+                    if wants_fleetqd_health and fleetqd_health_schedule is None:
+                        fleetqd_health_schedule = asyncio.create_task(
+                            self._run_fleetqd_health_schedule()
+                        )
+                    elif not wants_fleetqd_health and fleetqd_health_schedule is not None:
+                        fleetqd_health_schedule.cancel()
+                        await asyncio.gather(
+                            fleetqd_health_schedule, return_exceptions=True
+                        )
+                        fleetqd_health_schedule = None
                     desired = self._desired_schedules(inventory)
                     retired: list[asyncio.Task[None]] = []
                     for key, task in list(schedules.items()):
@@ -1476,8 +1994,16 @@ class HubRuntime:
                 )
                 await asyncio.sleep(max(0.05, tick - elapsed))
         except asyncio.CancelledError:
+            if managed_slurm_schedule is not None:
+                managed_slurm_schedule.cancel()
+            if fleetqd_health_schedule is not None:
+                fleetqd_health_schedule.cancel()
             for task in schedules.values():
                 task.cancel()
+            if managed_slurm_schedule is not None:
+                await asyncio.gather(managed_slurm_schedule, return_exceptions=True)
+            if fleetqd_health_schedule is not None:
+                await asyncio.gather(fleetqd_health_schedule, return_exceptions=True)
             if schedules:
                 await asyncio.gather(*schedules.values(), return_exceptions=True)
             raise

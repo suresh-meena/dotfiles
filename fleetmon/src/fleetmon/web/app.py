@@ -46,6 +46,7 @@ PAGE_TITLES = {
     "hub-status": "Hub Status",
     "idle-gpus": "Idle GPUs",
     "queue": "Queue",
+    "nodes": "Nodes",
 }
 
 
@@ -571,6 +572,10 @@ def create_app(
     async def scheduler_status():
         return await _scheduler("scheduler_status")
 
+    @app.get("/api/scheduler/nodes")
+    async def scheduler_nodes():
+        return await _scheduler("scheduler_nodes")
+
     @app.get("/api/scheduler/jobs/{job_id}")
     async def scheduler_job(job_id: int):
         if job_id < 1 or job_id > 2**62:
@@ -586,7 +591,7 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     @app.get("/{page}", response_class=HTMLResponse)
     async def page(page: str = "overview"):
-        if page not in {"overview", "jobs", "hub-status", "idle-gpus", "queue"}:
+        if page not in {"overview", "jobs", "hub-status", "idle-gpus", "queue", "nodes"}:
             raise HTTPException(404, "page not found")
         return _html_page(page, PAGE_TITLES[page])
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -32,6 +33,8 @@ NOTIFY_TIMEOUT_SECONDS = 5.0
 NOTIFY_RETRY_SECONDS = 300.0
 MAX_PAYLOAD_BYTES = 2048
 MAX_TRACKED_GPUS = 32
+NOTIFY_RATE_CAP_PER_MINUTE = 5
+_DISPATCH_LOCK = threading.Lock()
 
 
 def parse_notify_url(value: object) -> str | None:
@@ -64,6 +67,77 @@ def default_poster(url: str, payload: dict[str, Any]) -> str:
     except (urllib.error.URLError, OSError, ValueError):
         return "notify_unreachable"
     return "ok"
+
+
+def safe_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project events onto an explicit, bounded notification schema."""
+    event = payload.get("event")
+    result: dict[str, Any] = {
+        "event": event
+        if isinstance(event, str)
+        and event
+        in {
+            "gpu_free",
+            "poll_failures",
+            "clock_drift",
+            "hub_overloaded",
+            "managed_slurm_snapshot_unavailable",
+            "fleetqd_unavailable",
+            "notification_digest",
+        }
+        else "incident"
+    }
+    target = payload.get("target")
+    if isinstance(target, str):
+        result["target"] = target[:128]
+    for key in (
+        "gpu_uuid",
+        "gpu_index",
+        "model",
+        "observations",
+        "failures",
+        "skew_seconds",
+        "cpu_percent",
+        "rss_mib",
+        "count",
+        "events",
+        "targets",
+    ):
+        value = payload.get(key)
+        if key in {"gpu_uuid", "model"} and isinstance(value, str):
+            result[key] = value[:128]
+        elif (
+            key in {"gpu_index", "observations", "failures", "count"}
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+        ):
+            result[key] = max(0, min(value, 100000))
+        elif key in {"skew_seconds", "cpu_percent", "rss_mib"} and _numeric(value):
+            result[key] = round(float(value), 2)
+        elif key == "events" and isinstance(value, list):
+            result[key] = [str(item)[:64] for item in value[:16]]
+        elif key == "targets" and isinstance(value, list):
+            result[key] = [str(item)[:128] for item in value[:16]]
+    # Error strings may contain command output, paths, tokens, or host details.
+    if event == "poll_failures":
+        error = payload.get("error")
+        result["error"] = (
+            error
+            if isinstance(error, str)
+            and error
+            in {
+                "timeout",
+                "output_overflow",
+                "transport",
+                "invalid_json",
+                "invalid_schema",
+                "version_mismatch",
+                "polling_disabled",
+                "disk_low",
+            }
+            else "unknown"
+        )
+    return result
 
 
 def _numeric(value: Any) -> TypeGuard[int | float]:
@@ -370,3 +444,41 @@ def prune_tracking(
     if len(notified) > MAX_TRACKED_GPUS:
         notified = dict(sorted(notified.items())[:MAX_TRACKED_GPUS])
     return counts, notified
+
+
+def dispatch_outbox(
+    db: Any, url: str, poster: Callable[[str, dict[str, Any]], str], now: float
+) -> int:
+    """Send due rows with a global minute cap; coalesce overflow into a digest."""
+    with _DISPATCH_LOCK:
+        due = db.due_notifications(now, 100)
+        remaining = max(0, NOTIFY_RATE_CAP_PER_MINUTE - db.notification_rate_count(now - 60.0))
+        if not due or remaining == 0:
+            return 0
+        # A digest spends the final available delivery slot, never a sixth
+        # slot after the minute cap has already been reached.
+        if len(due) > remaining:
+            digest = safe_payload(
+                {
+                    "event": "notification_digest",
+                    "count": len(due),
+                    "events": sorted(
+                        {str(item["payload"].get("event", "incident")) for item in due}
+                    ),
+                    "targets": sorted(
+                        {str(item["payload"].get("target", "hub")) for item in due}
+                    ),
+                }
+            )
+            result = poster(url, digest)
+            for item in due:
+                db.mark_notification(item["id"], now=now, result=result)
+            return int(result == "ok")
+        sent = 0
+        for row in due:
+            result = poster(url, safe_payload(row["payload"]))
+            db.mark_notification(row["id"], now=now, result=result)
+            if result != "ok":
+                break
+            sent += 1
+        return sent

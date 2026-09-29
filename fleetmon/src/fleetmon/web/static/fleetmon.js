@@ -11,7 +11,7 @@
 
   const page = document.body.dataset.page;
   const target = document.body.dataset.target;
-  const REFRESH_MS = {overview: 2000, host: 2000, "idle-gpus": 2000, jobs: 15000, "hub-status": 30000, queue: 5000};
+  const REFRESH_MS = {overview: 2000, host: 2000, "idle-gpus": 2000, jobs: 15000, "hub-status": 30000, queue: 5000, nodes: 15000};
   const params = new URLSearchParams(typeof location === "object" ? location.search : "");
   const jobParam = /^[0-9]{1,18}$/.test(params.get("job") || "") ? params.get("job") : null;
   const finishedParam = params.get("finished") === "1";
@@ -31,8 +31,10 @@
       ? "/api/hub-status"
       : page === "idle-gpus"
         ? IDLE_ENDPOINT
-        : page === "queue"
+      : page === "queue"
           ? `/api/scheduler/queue${finishedParam ? "?finished=true" : ""}`
+          : page === "nodes"
+            ? "/api/scheduler/nodes"
           : `/api/${page}`);
   const chartsEndpoint = hostEndpoint ? `${hostEndpoint}/charts` : null;
   const sparkEndpoint = page === "overview" ? "/api/overview/sparklines" : null;
@@ -137,7 +139,9 @@
     partial_flag: "st-partial",
     stale: "st-stale",
     slurm_stale: "st-stale",
+    scheduler_snapshot_stale: "st-stale",
     scheduler: "st-ok",
+    scheduler_snapshot_unavailable: "st-muted",
     polling_disabled: "st-stale",
     retired: "st-muted",
     unknown: "st-muted",
@@ -157,7 +161,7 @@
   };
   function token(value, raw) {
     const text = typeof value === "string" && value ? value : UNKNOWN;
-    const label = ({partial: "limited detail", retired: "not monitored", polling_disabled: "excluded", slurm_stale: "scheduler stale"})[text] || text;
+    const label = ({partial: "limited detail", retired: "not monitored", polling_disabled: "excluded", slurm_stale: "scheduler stale", scheduler_snapshot_stale: "managed Slurm snapshot stale", scheduler_snapshot_unavailable: "managed; all-user snapshot unavailable"})[text] || text;
     const span = el("span", "st " + (TOKEN_COLORS[text] || "st-bad"), label);
     span.dataset.raw = raw === undefined ? text : String(raw);
     return span;
@@ -1269,6 +1273,7 @@
       {label: "array task"},
       {label: "step"},
       {label: "state"},
+      {label: "snapshot"},
       {label: "updated", num: true},
     ];
     const tbody = dataTable(columns, "jobs");
@@ -1280,6 +1285,7 @@
         _text(job.array_task_id),
         _text(job.step_id),
         jobStateToken(job.state),
+        job.snapshot_status ? `${_text(job.snapshot_status)}${_number(job.snapshot_age_s) ? ` · ${_dur(job.snapshot_age_s)}` : ""}` : DASH,
         num(_clock(job.updated_at), job.updated_at),
       ]);
     });
@@ -1307,6 +1313,42 @@
     link.href = `/queue?job=${encodeURIComponent(id)}${finishedParam ? "&finished=1" : ""}`;
     return link;
   }
+  function fleetqConfirmLink(origin, id, action) {
+    if (typeof origin !== "string" || !origin || !["cancel", "hold"].includes(action)) return null;
+    const jobId = String(id);
+    if (!/^[1-9][0-9]{0,18}$/.test(jobId)) return null;
+    let base;
+    try {
+      const parsed = new URL(origin);
+      if (parsed.protocol !== "https:" || parsed.pathname !== "/" || parsed.search || parsed.hash
+          || parsed.username || parsed.password) return null;
+      base = parsed.origin;
+    } catch (_error) {
+      return null;
+    }
+    const link = el("a", "", action);
+    link.href = `${base}/ui/jobs/${encodeURIComponent(jobId)}/confirm/${action}`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    return link;
+  }
+  function queueActions(job, origin) {
+    const links = [];
+    if (job && job.phase !== "TERMINAL") {
+      const cancel = fleetqConfirmLink(origin, job.id, "cancel");
+      if (cancel) links.push(cancel);
+    }
+    if (job && ["PENDING", "BLOCKED"].includes(job.phase)) {
+      const hold = fleetqConfirmLink(origin, job.id, "hold");
+      if (hold) links.push(hold);
+    }
+    const cell = el("span", "", "");
+    links.forEach((link, index) => {
+      if (index) cell.append(el("span", "", " · "));
+      cell.append(link);
+    });
+    return links.length ? cell : DASH;
+  }
   function decodeTail(b64) {
     if (typeof b64 !== "string" || !b64) return "";
     try {
@@ -1316,30 +1358,76 @@
       return "";
     }
   }
+  function renderRemoteCostLedger(ledger) {
+    if (!Array.isArray(ledger) || !ledger.length) return;
+    heading("Remote cost and budget ledger");
+    const columns = [
+      {label: "site"}, {label: "resource"}, {label: "limit"},
+      {label: "available"}, {label: "used / RPC today"}, {label: "calls today"}, {label: "denied today"},
+    ];
+    const body = dataTable(columns, "remote-cost-ledger");
+    let rows = 0;
+    const count = (v) => _number(v) && v >= 0 ? _int(v) : UNKNOWN;
+    ledger.slice(0, 256).forEach((site) => {
+      if (!site || typeof site !== "object") return;
+      const siteId = _text(typeof site.site_id === "string" ? site.site_id.slice(0, 128) : UNKNOWN);
+      const classes = Array.isArray(site.classes) ? site.classes.slice(0, 64) : [];
+      classes.forEach((item) => {
+        if (!item || typeof item !== "object") return;
+        const rate = _number(item.per_minute) && item.per_minute >= 0 ? `${count(item.per_minute)}/min` : UNKNOWN;
+        const burst = count(item.burst);
+        rowOf(body, columns, [siteId, _text(typeof item.op_class === "string" ? item.op_class.slice(0, 128) : UNKNOWN), `${rate} · burst ${burst}`, count(item.available), count(item.rpc_today), count(item.calls_today), count(item.denied_today)]);
+        rows += 1;
+      });
+      [["sessions", site.sessions], ["bytes", site.bytes]].forEach(([label, item]) => {
+        if (!item || typeof item !== "object") return;
+        const unit = label === "bytes" ? _bytes : count;
+        const rate = _number(item.per_minute) && item.per_minute >= 0
+          ? `${label === "bytes" ? _bytes(item.per_minute) : count(item.per_minute)}/min` : UNKNOWN;
+        rowOf(body, columns, [siteId, label, `${rate} · burst ${unit(item.burst)}`, unit(item.available), unit(item.used_today), DASH, DASH]);
+        rows += 1;
+      });
+      if (_number(site.action_session_reserve) && site.action_session_reserve >= 0) {
+        rowOf(body, columns, [siteId, "action session reserve", DASH, DASH, count(site.action_session_reserve), DASH, DASH]);
+        rows += 1;
+      }
+    });
+    if (rows) content.append(scrollTable(body.parentNode));
+  }
   function renderQueue(doc, jobDoc) {
     clear();
-    if (!doc || !doc.available) {
+    if (!doc || typeof doc !== "object") {
       note(schedulerNote(doc));
       return;
     }
-    const toggle = el("a", "", finishedParam ? "hide finished jobs" : "show finished jobs");
-    toggle.href = finishedParam ? "/queue" : "/queue?finished=1";
-    const bar = el("p", "note", "");
-    bar.append(toggle, el("span", "", ` · ${_int(doc.pending_in_line)} waiting to be placed · change jobs with fq (cancel, hold, modify, top)`));
-    content.append(bar);
-    if (jobParam) renderQueueJob(jobDoc);
-    const jobs = Array.isArray(doc.jobs) ? doc.jobs : [];
-    if (!jobs.length) {
-      note(finishedParam ? "no jobs" : "no running or waiting jobs");
-      return;
+    const queueAvailable = doc.available === true;
+    const managedSites = doc.managed_slurm_snapshot && Array.isArray(doc.managed_slurm_snapshot.sites)
+      ? doc.managed_slurm_snapshot.sites : [];
+    if (queueAvailable) {
+      const toggle = el("a", "", finishedParam ? "hide finished jobs" : "show finished jobs");
+      toggle.href = finishedParam ? "/queue" : "/queue?finished=1";
+      const bar = el("p", "note", "");
+      bar.append(toggle, el("span", "", ` · ${_int(doc.pending_in_line)} waiting to be placed · change jobs with fq (cancel, hold, modify, top)${doc.ui_origin ? " · browser actions open fleetq confirmation pages" : ""}`));
+      content.append(bar);
+      if (jobParam) renderQueueJob(jobDoc);
+    } else {
+      note(`fleetq queue unavailable: ${_text(doc.error || "unknown error")}`);
+      if (managedSites.length) {
+        note(`Managed Slurm snapshots: ${managedSites.map((site) => `${_text(site.site_id)} ${_text(site.state)}${_number(site.age_s) ? ` (${_dur(site.age_s)})` : ""}`).join(" · ")}`);
+      }
     }
+    renderRemoteCostLedger(doc.remote_cost_ledger);
+    const jobs = queueAvailable && Array.isArray(doc.jobs) ? doc.jobs : [];
+    const slurmJobs = Array.isArray(doc.managed_slurm_jobs) ? doc.managed_slurm_jobs : [];
     const columns = [
       {label: "job", num: true}, {label: "name"}, {label: "user"}, {label: "st"}, {label: "where"},
       {label: "gpus", num: true}, {label: "time", num: true}, {label: "limit", num: true},
       {label: "prio", num: true}, {label: "pos", num: true}, {label: "reason"},
+      {label: "actions"},
     ];
-    const tbody = dataTable(columns, "queue");
-    jobs.forEach((job) => {
+    if (jobs.length) {
+      const tbody = dataTable(columns, "queue");
+      jobs.forEach((job) => {
       if (!job || typeof job !== "object") return;
       const where = typeof job.where === "string" && job.where
         ? (job.backend === "slurm" ? _text(job.where) : hostLink(job.where.split(":")[0]))
@@ -1356,11 +1444,33 @@
         num(_int(job.effective_priority), job.effective_priority),
         num(job.position ? _int(job.position) : DASH, job.position || 0),
         _text(job.reason || (job.phase === "HELD" ? "held" : "")),
+        queueActions(job, doc.ui_origin),
       ]);
-    });
-    tbody.applySavedSort();
-    content.append(scrollTable(tbody.parentNode));
-    note(`${jobs.length} jobs`);
+      });
+      tbody.applySavedSort();
+      content.append(scrollTable(tbody.parentNode));
+      note(`${jobs.length} fleetq jobs`);
+    } else if (!slurmJobs.length && queueAvailable) {
+      const observerUnavailable = managedSites.some((site) => site.state !== "live");
+      note(observerUnavailable
+        ? "no fleetq jobs; managed Slurm queue snapshot is stale or unavailable"
+        : (finishedParam ? "no jobs" : "no running or waiting jobs"));
+    }
+    if (slurmJobs.length) {
+      heading("Managed Slurm queue snapshot");
+      const slurmColumns = [
+        {label: "site"}, {label: "job id", num: true}, {label: "user"}, {label: "state"},
+        {label: "partition"}, {label: "nodes"}, {label: "snapshot"}, {label: "age", num: true},
+      ];
+      const slurmBody = dataTable(slurmColumns, "managed-slurm-queue");
+      slurmJobs.slice(0, 500).forEach((job) => rowOf(slurmBody, slurmColumns, [
+        _text(job.site_id), num(_text(job.job_id), job.job_id), _text(job.user),
+        jobStateToken(job.state), _text(job.partition), _text(job.nodes),
+        _text(job.snapshot_status), num(_dur(job.snapshot_age_s), job.snapshot_age_s),
+      ]));
+      content.append(scrollTable(slurmBody.parentNode));
+      note(`${slurmJobs.length} managed Slurm rows from fleetqd's cached observer snapshot`);
+    }
   }
   function renderQueueJob(doc) {
     heading(`Job ${jobParam}`);
@@ -1376,8 +1486,10 @@
       ["name", _text(job.name)],
       ["owner", _text(job.owner)],
       ["phase", `${_text(job.phase)}${job.reason ? ` — ${job.reason}` : ""}`],
+      ["remote may still be live", job.remote_may_be_live ? el("span", "st st-bad", "yes; reconciliation required") : "no"],
       ["where", place.target ? `${place.target}${place.queue ? `:${place.queue}` : ""}` : DASH],
       ["gpus", Array.isArray(place.gpus) && place.gpus.length ? place.gpus.join(", ") : DASH],
+      ["artifacts", job.artifacts ? `${_text(job.artifacts.state)}${job.artifacts.required ? ` · ${_int(job.artifacts.required)} required` : ""}` : DASH],
       ["slurm job", place.backend === "slurm" && place.remote_id ? _text(place.remote_id) : DASH],
       ["outcome", exec.outcome ? `${exec.outcome}${exec.exit && exec.exit.code !== null ? ` (exit ${exec.exit.code})` : ""}` : DASH],
       ["attempts", _int(job.attempts)],
@@ -1385,6 +1497,22 @@
       ["started", times.started ? _clockIso(times.started) : DASH],
       ["ended", times.ended ? _clockIso(times.ended) : DASH],
     ]));
+    const actionLinks = queueActions(job, lastData && lastData.ui_origin);
+    if (actionLinks !== DASH) {
+      heading("Actions in fleetq");
+      content.append(actionLinks);
+    }
+    const artifactDoc = doc.artifacts;
+    if (artifactDoc && Array.isArray(artifactDoc.files) && artifactDoc.files.length) {
+      heading("Artifacts");
+      const columns = [{label: "path"}, {label: "attempt", num: true}, {label: "required"}, {label: "state"}, {label: "size", num: true}];
+      const tbody = dataTable(columns, "job-artifacts");
+      artifactDoc.files.slice(0, 200).forEach((file) => rowOf(tbody, columns, [
+        _text(file.relpath), num(_int(file.attempt), file.attempt), file.required ? "yes" : "no",
+        _text(file.state), num(_bytes(file.size), file.size),
+      ]));
+      content.append(scrollTable(tbody.parentNode));
+    }
     const explain = doc.explain;
     if (explain && Array.isArray(explain.decisions) && explain.decisions.length && job.phase !== "TERMINAL") {
       heading("Why it is waiting");
@@ -1411,6 +1539,21 @@
     heading("Scheduler (fleetq)");
     if (!doc || !doc.available) {
       note(schedulerNote(doc));
+      const snapshots = doc && doc.managed_slurm_snapshot && Array.isArray(doc.managed_slurm_snapshot.sites)
+        ? doc.managed_slurm_snapshot.sites : [];
+      if (snapshots.length) {
+        heading("Managed Slurm snapshots from Fleetmon cache");
+        const columns = [{label: "site"}, {label: "snapshot"}, {label: "age", num: true}, {label: "detail"}];
+        const tbody = dataTable(columns, "managed-slurm-snapshots-offline");
+        snapshots.forEach((site) => {
+          const state = site.state === "live" || site.state === "stale" ? site.state : "unavailable";
+          const stateToken = el("span", `st ${state === "live" ? "st-ok" : state === "stale" ? "st-stale" : "st-bad"}`, state);
+          rowOf(tbody, columns, [
+            _text(site.site_id), stateToken, num(_dur(site.age_s), site.age_s), _text(site.error),
+          ]);
+        });
+        content.append(scrollTable(tbody.parentNode));
+      }
       return;
     }
     const phases = doc.phases && typeof doc.phases === "object"
@@ -1421,7 +1564,24 @@
       ["controller epoch", _int(doc.epoch)],
       ["jobs by phase", phases || DASH],
       ["restore discovery", doc.restore_pending ? el("span", "st st-bad", "pending") : "complete"],
+      ["managed Slurm snapshots", doc.managed_slurm_snapshot && doc.managed_slurm_snapshot.available
+        ? "all configured sites live" : (doc.managed_slurm_snapshot && doc.managed_slurm_snapshot.sites && doc.managed_slurm_snapshot.sites.length
+          ? _text(doc.managed_slurm_snapshot.reason) : "not configured")],
     ]));
+    const snapshots = doc.managed_slurm_snapshot && Array.isArray(doc.managed_slurm_snapshot.sites)
+      ? doc.managed_slurm_snapshot.sites : [];
+    if (snapshots.length) {
+      const columns = [{label: "site"}, {label: "snapshot"}, {label: "age", num: true}, {label: "detail"}];
+      const tbody = dataTable(columns, "managed-slurm-snapshots");
+      snapshots.forEach((site) => {
+        const state = site.state === "live" || site.state === "stale" ? site.state : "unavailable";
+        const stateToken = el("span", `st ${state === "live" ? "st-ok" : state === "stale" ? "st-stale" : "st-bad"}`, state);
+        rowOf(tbody, columns, [
+          _text(site.site_id), stateToken, num(_dur(site.age_s), site.age_s), _text(site.error),
+        ]);
+      });
+      content.append(scrollTable(tbody.parentNode));
+    }
     if (calls.length) {
       const columns = [{label: "cluster"}, {label: "class"}, {label: "calls today", num: true}, {label: "rpc", num: true}];
       const tbody = dataTable(columns, "scheduler-calls");
@@ -1431,6 +1591,29 @@
     } else {
       note("no cluster calls today");
     }
+  }
+
+  function renderSchedulerNodes(doc) {
+    clear();
+    if (!doc || !doc.available) {
+      note(schedulerNote(doc));
+      return;
+    }
+    const nodes = Array.isArray(doc.nodes) ? doc.nodes : [];
+    if (!nodes.length) {
+      note("fleetq has no managed nodes");
+      return;
+    }
+    const columns = [{label: "node"}, {label: "backend"}, {label: "state"}, {label: "dispatch"}, {label: "GPU"}, {label: "allocation"}];
+    const tbody = dataTable(columns, "fleetq-nodes");
+    nodes.forEach((node) => {
+      const gpus = Array.isArray(node.gpus) ? node.gpus : [];
+      const gpuText = gpus.map((gpu) => `${_text(gpu.uuid)}${gpu.model ? ` (${_text(gpu.model)})` : ""}`).join(", ") || DASH;
+      const allocText = gpus.filter((gpu) => gpu.fleetq_job).map((gpu) => `${_text(gpu.uuid)} → job ${_text(gpu.fleetq_job)}`).join(", ") || "none";
+      rowOf(tbody, columns, [_text(node.id), _text(node.backend), _text(node.state), node.dispatch_ready ? "ready" : "blocked", gpuText, allocText]);
+    });
+    content.append(scrollTable(tbody.parentNode));
+    note(`${nodes.length} fleetq-managed nodes; external Slurm cluster occupancy is not included`);
   }
 
   // ---- hub status ----
@@ -1789,6 +1972,7 @@
     else if (page === "idle-gpus") renderIdle(lastIdleDoc);
     else if (page === "jobs") renderJobs(lastData);
     else if (page === "queue") renderQueue(lastData, lastJob);
+    else if (page === "nodes") renderSchedulerNodes(lastData);
     else renderHubStatus(lastData);
     scroll.forEach(([key, left]) => {
       const node = tableScrolls.get(key);

@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 # This project has not shipped a migration runner yet.  Existing databases
 # therefore need to prove that they have exactly the schema this code knows
 # how to use; silently applying CREATE TABLE IF NOT EXISTS is not sufficient
@@ -132,6 +132,7 @@ _REQUIRED_COLUMNS = {
         "updated_at",
     },
     "slurm_poll_state": {"target", "watermark", "state", "error", "updated_at"},
+    "notification_outbox": {"id", "dedupe_key", "payload", "created_at", "next_attempt", "attempts", "sent_at", "last_error"},
 }
 # Ordered, additive-only migrations keyed by the version they produce. Every
 # statement here must be safe to apply to a live database that already holds
@@ -140,6 +141,7 @@ _REQUIRED_COLUMNS = {
 # not belong here — it belongs in a fresh SCHEMA_VERSION bump instead.
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
     3: ("ALTER TABLE hosts ADD COLUMN addresses TEXT",),
+    4: (),
 }
 MAX_STORED_SLURM_JOBS = 2_000
 MAX_STORED_GPU_ALLOCATIONS = 8
@@ -406,6 +408,18 @@ CREATE TABLE IF NOT EXISTS slurm_poll_state (
     error TEXT,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS notification_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    payload TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    next_attempt REAL NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    sent_at REAL,
+    last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS notification_outbox_due
+    ON notification_outbox(sent_at, next_attempt, created_at);
 """
 
 
@@ -1294,7 +1308,12 @@ class Database:
             )
 
     def upsert_slurm_jobs(
-        self, cluster: str, jobs: list[dict[str, Any]], updated_at: float | None = None
+        self,
+        cluster: str,
+        jobs: list[dict[str, Any]],
+        updated_at: float | None = None,
+        *,
+        replace: bool = False,
     ) -> None:
         if not isinstance(jobs, list):
             raise ValueError("jobs must be a list")
@@ -1304,6 +1323,8 @@ class Database:
             cursor = self.conn.cursor()
             try:
                 cursor.execute("BEGIN IMMEDIATE")
+                if replace:
+                    cursor.execute("DELETE FROM slurm_jobs WHERE cluster=?", (cluster,))
                 for job in jobs[:MAX_STORED_SLURM_JOBS]:
                     if not isinstance(job, dict):
                         continue
@@ -1603,3 +1624,80 @@ class Database:
     def query(self, sql: str, args: Iterable[Any] = ()) -> list[sqlite3.Row]:
         with self._lock:
             return self.conn.execute(sql, tuple(args)).fetchall()
+
+    def enqueue_notification(self, dedupe_key: str, payload: dict[str, Any], now: float) -> bool:
+        """Durably enqueue one bounded notification exactly once per incident key."""
+        if not isinstance(dedupe_key, str) or not dedupe_key or len(dedupe_key) > 256:
+            raise ValueError("invalid notification dedupe key")
+        encoded = json.dumps(payload, separators=(",", ":"), allow_nan=False)
+        if len(encoded.encode("utf-8")) > 2048:
+            raise ValueError("notification payload too large")
+        with self._lock:
+            cursor = self.conn.execute(
+                "INSERT OR IGNORE INTO notification_outbox "
+                "(dedupe_key,payload,created_at,next_attempt) VALUES (?,?,?,?)",
+                (dedupe_key, encoded, now, now),
+            )
+            # Bound retained history while preserving all unsent notifications.
+            self.conn.execute(
+                "DELETE FROM notification_outbox WHERE sent_at IS NOT NULL "
+                "AND id NOT IN (SELECT id FROM notification_outbox "
+                "WHERE sent_at IS NOT NULL ORDER BY sent_at DESC LIMIT 500)"
+            )
+            return cursor.rowcount > 0
+
+    def resolve_notification(self, dedupe_key: str, *, now: float | None = None) -> None:
+        """Retire an incident without erasing its recent delivery from the rate ledger."""
+        now = time.time() if now is None else now
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT id,sent_at FROM notification_outbox WHERE dedupe_key=?", (dedupe_key,)
+            ).fetchone()
+            if row is None:
+                return
+            if row["sent_at"] is not None and row["sent_at"] >= now - 60.0:
+                # A new occurrence may reuse the original incident key, while
+                # the archived delivery still counts against this minute's cap.
+                self.conn.execute(
+                    "UPDATE notification_outbox SET dedupe_key=? WHERE id=?",
+                    (f"resolved:{row['id']}", row["id"]),
+                )
+            else:
+                self.conn.execute("DELETE FROM notification_outbox WHERE id=?", (row["id"],))
+
+    def due_notifications(self, now: float, limit: int = 100) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id,dedupe_key,payload,attempts FROM notification_outbox "
+                "WHERE sent_at IS NULL AND next_attempt<=? ORDER BY created_at,id LIMIT ?",
+                (now, max(1, min(limit, 100))),
+            ).fetchall()
+            return [dict(row, payload=json.loads(row["payload"])) for row in rows]
+
+    def notification_rate_count(self, since: float) -> int:
+        with self._lock:
+            return int(self.conn.execute(
+                "SELECT COUNT(*) FROM notification_outbox WHERE sent_at>=?", (since,)
+            ).fetchone()[0])
+
+    def mark_notification(self, row_id: int, *, now: float, result: str) -> None:
+        """Commit success or bounded exponential retry after a delivery attempt."""
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT attempts FROM notification_outbox WHERE id=? AND sent_at IS NULL",
+                (row_id,),
+            ).fetchone()
+            if row is None:
+                return
+            attempts = int(row[0]) + 1
+            if result == "ok":
+                self.conn.execute(
+                    "UPDATE notification_outbox SET sent_at=?,attempts=?,last_error=NULL WHERE id=?",
+                    (now, attempts, row_id),
+                )
+            else:
+                delay = min(6 * 60 * 60, 300 * (2 ** min(attempts - 1, 6)))
+                self.conn.execute(
+                    "UPDATE notification_outbox SET attempts=?,next_attempt=?,last_error=? WHERE id=?",
+                    (attempts, now + delay, result[:64], row_id),
+                )

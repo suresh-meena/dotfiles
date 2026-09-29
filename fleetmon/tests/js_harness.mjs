@@ -868,6 +868,11 @@ const cardValues = (content) =>
 {
   const QUEUE = {
     available: true, configured: true, schema: "fq.queue/v1", pending_in_line: 1,
+    remote_cost_ledger: [{site_id: "campus", classes: [{op_class: "submit", per_minute: 4,
+      burst: 8, available: 3, rpc_today: 12, calls_today: 11, denied_today: 1}],
+      sessions: {per_minute: 2, burst: 4, available: 3, used_today: 1},
+      bytes: {per_minute: 1024, burst: 4096, available: 2048, used_today: 512},
+      action_session_reserve: 2}],
     jobs: [
       {id: 7, name: HOSTILE, owner: "suresh", st: "R", phase: "RUNNING", where: "rtx4090", backend: "bare",
        gpus: 1, gpu_ids: ["GPU-aaaa"], started: "2026-09-24T01:00:00.000000Z", elapsed_s: 3725, limit_s: 7200,
@@ -893,10 +898,33 @@ const cardValues = (content) =>
   assert.ok(text.includes(HOSTILE), "hostile job name rendered as text");
   assert.ok(text.includes("<script>alert(1)</script>"), "log tail rendered as text");
   assert.ok(text.includes("1 h 2 m") && text.includes("waiting: no_placeable_gpus"), `queue columns: ${text}`);
+  assert.ok(text.includes("Remote cost and budget ledger") && text.includes("submit") && text.includes("1.0 KiB/min"),
+    `remote ledger rendered: ${text}`);
   assert.ok(collect(shim.content, "PRE").length === 2, "stdout and stderr tails");
 
-  const down = await run("queue", "", {"/api/scheduler/queue": {available: false, configured: false}});
+  const down = await run("queue", "", {"/api/scheduler/queue": {
+    available: false, configured: false, error: "no scheduler configured",
+  }});
   assert.match(textOf(down.shim.content), /no scheduler configured/, "unconfigured scheduler explained");
+
+  const actionsQueue = {...QUEUE, ui_origin: "https://fleetq.example/"};
+  const actions = await run("queue", "", {"/api/scheduler/queue": actionsQueue});
+  const actionLinks = collect(actions.shim.content, "A").filter((a) =>
+    String(a.href || (a._attrs && a._attrs.href) || "").includes("/ui/jobs/")
+  );
+  assert.ok(actionLinks.some((a) => String(a.href || a._attrs.href).endsWith("/confirm/cancel")),
+    "cancel is an optional confirmation-page link");
+  assert.ok(actionLinks.some((a) => String(a.href || a._attrs.href).endsWith("/confirm/hold")),
+    "hold is an optional confirmation-page link");
+  assert.ok(actionLinks.every((a) => (a.rel || (a._attrs && a._attrs.rel)) === "noopener noreferrer"),
+    "external confirmation links are isolated from the opener");
+
+  const stale = await run("queue", "", {"/api/scheduler/queue": {
+    available: true, jobs: [], managed_slurm_snapshot: {available: false,
+      sites: [{site_id: "campus", state: "stale"}]}, managed_slurm_jobs: [],
+  }});
+  assert.match(textOf(stale.shim.content), /managed Slurm queue snapshot is stale or unavailable/,
+    "stale managed observer is shown instead of an empty queue");
 }
 
 // ---- idle GPUs link the fleetq job holding a GPU ----

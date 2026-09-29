@@ -74,6 +74,38 @@ def test_atomic_snapshot_and_wire_keys(tmp_path):
     assert row["nvml_error"] is None and row["psutil_error"] is None
 
 
+def test_notification_outbox_is_deduplicated_durable_and_backed_off(tmp_path):
+    db = Database(tmp_path / "outbox.db")
+    try:
+        payload = {"event": "gpu_free", "target": "gpu1"}
+        assert db.enqueue_notification("gpu:gpu1:GPU-0", payload, 100.0)
+        assert not db.enqueue_notification("gpu:gpu1:GPU-0", payload, 101.0)
+        row = db.due_notifications(101.0)[0]
+        assert row["payload"] == payload
+        db.mark_notification(row["id"], now=101.0, result="notify_unreachable")
+        assert db.due_notifications(400.0) == []
+        assert len(db.due_notifications(401.0)) == 1
+        db.mark_notification(row["id"], now=401.0, result="ok")
+        assert db.due_notifications(1000.0) == []
+        assert db.notification_rate_count(0.0) == 1
+    finally:
+        db.close()
+
+
+def test_resolving_incident_keeps_recent_delivery_in_rate_ledger(tmp_path):
+    db = Database(tmp_path / "rate.db")
+    try:
+        assert db.enqueue_notification("gpu:one", {"event": "gpu_free"}, 100.0)
+        row = db.due_notifications(100.0)[0]
+        db.mark_notification(row["id"], now=101.0, result="ok")
+        db.resolve_notification("gpu:one", now=102.0)
+        assert db.notification_rate_count(42.0) == 1
+        assert db.enqueue_notification("gpu:one", {"event": "gpu_free"}, 103.0)
+        assert len(db.due_notifications(103.0)) == 1
+    finally:
+        db.close()
+
+
 def test_snapshot_stores_every_disk_and_derives_root_from_the_slash_mount(tmp_path):
     document = sample()
     document["disks"] = [

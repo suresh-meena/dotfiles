@@ -2,6 +2,30 @@ import pytest
 
 from fleetmon import notify
 from fleetmon.config import ConfigError
+from fleetmon.database import Database
+
+
+def test_outbox_digest_respects_the_minute_delivery_cap(tmp_path):
+    db = Database(tmp_path / "notify.db")
+    sent = []
+
+    def poster(_url, payload):
+        sent.append(payload)
+        return "ok"
+
+    try:
+        for index in range(6):
+            db.enqueue_notification(f"incident:{index}",
+                                    {"event": "gpu_free", "target": f"gpu{index}"}, 100.0)
+        assert notify.dispatch_outbox(db, "https://example.invalid/notify", poster, 100.0) == 1
+        assert len(sent) == 1 and sent[0]["event"] == "notification_digest"
+        db.enqueue_notification("incident:later", {"event": "gpu_free", "target": "later"}, 101.0)
+        assert notify.dispatch_outbox(db, "https://example.invalid/notify", poster, 101.0) == 0
+        assert len(sent) == 1
+        assert notify.dispatch_outbox(db, "https://example.invalid/notify", poster, 161.0) == 1
+        assert len(sent) == 2
+    finally:
+        db.close()
 
 
 def gpu_row(utilization=0.0, processes=0, error=None, **extra):
@@ -45,6 +69,25 @@ def test_url_parsing_is_bounded_and_http_only():
         notify.parse_notify_url(123)
     with pytest.raises(ValueError):
         notify.parse_notify_url("https://host/" + "x" * 600)
+
+
+def test_notification_projection_drops_unapproved_fields_and_secrets():
+    projected = notify.safe_payload(
+        {
+            "event": "poll_failures",
+            "target": "gpu1",
+            "failures": 4,
+            "error": "ssh -i /secret/key TOKEN=abc",
+            "command": "full command",
+            "token": "abc",
+        }
+    )
+    assert projected == {
+        "event": "poll_failures",
+        "target": "gpu1",
+        "failures": 4,
+        "error": "unknown",
+    }
 
 
 def test_classify_idle_requires_two_trusted_consecutive_idle_observations():
@@ -313,7 +356,10 @@ def _health_cycle(failures, last_error, skew, notified, poster=None):
 def test_health_poll_failure_streak_fires_once_and_rearms_after_success():
     calls = []
     events, notified = _health_cycle(
-        3, "transport", None, {},
+        3,
+        "transport",
+        None,
+        {},
         lambda u, p: calls.append(p) or "ok",
     )
     assert [e["event"] for e in events] == ["poll_failures"]
@@ -418,7 +464,11 @@ def test_host_delivery_sends_once_and_backs_off_on_failure():
         "ada1", events, {}, 0.0, 100.0, "https://ntfy/topic", poster
     )
     assert notified["clock_drift"] == "sent" and retry == 0.0 and len(calls) == 1
-    assert calls[0] == {"target": "ada1", "event": "clock_drift", "skew_seconds": 2400.0}
+    assert calls[0] == {
+        "target": "ada1",
+        "event": "clock_drift",
+        "skew_seconds": 2400.0,
+    }
 
     def failing(url, payload):
         return "notify_unreachable"

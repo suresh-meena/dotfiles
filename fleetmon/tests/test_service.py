@@ -368,6 +368,35 @@ def test_helper_version_mismatch_is_rejected(tmp_path):
     runtime.close()
 
 
+def test_scheduler_queue_includes_cached_remote_cost_ledger_without_dependency(tmp_path):
+    runtime = HubRuntime(config(tmp_path), discover_fn=inventory)
+    calls = []
+
+    def scheduler_get(path):
+        calls.append(path)
+        if path.endswith("/queue?all_users=true&limit=300"):
+            return {"available": True, "jobs": []}
+        if path == "/api/v1/status":
+            return {"available": True, "remote_cost_ledger": [{"site_id": "campus"}]}
+        raise AssertionError(path)
+
+    runtime._scheduler_get = scheduler_get
+    try:
+        result = runtime.scheduler_queue()
+        assert result["remote_cost_ledger"] == [{"site_id": "campus"}]
+        assert "/api/v1/status" in calls
+
+        runtime._scheduler_get = lambda path: (
+            {"available": True, "jobs": []} if "/queue?" in path
+            else {"available": False, "error": "status unavailable"}
+        )
+        result = runtime.scheduler_queue()
+        assert result["available"] is True
+        assert "remote_cost_ledger" not in result
+    finally:
+        runtime.close()
+
+
 def test_stale_capture_is_not_accepted_as_current(tmp_path):
     stale = document()
     stale["captured_at"] = "2020-01-01T00:00:00Z"
@@ -729,13 +758,16 @@ def test_hub_self_monitor_tracks_cpu_and_alerts_on_sustained_breach(tmp_path):
         assert runtime.state.data["hub_overloaded"] is True
         assert len(calls) == 1
         assert calls[0]["event"] == "hub_overloaded"
-        first_retry = runtime.state.data["hub_health_next_retry"]
+        first_notified = runtime.state.data["hub_health_notified"]
         runtime._hub_health(6.0, 300 * 1024 * 1024)
         assert len(calls) == 1
-        assert runtime.state.data["hub_health_next_retry"] == first_retry
+        assert runtime.state.data["hub_health_notified"] == first_notified
         runtime._hub_health(1.0, 10 * 1024 * 1024)
         assert runtime.state.data["hub_breach_streak"] == 0
         assert runtime.state.data["hub_overloaded"] is False
+        runtime._hub_health(6.0, 300 * 1024 * 1024)
+        runtime._hub_health(6.0, 300 * 1024 * 1024)
+        assert len(calls) == 2, "a recovered and renewed breach is a new incident"
         status = runtime.hub_status()
         assert "hub_cpu_percent" in status and "hub_overloaded" in status
     finally:

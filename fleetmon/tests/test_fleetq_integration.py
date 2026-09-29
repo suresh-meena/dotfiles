@@ -227,7 +227,7 @@ def test_the_runtime_asks_for_everyone_and_marks_held_gpus(tmp_path, fleetqd):
                        scheduler_url=url, scheduler_token="fq_dash")
     try:
         runtime.scheduler_queue(finished=True)
-        assert state["calls"][-1] == "/api/v1/queue?all_users=true&limit=300&finished=true"
+        assert state["calls"] == ["/api/v1/queue?all_users=true&limit=300&finished=true", "/api/v1/status"]
         _poll(runtime, 2)
         state["body"] = json.dumps({"schema": "fq.nodes/v1", "ok": True, "nodes": [
             {"id": "gpu1", "gpus": [{"uuid": "GPU-IDLE-0", "fleetq_job": 42}, {"uuid": "GPU-BUSY-0",
@@ -242,8 +242,12 @@ def test_the_runtime_asks_for_everyone_and_marks_held_gpus(tmp_path, fleetqd):
 def test_without_a_scheduler_everything_still_works(tmp_path):
     runtime = _runtime(tmp_path, [gpu_document(idle=True)])
     try:
-        assert runtime.scheduler_queue() == {"available": False, "configured": False,
-                                             "error": "no [scheduler] url in the fleetmon config"}
+        queue = runtime.scheduler_queue()
+        assert queue == {"available": False, "configured": False,
+                         "error": "no [scheduler] url in the fleetmon config",
+                         "managed_slurm_snapshot": {"available": False,
+                                                     "reason": "not configured", "sites": []},
+                         "managed_slurm_jobs": []}
         _poll(runtime, 1)
         assert all(item["fleetq_job"] is None for item in runtime.idle_gpus()["items"])
     finally:
@@ -335,7 +339,7 @@ def test_fleetq_reads_the_real_feed_and_units_matter(tmp_path):
     runtime = _runtime(tmp_path, [gpu_document(idle=True)] * 3)
     try:
         _poll(runtime, 3)
-        now = _spread(runtime, [100, 50, 1])
+        now = _spread(runtime, [130, 65, 1])
         verdicts = _fleetq_verdicts(runtime.capacity_feed(), now)
     finally:
         runtime.close()
@@ -346,7 +350,7 @@ def test_fleetq_reads_the_real_feed_and_units_matter(tmp_path):
     runtime = _runtime(tmp_path / "warm", [warm] * 3)
     try:
         _poll(runtime, 3)
-        now = _spread(runtime, [100, 50, 1])
+        now = _spread(runtime, [130, 65, 1])
         verdicts = _fleetq_verdicts(runtime.capacity_feed(), now)
     finally:
         runtime.close()

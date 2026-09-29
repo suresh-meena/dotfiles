@@ -34,6 +34,7 @@ MAX_STDERR_BYTES = 64 * 1024
 MAX_API_ROWS = 1_000
 MAX_TARGET_NAME_LENGTH = 256
 MAX_TARGET_FILTERS = 1_000
+MAX_MANAGED_SCHEDULER_TARGETS = 256
 MAX_TRUSTED_NETWORKS = 16
 
 
@@ -72,6 +73,11 @@ class HubConfig:
     # fleetmon never mutates the queue, and a down scheduler only greys the page.
     scheduler_url: str | None = None
     scheduler_token: str | None = None
+    # Canonical public HTTPS origin for fleetqd's human confirmation UI.
+    scheduler_ui_origin: str | None = None
+    # Inventory names whose Slurm observation is owned by fleetqd. They must
+    # never be queried by fleetmon's legacy direct squeue/sacct poller.
+    managed_scheduler_targets: tuple[str, ...] = ()
 
     def bind_is_trusted(self) -> bool:
         """Whether this bind sits inside a network trusted to skip the token.
@@ -251,6 +257,24 @@ class HubConfig:
             raise ConfigError("hub.backup_dir must be an absolute path")
         if not isinstance(self.disabled_targets, tuple):
             raise ConfigError("disabled_targets must be a tuple of strings")
+        if not isinstance(self.managed_scheduler_targets, tuple):
+            raise ConfigError("managed_scheduler_targets must be a tuple of strings")
+        if len(self.managed_scheduler_targets) > MAX_MANAGED_SCHEDULER_TARGETS:
+            raise ConfigError(
+                "managed_scheduler_targets must contain <= "
+                f"{MAX_MANAGED_SCHEDULER_TARGETS} targets"
+            )
+        if self.managed_scheduler_targets and not self.scheduler_url:
+            raise ConfigError("managed scheduler targets require scheduler.url")
+        if self.scheduler_ui_origin is not None:
+            if not self.scheduler_url:
+                raise ConfigError("scheduler.ui_origin requires scheduler.url")
+            if _scheduler_ui_origin(self.scheduler_ui_origin) != self.scheduler_ui_origin:
+                raise ConfigError("scheduler.ui_origin must be a canonical HTTPS origin")
+        for target in self.managed_scheduler_targets:
+            _target_name(target, "scheduler.managed_targets")
+        if len(set(self.managed_scheduler_targets)) != len(self.managed_scheduler_targets):
+            raise ConfigError("managed scheduler targets must not contain duplicates")
         if len(self.disabled_targets) > MAX_TARGET_FILTERS:
             raise ConfigError(
                 f"disabled_targets must contain <= {MAX_TARGET_FILTERS} targets"
@@ -448,8 +472,25 @@ def load_config(path: Path | None = None) -> HubConfig:
     _unknown_keys(raw, {"hub", "polling", "retention", "scheduler"}, "top-level")
     hub = _table(raw, "hub")
     scheduler = _table(raw, "scheduler")
-    _unknown_keys(scheduler, {"url"}, "scheduler")
+    _unknown_keys(scheduler, {"url", "managed_targets", "ui_origin"}, "scheduler")
     scheduler_url = _scheduler_url(scheduler.get("url"))
+    scheduler_ui_origin = _scheduler_ui_origin(scheduler.get("ui_origin"))
+    if scheduler_ui_origin and not scheduler_url:
+        raise ConfigError("scheduler.ui_origin requires scheduler.url")
+    managed_scheduler_targets = scheduler.get("managed_targets", [])
+    if (
+        not isinstance(managed_scheduler_targets, list)
+        or len(managed_scheduler_targets) > MAX_MANAGED_SCHEDULER_TARGETS
+    ):
+        raise ConfigError("scheduler.managed_targets must be an array of target names")
+    managed_scheduler_targets = tuple(
+        _target_name(value, "scheduler.managed_targets")
+        for value in managed_scheduler_targets
+    )
+    if len(set(managed_scheduler_targets)) != len(managed_scheduler_targets):
+        raise ConfigError("scheduler.managed_targets must not contain duplicates")
+    if managed_scheduler_targets and not scheduler_url:
+        raise ConfigError("scheduler.managed_targets requires scheduler.url")
     polling = _table(raw, "polling")
     retention = _table(raw, "retention")
     _unknown_keys(
@@ -586,6 +627,8 @@ def load_config(path: Path | None = None) -> HubConfig:
         scheduler_token=(
             _auth_token_from_environment("FLEETMON_SCHEDULER_TOKEN") if scheduler_url else None
         ),
+        scheduler_ui_origin=scheduler_ui_origin,
+        managed_scheduler_targets=managed_scheduler_targets,
     ).validate()
 
 
@@ -601,6 +644,41 @@ def _scheduler_url(value: Any) -> str | None:
     if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
         raise ConfigError("scheduler.url takes no credentials, path, query or fragment")
     return text
+
+
+def _scheduler_ui_origin(value: Any) -> str | None:
+    """Accept only a canonical HTTPS origin for browser action confirmation."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ConfigError("scheduler.ui_origin must be an HTTPS origin")
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ConfigError("scheduler.ui_origin must be a canonical HTTPS origin") from exc
+    if (
+        parsed.scheme != "https"
+        or not host
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or not parsed.netloc
+        or "%" in host
+    ):
+        raise ConfigError("scheduler.ui_origin must be a canonical HTTPS origin")
+    try:
+        host.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ConfigError("scheduler.ui_origin host must use canonical ASCII or IDNA") from exc
+    host = host.lower()
+    netloc = f"[{host}]" if ":" in host else host
+    if port is not None and port != 443:
+        netloc += f":{port}"
+    return f"https://{netloc}"
 
 
 def _optional_string(value: Any) -> str | None:

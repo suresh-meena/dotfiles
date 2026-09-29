@@ -148,6 +148,26 @@ timestamps, so the hub converts its UTC watermark windows into that zone
 before querying. Older schedulers that reject the full accounting field set
 fall back once to a bounded Slurm-22.05-compatible field set.
 
+For clusters whose queue observation is owned by fleetqd, list the matching
+`fleetctl` inventory target names explicitly. Fleetmon then stops its own
+`squeue`/`sacct` schedule for those targets. fleetqd's existing queue and node
+APIs show fleetq-managed jobs, nodes, and allocations. The read-only
+`/api/v1/managed-slurm` feed supplies bounded all-user site snapshots when the
+fleetqd observer has one; Fleetmon rejects incomplete, invalid, or over-age
+sites and shows stale/unavailable states instead of presenting retained rows
+as fresh. Old direct-poller state is marked stale during handoff.
+
+```toml
+[scheduler]
+url = "http://127.0.0.1:8089"
+managed_targets = ["uni-cluster-login"]
+ui_origin = "https://fleetqd.example.tailnet"
+```
+
+`ui_origin` is optional. It must be the same canonical HTTPS origin configured
+as fleetqd's `[daemon].ui_origin`; Fleetmon uses it only to link to explicit
+fleetqd confirmation pages.
+
 ## Notifications
 
 Set `FLEETMON_NOTIFY_URL` (environment or the 0600 `fleetmon.env` file, never
@@ -160,6 +180,12 @@ UNKNOWN: they never alert and they reset the consecutive chain. Delivery is
 bounded (5 s timeout, one POST per transition); failures back off five
 minutes instead of retrying until success. A companion ntfy server on the
 hub host, bound to the tailnet address, keeps the whole channel private.
+
+When `[scheduler].url` is configured, the existing scheduler cadence also
+detects a stopped fleetqd. Managed sites report a stale snapshot; with no
+managed sites, Fleetmon checks fleetqd's `/healthz` and sends one deduplicated
+`fleetqd_unavailable` notification until the service recovers. This makes no
+Slurm call and requires `FLEETMON_NOTIFY_URL` for delivery.
 
 The hub discovers the managed inventory with `fleetctl list --json`, admits
 only enabled workstation/compute targets using the direct protocol, and treats
@@ -182,7 +208,14 @@ directions, and neither direction can change anything:
 - **Queue view, fleetq → fleetmon.** The Queue page lists running and waiting
   jobs in dispatch order, with each job's reason, output tail and "why it is
   waiting"; Idle GPUs link the fleetq job holding a GPU; Hub Status shows the
-  scheduler's per-cluster call counts. Enable it with
+  scheduler's per-cluster call counts. For targets listed in
+  `scheduler.managed_targets`, it also shows the cached all-user Slurm queue
+  snapshot and its per-site age/state; the Jobs page labels persisted rows
+  stale after incomplete or old observations. Optionally set
+  `scheduler.ui_origin` to the canonical HTTPS origin configured as fleetqd's
+  `[daemon].ui_origin`; Queue links then open fleetqd's cancel/hold confirmation
+  pages in a new tab. The service token remains read-only and Fleetmon never
+  submits a mutation. Enable the integration with
 
   ```toml
   [scheduler]
@@ -201,3 +234,6 @@ directions, and neither direction can change anything:
   Reads are cached for 2 s with a 2 s timeout; a scheduler that is down, slow,
   or refuses the token greys the page with the reason. Jobs are changed with
   `fq` (cancel, hold, modify, top), not from the dashboard.
+- **Managed nodes, fleetq → fleetmon.** The read-only Nodes page uses
+  fleetqd's cached `/api/v1/nodes` response to show fleetq node state and GPU
+  reservations. It does not show all Slurm nodes or other users' allocations.
