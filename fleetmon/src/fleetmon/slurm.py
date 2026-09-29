@@ -38,10 +38,11 @@ SACCT_COMPAT_FORMAT = (
     "Cluster,JobID,User,Account,State,Partition,"
     "NodeList,Start,End,Timelimit,Elapsed,AllocTRES,ReqTRES"
 )
-SQUEUE_TEXT_FORMAT = (
-    "Cluster,JobIDRaw,ArrayJobID,ArrayTaskID,UserName,Account,State,Partition,"
-    "NodeList,StartTime,EndTime,TimeLimit,Elapsed,AllocTRES,ReqTRES"
-)
+# squeue has no --parsable2 (that is sacct's), and old releases such as 19.05
+# have no --json either; -o %-codes with literal "|" separators work on every
+# release. Columns follow SACCT_FIELDS; the cluster and allocated TRES have no
+# -o code, so they stay empty, and %b (requested GRES) fills req_tres.
+SQUEUE_TEXT_FORMAT = "|%A|%F|%K|%u|%a|%T|%P|%N|%S|%e|%l|%M||%b"
 
 
 def squeue_argv() -> list[str]:
@@ -53,7 +54,7 @@ def squeue_argv() -> list[str]:
 def squeue_text_argv() -> list[str]:
     """Return the tested, bounded text fallback for old Slurm installations."""
 
-    return ["squeue", "--noheader", "--parsable2", "--Format", SQUEUE_TEXT_FORMAT]
+    return ["squeue", "--noheader", f"--format={SQUEUE_TEXT_FORMAT}"]
 
 
 def sacct_argv(
@@ -333,6 +334,13 @@ def parse_sacct(
 def parse_squeue_text(
     data: str | bytes, max_rows: int = MAX_SCHEDULER_ROWS
 ) -> list[dict[str, str | None]]:
-    """Parse the fixed-column fallback emitted by :func:`squeue_text_argv`."""
+    """Parse the ``|``-separated fallback emitted by :func:`squeue_text_argv`.
 
-    return parse_sacct(data, max_rows=max_rows)
+    squeue prints ``N/A`` for a value it does not have (a non-array job's task
+    index, a pending job's start), which reads as absent here.
+    """
+
+    return [
+        {key: (None if value == "N/A" else value) for key, value in row.items()}
+        for row in parse_sacct(data, max_rows=max_rows)
+    ]

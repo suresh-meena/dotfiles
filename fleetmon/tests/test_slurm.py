@@ -145,6 +145,20 @@ def test_sacct_parsable_escapes_and_text_squeue_fallback():
     assert parse_squeue_text(_sacct_row())[0]["job_id"] == "42"
 
 
+def test_text_squeue_fallback_runs_on_slurm_without_json():
+    """Slurm 19.05 has neither `squeue --json` nor any `--parsable2`."""
+    argv = squeue_text_argv()
+    assert argv[0] == "squeue" and "--parsable2" not in argv and "--json" not in argv
+    assert fleetctl_slurm_argv("login1", argv)[-len(argv):] == argv
+    running = "|4242|4242|N/A|alice|lab|RUNNING|med_24h_4gpu|dgx1|2026-09-29T10:00:00|2026-09-30T10:00:00|1-00:00:00|2:03:04||gpu:4"
+    pending = "|4300|4300|1-10|bob|lab|PENDING|low_4h_2gpu||N/A|N/A|4:00:00|0:00||gpu:1"
+    rows = parse_squeue_text(running + "\n" + pending + "\n")
+    assert rows[0]["job_id"] == "4242" and rows[0]["array_task_id"] is None
+    assert rows[0]["state"] == "RUNNING" and rows[0]["req_tres"] == "gpu:4"
+    assert rows[0]["cluster"] is None and rows[0]["alloc_tres"] is None
+    assert rows[1]["array_task_id"] == "1-10" and rows[1]["start"] is None
+
+
 def test_sacct_limits_rows_and_output():
     data = "\n".join(_sacct_row(str(i + 1)) for i in range(4))
     assert len(parse_sacct(data, max_rows=2)) == 2
