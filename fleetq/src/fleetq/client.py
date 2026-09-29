@@ -768,7 +768,7 @@ def cmd_logs(api: Api, args) -> int:
         emit(args, {**last, "data_b64": base64.b64encode(bytes(collected)).decode()})
     elif not last.get("complete") and last.get("attempt") is not None:
         age = last.get("age_s")
-        print(f"fq: log is still being collected" + (f" (cache {age:.0f}s old)" if age is not None else ""),
+        print("fq: log is still being collected" + (f" (cache {age:.0f}s old)" if age is not None else ""),
               file=sys.stderr)
     return 0
 

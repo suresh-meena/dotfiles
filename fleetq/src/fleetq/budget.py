@@ -69,24 +69,6 @@ def _canonical(conn: sqlite3.Connection, cluster: str) -> tuple[str, dict[str, A
     raise FqError("forbidden", f"{cluster!r} is not a managed cluster known to this authority")
 
 
-def take(conn: sqlite3.Connection, cluster: str, op_class: str, cost: int = 1) -> tuple[bool, float, str]:
-    """Try to spend ``cost`` tokens. Returns ``(granted, retry_after_s, canonical)``."""
-    if op_class not in OP_CLASSES:
-        raise FqError("invalid_argument", f"op_class must be one of {OP_CLASSES}")
-    canonical, cfg = _canonical(conn, cluster)
-    policy = policy_for(cfg, op_class)
-    if policy is None:
-        # No approved budget for this class: deny by default.
-        return False, 300.0, canonical
-    now = utcnow()
-    plan = _preview_bucket(conn, "budget_buckets", canonical, "op_class", op_class,
-                           policy, max(1, cost), now)
-    if plan["granted"]:
-        _write_bucket(conn, "budget_buckets", canonical, "op_class", op_class,
-                      plan["tokens"], now)
-    return plan["granted"], plan["retry_after"], canonical
-
-
 def _preview_bucket(conn: sqlite3.Connection, table: str, cluster: str, key_name: str, key: str,
                     policy: BucketPolicy, cost: int, now: str) -> dict[str, Any]:
     """Calculate a token-bucket debit without writing, for atomic multi-resource grants."""

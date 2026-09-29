@@ -254,7 +254,3 @@ def pending_jobs(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
         " a.backend FROM jobs j JOIN attempts a ON a.job_id = j.id"
         " AND a.n = (SELECT MAX(n) FROM attempts WHERE job_id = j.id)"
         " WHERE j.phase = 'FINALIZING' ORDER BY j.ended_at LIMIT ?", (limit,)).fetchall()
-
-
-def detail_json(obj: Any) -> str:
-    return json.dumps(obj, sort_keys=True, default=str)

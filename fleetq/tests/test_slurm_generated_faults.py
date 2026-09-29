@@ -12,7 +12,7 @@ import random
 
 import pytest
 
-from test_e2e_slurm import _loopback_ok, fakeslurm, fq, job, make_env, submit, until
+from test_e2e_slurm import _loopback_ok, fakeslurm, fq, job, make_env, submit, until  # noqa: F401 (fixture)
 
 pytestmark = pytest.mark.skipif(not _loopback_ok(), reason="needs loopback (run via scripts/test)")
 

@@ -24,7 +24,7 @@ from fleetq.config import DaemonConfig, NodeConfig
 from test_e2e_bare import FAKES, FQ, Server, _loopback_ok
 
 sys.path.insert(0, str(FAKES.parent))
-import fakeslurm  # noqa: E402
+import fakeslurm
 
 pytestmark = pytest.mark.skipif(not _loopback_ok(), reason="needs loopback (run via scripts/test)")
 

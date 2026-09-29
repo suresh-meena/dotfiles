@@ -289,8 +289,8 @@ def _valid_envelope(value: Any, rc: int | None, *, expected_verb: str | None,
         if target != expected_target and not (target is None and outcome in {"refused", "timeout"}
                                               and not executed):
             return False
-    for field in ("target", "route"):
-        if value.get(field) is not None and not isinstance(value[field], str):
+    for key in ("target", "route"):
+        if value.get(key) is not None and not isinstance(value[key], str):
             return False
     remote_code = value.get("remote_exit_code")
     if remote_code is not None and type(remote_code) is not int:

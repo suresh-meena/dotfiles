@@ -67,7 +67,7 @@ def test_node_launcher_disables_bytecode_before_import():
     node = SimpleNamespace(id="ws", backend="bare", control_root=root, fleetctl_target="ws")
     executor = BareExecutor(object(), SimpleNamespace(nodes=[node]))
     argv = executor._shim("ws", "status", "att_1")
-    assert argv[4:] == ["--root", root, "status", "att_1"]
+    assert argv == ["python3", "-c", NODE_LAUNCHER, shim, "--root", root, "status", "att_1"]
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "shim.py"

@@ -47,7 +47,7 @@ def test_commit_boundary_rollback_and_committed_reopen(tmp_path):
         except RuntimeError:
             pass
         else:
-            assert False, "injected failure swallowed"
+            raise AssertionError("injected failure swallowed")
         assert store.run_sync(lambda c: c.execute(
             "SELECT 1 FROM controller_meta WHERE key='boundary'").fetchone()) is None
         store.run_sync(lambda c: c.execute(

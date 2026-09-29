@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from fleetq import auth
-from fleetq.engine import state
 from fleetq.executors.fake import FakeNode
 
 from harness import Harness

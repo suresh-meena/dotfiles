@@ -26,7 +26,6 @@ MAX_ARGV = 4096
 MAX_ARG_LEN = 32 * 1024
 MAX_ENV = 64
 MAX_ENV_VALUE = 4096
-MAX_NAME = 128
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 # Variables the scheduler owns (§6.1). Setting them would silently change

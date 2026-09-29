@@ -9,7 +9,6 @@ never lost. No read, wait, log or UI request causes a remote call (invariant 8).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import secrets
@@ -573,9 +572,15 @@ def create_app(rt: Runtime) -> FastAPI:
         if row is None or rt.artifact_dir is None:
             raise FqError("not_found", f"job {job_id} has no collected artifact {relpath!r}")
         source_path = Path(row["local_path"])
-        path = source_path.resolve()
-        root = rt.artifact_dir.resolve()
-        if root not in path.parents or source_path.is_symlink() or not path.is_file():
+        artifact_dir = rt.artifact_dir
+
+        def stored_file() -> Path | None:
+            path = source_path.resolve()
+            if artifact_dir.resolve() not in path.parents or source_path.is_symlink() or not path.is_file():
+                return None
+            return path
+        path = await asyncio.to_thread(stored_file)
+        if path is None:
             raise FqError("not_found", f"artifact {relpath!r} is not in the artifact store")
         return FileResponse(path, media_type="application/octet-stream",
                             headers={"X-Fq-Sha256": row["sha256"] or "", "Cache-Control": "no-store"})

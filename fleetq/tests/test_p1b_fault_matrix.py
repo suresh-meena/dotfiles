@@ -10,7 +10,7 @@ import json
 import subprocess
 import sys
 
-from test_fq_node import FLEET, SHIM, att, node
+from test_fq_node import FLEET, SHIM, att, node  # noqa: F401 (fixture)
 
 
 def test_unpublished_stage_is_inert_and_published_stage_is_preparable(node):

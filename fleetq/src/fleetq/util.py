@@ -43,10 +43,6 @@ def digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(canonical_json(value).encode()).hexdigest()
 
 
-def sha256_hex(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def write_atomic(path: Path, data: bytes, mode: int = 0o600) -> None:
     """Write-temp, fsync, rename, fsync the directory (§2.6)."""
     path = Path(path)

@@ -40,7 +40,6 @@ class AttemptContext:
     bundle_path: Path | None = None
     bundle_digest: str | None = None
     queue: str | None = None
-    profile: dict[str, Any] = field(default_factory=dict)
     array_index: int | None = None       # exported to the payload as FQ_ARRAY_TASK_ID
 
 

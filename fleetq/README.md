@@ -16,6 +16,12 @@ fix, or its distribution backport must be recorded in the daemon config.
 The installer uses the uv-generated `requirements-daemon.lock` with pip's
 `--require-hashes` and does not resolve unpinned runtime packages.
 
+`scripts/test` runs the suite with no network route. `ruff check .` looks for
+unused imports and variables, likely bugs, and blocking calls in async code;
+the rules are in `pyproject.toml`. From the repository root, `ruff check
+fleetmon fleetq shared/fleet-dotfiles/bin/fleetctl shared/fleet-dotfiles/tests`
+checks all three fleet tools with their own configs.
+
 The config is `~/.config/fleetq/fleetqd.toml` by default:
 
 ```toml

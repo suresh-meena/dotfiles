@@ -9,7 +9,6 @@ import os
 import pathlib
 import resource
 import shutil
-import stat
 import tarfile
 import time
 

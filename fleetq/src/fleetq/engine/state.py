@@ -70,7 +70,6 @@ POSSIBLY_LIVE_STATES = frozenset({
     "SUBMITTED", "RUNNING", "STOPPING", "STOPPED",
 })
 FINAL_ATTEMPT_STATES = frozenset({"REFUSED", "NEVER_STARTED", "RELEASED"})
-TERMINAL_JOB_PHASES = frozenset({"TERMINAL"})
 
 
 # ---- events --------------------------------------------------------------------

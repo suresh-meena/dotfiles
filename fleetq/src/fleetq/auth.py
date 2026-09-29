@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .errors import FqError
-from .util import new_id, parse_utc, utcnow
+from .util import parse_utc, utcnow
 
 # read_all: see everyone's jobs, change nothing -- for dashboards such as fleetmon.
 SCOPES = frozenset({"read", "read_all", "logs", "submit", "manage_own", "manage_all", "nodes", "admin", "permits"})
@@ -153,7 +153,3 @@ def can_read(principal: Principal, job: sqlite3.Row) -> bool:
     if not principal.has("read"):
         return False
     return job["owner"] == principal.owner
-
-
-def new_request_key() -> str:
-    return new_id("idem")

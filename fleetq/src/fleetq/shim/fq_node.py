@@ -53,7 +53,7 @@ from typing import Any
 try:  # concatenated build: bundles.py precedes this file
     bundle_extract  # type: ignore[used-before-def]  # noqa: B018
 except NameError:  # pragma: no cover - import path in tests and development
-    from fleetq.bundles import BundleError, BundleLimits, bundle_extract  # type: ignore
+    from fleetq.bundles import BundleError, bundle_extract  # type: ignore
 
 SHIM_VERSION = "1"
 LOCK_TIMEOUT_S = 20

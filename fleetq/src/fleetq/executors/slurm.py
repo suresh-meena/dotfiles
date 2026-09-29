@@ -119,7 +119,6 @@ class SlurmExecutor:
 
     async def managed_queue_snapshot(self, target: str) -> dict[str, Any]:
         """Fetch one bounded all-user squeue snapshot under the monitor budget."""
-        site = self._site(target)
         res, retry, _ = await self._exec(
             target, MANAGED_SQUEUE_SCRIPT, op_class="monitor", mutation=False, rpc=1
         )

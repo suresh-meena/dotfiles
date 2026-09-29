@@ -24,6 +24,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from itertools import pairwise
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -154,7 +155,7 @@ class IdleHistory:
             return False, "boot_changed_or_unknown"
         # The backward walk stopped at a hole if there was not enough history;
         # this validates every interval in the selected coverage tail.
-        for a, b in zip(window, window[1:]):
+        for a, b in pairwise(window):
             if b.sample_time - a.sample_time > pol["max_gap_s"]:
                 return False, "history_gap"
         baseline = float((pol.get("baselines") or {}).get(uuid, pol.get("default_baseline_mib", 0)))

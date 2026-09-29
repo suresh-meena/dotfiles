@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import secrets
 from dataclasses import dataclass, field
-from typing import Any
 
 from .base import (
     AttemptContext,
@@ -205,7 +204,3 @@ class FakeExecutor:
 
     def entries(self) -> dict[str, int]:
         return dict(self.payload_entries)
-
-
-def describe(executor: FakeExecutor) -> dict[str, Any]:  # pragma: no cover - debugging aid
-    return {name: {aid: vars(rec) for aid, rec in node.attempts.items()} for name, node in executor.nodes.items()}

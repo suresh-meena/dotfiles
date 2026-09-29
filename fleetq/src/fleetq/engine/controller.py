@@ -27,7 +27,7 @@ import datetime as _dt
 import json
 import logging
 import sqlite3
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -36,7 +36,7 @@ from ..executors.base import AttemptContext, Executor, LaunchKind, ObserveResult
 from ..util import parse_utc, utcnow
 from . import artifacts, fence, state
 from .admission import effective_quota
-from .placement import Placement, SharedCapacity, place_job
+from .placement import SharedCapacity, place_job
 from .fence import ControllerIdentity
 
 log = logging.getLogger("fleetq.controller")
@@ -926,7 +926,6 @@ class Controller:
         known = {r["uuid"] for r in gpu_rows}
         facts = (obs.node_facts or {}).get("gpu_processes")
         expected_boot = obs.boot_id
-        clean_reasons = {"gpu_attribution_unknown", "gpu_process_unattributed", "gpu_foreign_process"}
 
         def drain(uuid: str, reason: str) -> None:
             conn.execute("UPDATE node_gpus SET drained=1, drain_reason=? WHERE node_id=? AND uuid=?"
@@ -1259,7 +1258,6 @@ class Controller:
             "SELECT detail_json FROM placement_decisions WHERE attempt_id = ? AND decision = 'placed'",
             (att["id"],)).fetchone()
         placed = json.loads(decision["detail_json"]) if decision else {}
-        node = conn.execute("SELECT config_json FROM nodes WHERE id = ?", (att["target"],)).fetchone()
         bundle_path = None
         if job["bundle_digest"] and self.bundle_dir is not None:
             bundle_path = self.bundle_dir / (job["bundle_digest"].split(":", 1)[1] + ".tar.gz")
@@ -1271,7 +1269,6 @@ class Controller:
                 "mem_mb": amounts.get("ram"), "cpus": amounts.get("cpu"), "scratch_mb": amounts.get("scratch"),
                 "gpus": len(gpus)},
             bundle_path=bundle_path, bundle_digest=job["bundle_digest"], queue=placed.get("queue"),
-            profile=json.loads(node["config_json"] or "{}") if node else {},
             array_index=job["array_index"],
         )
 

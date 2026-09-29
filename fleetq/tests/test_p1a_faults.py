@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 
-import pytest
 
 from fleetq.db.store import Store, migrate
 from fleetq import cli

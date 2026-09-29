@@ -62,14 +62,6 @@ def _reserved_gpus(conn: sqlite3.Connection, node_id: str) -> set[str]:
     }
 
 
-def _owner_gpus_in_use(conn: sqlite3.Connection, owner: str) -> int:
-    return conn.execute(
-        "SELECT COUNT(*) FROM resource_reservations r JOIN attempts a ON a.id = r.attempt_id"
-        " JOIN jobs j ON j.id = a.job_id WHERE j.owner = ? AND r.kind = 'gpu' AND r.released_at IS NULL",
-        (owner,),
-    ).fetchone()[0]
-
-
 def _token_gpus_in_use(conn: sqlite3.Connection, token_id: str) -> int:
     return conn.execute(
         "SELECT COUNT(*) FROM resource_reservations r JOIN attempts a ON a.id = r.attempt_id"

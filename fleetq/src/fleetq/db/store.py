@@ -78,7 +78,6 @@ class Store:
             maxsize=MAX_QUEUE_DEPTH
         )
         self._thread: threading.Thread | None = None
-        self._conn: sqlite3.Connection | None = None
         self._ready = threading.Event()
         self._open_error: BaseException | None = None
 
@@ -109,7 +108,6 @@ class Store:
             conn.execute("PRAGMA synchronous = FULL")
             conn.execute("PRAGMA busy_timeout = 5000")
             migrate(conn)
-            self._conn = conn
         except BaseException as exc:  # surfaced to open()
             self._open_error = exc
             self._ready.set()

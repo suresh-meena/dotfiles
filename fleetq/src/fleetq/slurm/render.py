@@ -200,7 +200,7 @@ def render_batch(*, attempt_id: str, adir: str, root: str, request: dict[str, An
         # '..' paths) and its bytes are checked here before extraction, into a
         # fresh private directory, refusing to overwrite anything (§6.3).
         extract = "\n".join([
-            f'CODE="$D/code"',
+            'CODE="$D/code"',
             'if [ ! -d "$CODE" ]; then',
             f'  echo "{bundle_sha256}  {cached}" | sha256sum -c --status - || {{ echo "fleetq: bundle integrity check failed" >&2; fq_result 125 setup_failed; exit 125; }}',
             '  TMPC="$D/.code.$$"; mkdir -m 700 "$TMPC" || exit 125',
