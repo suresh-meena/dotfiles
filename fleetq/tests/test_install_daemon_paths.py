@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -20,6 +21,40 @@ def test_install_ignores_preexisting_unit_tmp_symlink(tmp_path: Path) -> None:
     current_tmp.parent.mkdir(parents=True)
     current_tmp.write_text("keep me too\n")
 
+    env = _fake_install_env(tmp_path, home)
+    result = subprocess.run(
+        [str(ROOT / "scripts/install-daemon")],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert outside.read_text() == "keep me\n"
+    assert (unit_dir / "fleetq.service.tmp").is_symlink()
+    assert current_tmp.read_text() == "keep me too\n"
+    assert (unit_dir / "fleetq.service").read_text() == (ROOT / "packaging/fleetq.service").read_text()
+
+
+def test_a_second_install_under_a_group_writable_umask_succeeds(tmp_path: Path) -> None:
+    """Ubuntu's umask 002 must not leave the install root group-writable."""
+    home = tmp_path / "home"
+    home.mkdir()
+    env = _fake_install_env(tmp_path, home)
+    for attempt in range(2):
+        if attempt:
+            time.sleep(1.1)  # release directories are named to the second
+        result = subprocess.run(
+            ["sh", "-c", 'umask 002; exec "$0"', str(ROOT / "scripts/install-daemon")],
+            cwd=ROOT, env=env, text=True, capture_output=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+    assert ((home / ".local/share/fleetq").stat().st_mode & 0o777) == 0o700
+
+
+def _fake_install_env(tmp_path: Path, home: Path) -> dict[str, str]:
     fake_python = tmp_path / "python"
     fake_python.write_text(
         "#!/bin/bash\n"
@@ -39,23 +74,9 @@ def test_install_ignores_preexisting_unit_tmp_symlink(tmp_path: Path) -> None:
     loginctl.write_text("#!/bin/sh\necho Linger=no\n")
     loginctl.chmod(0o755)
 
-    env = os.environ | {
+    return os.environ | {
         "HOME": str(home),
         "USER": "test-user",
         "FLEETQ_PYTHON": str(fake_python),
         "PATH": f"{fake_bin}:/usr/bin:/bin",
     }
-    result = subprocess.run(
-        [str(ROOT / "scripts/install-daemon")],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert outside.read_text() == "keep me\n"
-    assert (unit_dir / "fleetq.service.tmp").is_symlink()
-    assert current_tmp.read_text() == "keep me too\n"
-    assert (unit_dir / "fleetq.service").read_text() == (ROOT / "packaging/fleetq.service").read_text()

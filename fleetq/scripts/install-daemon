@@ -10,6 +10,10 @@
 # places the user unit. It never enables, starts or restarts the service and
 # never contacts another machine: the operator does that, after reading the plan.
 set -euo pipefail
+# Everything this creates is private to the user. Under Ubuntu's default
+# umask 002, directories that mkdir -p implied (the install root, ~/.local)
+# came out group-writable, and check_chain refused every later install.
+umask 077
 
 usage() { echo 'usage: install-daemon [--dry-run] [--python PYTHON]' >&2; }
 dry_run=0
