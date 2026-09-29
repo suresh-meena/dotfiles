@@ -15,15 +15,14 @@ import time
 from pathlib import Path
 
 import pytest
+from test_service import Controller, config, gpu_document, inventory
+from test_web import request
 
 from fleetmon.config import ConfigError, load_config
 from fleetmon.poller import PollResult
 from fleetmon.protocol import encode_snapshot
 from fleetmon.scheduler import SchedulerClient
 from fleetmon.service import HubRuntime
-
-from test_service import Controller, config, gpu_document, inventory
-from test_web import request
 
 CONTRACT = Path(__file__).resolve().parents[1] / "contracts" / "fleetmon-capacity-v1.schema.json"
 FLEETQ_COPY = Path(__file__).resolve().parents[2] / "fleetq" / "contracts" / "fleetmon-capacity-v1.schema.json"
@@ -156,7 +155,7 @@ def fleetqd():
     state = {"calls": [], "delay": 0.0, "body": None, "status": 200, "auth": []}
 
     class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             state["calls"].append(self.path)
             state["auth"].append(self.headers.get("Authorization"))
             time.sleep(state["delay"])
@@ -317,7 +316,7 @@ def _spread(runtime, ages):
     """Place the recent observations at these ages (oldest first), like polls every ~50 s."""
     now = time.time()
     for ring in runtime._capacity_ring.values():
-        for obs, age in zip(ring, ages):
+        for obs, age in zip(ring, ages, strict=False):
             obs["received_at"] = now - age
     return now
 

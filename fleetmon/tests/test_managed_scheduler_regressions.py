@@ -6,12 +6,12 @@ import asyncio
 import json
 import time
 
+from test_service import config
+
+import fleetmon.service as service_module
 from fleetmon.discovery import Inventory, Protocol, Target
 from fleetmon.poller import PollResult
-import fleetmon.service as service_module
 from fleetmon.service import HubRuntime
-
-from test_service import config
 
 
 class NoRemoteCalls:

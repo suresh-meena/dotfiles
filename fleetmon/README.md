@@ -237,3 +237,9 @@ directions, and neither direction can change anything:
 - **Managed nodes, fleetq → fleetmon.** The read-only Nodes page uses
   fleetqd's cached `/api/v1/nodes` response to show fleetq node state and GPU
   reservations. It does not show all Slurm nodes or other users' allocations.
+
+## Development checks
+
+`.venv/bin/python -m pytest -q` runs the test suite. `ruff check .` looks for
+unused imports and variables, likely bugs, and blocking calls in async code;
+the rules are in `pyproject.toml`.

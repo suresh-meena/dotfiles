@@ -23,7 +23,7 @@ MAX_CACHE_ENTRIES = 64
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:  # noqa: D401
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
         return None
 
 
