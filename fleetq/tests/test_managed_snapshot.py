@@ -71,3 +71,41 @@ def test_invalid_snapshot_config_is_failed_closed(db):
     doc = db.run_sync(lambda c: snapshot.managed_slurm_document(c, now="2026-09-28T00:00:00.000000Z"))
     assert doc["sites"][0]["complete"] is False
     assert doc["sites"][0]["error"] == "invalid_config"
+
+
+def test_text_fallback_runs_where_squeue_has_no_json(tmp_path):
+    """Old Slurm (19.05) has no `squeue --json`, and no squeue has --parsable2."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    fakes = Path(__file__).parent / "fakes"
+    sys.path.insert(0, str(fakes))
+    import fakeslurm
+
+    fakeslurm.configure(tmp_path, partitions={"gpu": {}}, start_delay_s=3600)
+    env = {**os.environ, "FAKE_SLURM_DIR": str(tmp_path), "PATH": f"{fakes / 'bin'}:{os.environ['PATH']}"}
+    job = tmp_path / "job.sh"
+    job.write_text("#!/bin/sh\ntrue\n")
+    subprocess.run(["sbatch", "-p", "gpu", "--gres=gpu:2", str(job)], env=env, check=True, capture_output=True)
+    assert "--parsable2" not in snapshot.MANAGED_SQUEUE_TEXT_SCRIPT
+    out = subprocess.run(["sh", "-c", snapshot.MANAGED_SQUEUE_TEXT_SCRIPT], env=env,
+                         check=True, capture_output=True, text=True).stdout
+    rows = snapshot.parse_squeue_text(out)
+    assert len(rows) == 1 and rows[0]["state"] == "PENDING"
+    assert rows[0]["array_task_id"] is None and rows[0]["start"] is None
+    assert rows[0]["req_tres"] == "gpu:2"
+
+
+def test_text_fallback_format_matches_fleetmon():
+    from pathlib import Path
+
+    fleetmon_slurm = Path(__file__).resolve().parents[2] / "fleetmon" / "src" / "fleetmon" / "slurm.py"
+    if not fleetmon_slurm.exists():
+        pytest.skip("fleetmon checkout not beside fleetq")
+    namespace: dict = {}
+    for line in fleetmon_slurm.read_text().splitlines():
+        if line.startswith("SQUEUE_TEXT_FORMAT = "):
+            exec(line, namespace)
+    assert namespace["SQUEUE_TEXT_FORMAT"] == snapshot.SQUEUE_TEXT_FORMAT

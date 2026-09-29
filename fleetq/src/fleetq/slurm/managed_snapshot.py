@@ -27,11 +27,11 @@ MAX_INTERVAL_S = 3600.0
 # Site opting in to this feature runs this one-shot script. Fleetctl's bounded
 # stdout capture is the hard output cap; a truncated envelope is never parsed.
 MANAGED_SQUEUE_SCRIPT = "exec squeue --json"
-MANAGED_SQUEUE_TEXT_SCRIPT = (
-    "exec squeue --noheader --parsable2 --Format "
-    "'Cluster,JobIDRaw,ArrayJobID,ArrayTaskID,UserName,Account,State,Partition,"
-    "NodeList,StartTime,EndTime,TimeLimit,Elapsed,AllocTRES,ReqTRES'"
-)
+# squeue has no --parsable2 (that is sacct's), and old Slurm such as 19.05 has
+# no --json; -o %-codes with "|" separators work on every release. The format
+# must stay identical to Fleetmon's SQUEUE_TEXT_FORMAT.
+SQUEUE_TEXT_FORMAT = "|%A|%F|%K|%u|%a|%T|%P|%N|%S|%e|%l|%M||%b"
+MANAGED_SQUEUE_TEXT_SCRIPT = f"exec squeue --noheader --format='{SQUEUE_TEXT_FORMAT}'"
 
 SQUEUE_TEXT_FIELDS = (
     "cluster", "job_id", "array_job_id", "array_task_id", "user", "account", "state",
@@ -117,7 +117,10 @@ def _split_parsable(line: str) -> list[str]:
 
 
 def parse_squeue_text(data: str | bytes) -> list[dict[str, Any]]:
-    """Fleetmon's fixed ``parsable2`` fallback, rejecting rather than truncating."""
+    """Fleetmon's ``|``-separated fallback, rejecting rather than truncating.
+
+    squeue prints ``N/A`` for a value it does not have, which reads as absent.
+    """
     if isinstance(data, bytes):
         if len(data) > MAX_SQUEUE_BYTES:
             raise ValueError("squeue output exceeds limit")
@@ -136,7 +139,8 @@ def parse_squeue_text(data: str | bytes) -> list[dict[str, Any]]:
             len(value.encode("utf-8")) > MAX_ROW_BYTES for value in values
         ):
             raise ValueError("squeue row has unexpected columns")
-        row = {key: (value or None) for key, value in zip(SQUEUE_TEXT_FIELDS, values, strict=True)}
+        row = {key: (None if value in ("", "N/A") else value)
+               for key, value in zip(SQUEUE_TEXT_FIELDS, values, strict=True)}
         row["job_id"] = _job_id(row["job_id"])
         rows.append(row)
     return rows

@@ -410,11 +410,20 @@ def _visible_in_squeue(cfg: dict[str, Any], job: dict[str, Any], now: float) -> 
     return job["end_time"] is not None and now <= job["end_time"] + float(cfg["min_job_age_s"])
 
 
+def _stamp(epoch: float | None) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(epoch)) if epoch else "N/A"
+
+
 def _field(job: dict[str, Any], spec: str) -> str:
     return {
         "%i": str(job["id"]), "%A": str(job["id"]), "%T": job["state"], "%j": job["name"],
         "%r": job["reason"] if job["state"] == "PENDING" else "None",
         "%N": NODE if job["start_time"] else "", "%P": job["partition"], "%a": job["account"] or "",
+        # The rest follow real squeue -o: N/A where the job has no value.
+        "%F": str(job["id"]), "%K": "N/A", "%u": os.environ.get("USER", "fq"),
+        "%S": _stamp(job["start_time"]), "%e": _stamp(job["end_time"]),
+        "%l": f"{int(job['time_s']) // 60}:00", "%M": "0:00",
+        "%b": f"gpu:{job['gpus']}" if job.get("gpus") else "N/A",
     }.get(spec, spec)
 
 
@@ -425,6 +434,9 @@ def main_squeue(argv: list[str]) -> int:
         tok = argv[i]
         if tok in ("-h", "--noheader"):
             header = False
+        elif tok in ("-P", "--parsable2"):
+            # A sacct option; real squeue refuses it on every release.
+            return _die(f"squeue: unrecognized option '{tok}'")
         elif tok in ("-j", "--jobs") or tok.startswith("--jobs="):
             ids = (tok.split("=", 1)[1] if "=" in tok else argv[(i := i + 1)]).split(",")
         elif tok in ("-n", "--name") or tok.startswith("--name="):
