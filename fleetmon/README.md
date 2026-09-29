@@ -92,16 +92,26 @@ after inventory, DB migration, and the web listener have started.
 
 ## Helper installation
 
-`./scripts/install-helper --dry-run TARGET` performs local fleetctl admission
-checks and prints the intended one-target operation. It never contacts or
-changes the target. The real helper installer intentionally exits with a
-clear error for now: a released/reproducible helper artifact, remote Python
-selection, canary validation, and atomic rollback contract still need to be
-implemented and tested against the installed `fleetctl` interface.
+Run these on the hub, from a checkout, one target at a time. Build the helper
+wheel offline, preview the operation, then install it:
 
-This fail-closed behavior is deliberate. No command in Fleetmon uses raw
-`ssh`/`scp`, root, system Python, a remote service, or an implicit all-host
-selector for helper deployment.
+```bash
+scripts/build-helper-wheel            # writes dist/fleetmon-<version>-py3-none-any.whl
+scripts/install-helper --dry-run --target NAME
+scripts/install-helper --target NAME --wheel dist/fleetmon-<version>-py3-none-any.whl \
+    --expect-sha256 <sha256 from the build> --i-authorize-target-NAME
+```
+
+The dry run contacts nothing. A real install needs a `workstation` or
+`compute` target on a `direct` protocol and an existing Python 3.10+ there
+(`python3.10`..`python3.14` on PATH or in `~/.local/bin`); it never installs a
+Python. It builds a versioned venv under `~/.local/share/fleetmon/helpers/`,
+validates one snapshot, switches `helpers/current` atomically (rolling back on
+failure), and prints the helper path the hub records. Set `FLEETCTL` if
+`fleetctl` is not on PATH.
+
+No command in Fleetmon uses raw `ssh`/`scp`, root, system Python, a remote
+service, or an implicit all-host selector for helper deployment.
 
 ## Configuration
 
