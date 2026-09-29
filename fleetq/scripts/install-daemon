@@ -178,5 +178,5 @@ cat <<EOF
 next steps (not done for you):
   systemctl --user daemon-reload
   $([[ $upgrade == 1 ]] && echo "systemctl --user restart fleetq.service   # restart runs full reconciliation" \
-                        || echo "fleetqd init --config $config && systemctl --user enable --now fleetq.service")
+                        || echo "fleetqd --config $config init && systemctl --user enable --now fleetq.service")
 EOF
