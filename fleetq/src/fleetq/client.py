@@ -44,6 +44,59 @@ _CODE_EXIT = {"unauthorized": 6, "not_found": 3, "bundle_missing": 3, "rate_limi
               "internal": 7, "draining": 5, "not_ready": 5, "insufficient_storage": 5}
 WAIT_SLICE_S = 55
 
+# Progress bars are meant to redraw a terminal row. When `fq logs` is captured
+# by an agent or piped to another command, those control characters become
+# literal noise and can repeat thousands of times. Keep the exact log available
+# via `--raw`, while making captured human output readable by default.
+_ANSI_LOG_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\)|[@-_])"
+)
+_TQDM_LINE = re.compile(
+    r"^(?P<label>.*?)(?P<pct>\d{1,3})%\s*\|[^|]*\|\s*"
+    r"(?P<done>[\d,]+)/(?P<total>[\d,]+)(?P<tail>.*)$"
+)
+
+
+def _clean_log_output(data: bytes) -> bytes:
+    """Remove terminal redraw noise and keep only the latest tqdm row per label."""
+    text = _ANSI_LOG_ESCAPE.sub("", data.decode("utf-8", errors="replace"))
+    lines: list[str] = []
+    current: list[str] = []
+    for char in text:
+        if char == "\r":
+            # tqdm uses CR to return to the start of the current terminal row.
+            current.clear()
+        elif char == "\n":
+            lines.append("".join(current))
+            current.clear()
+        elif char == "\b":
+            if current:
+                current.pop()
+        elif char == "\t" or ord(char) >= 32:
+            current.append(char)
+        # Drop other terminal control characters.
+    if current:
+        lines.append("".join(current))
+
+    rendered: list[str] = []
+    progress_slots: dict[str, int] = {}
+    for line in lines:
+        match = _TQDM_LINE.match(line)
+        if match is None:
+            rendered.append(line)
+            continue
+        label = match.group("label").strip() or "progress"
+        summary = (f"{match.group('label')}{match.group('pct')}% "
+                   f"({match.group('done')}/{match.group('total')}){match.group('tail')}")
+        slot = progress_slots.get(label)
+        if slot is None:
+            progress_slots[label] = len(rendered)
+            rendered.append(summary)
+        else:
+            rendered[slot] = summary
+
+    return "\n".join(rendered).encode("utf-8")
+
 
 class ClientError(Exception):
     def __init__(self, exit_code: int, envelope: dict[str, Any]) -> None:
@@ -738,6 +791,8 @@ def cmd_logs(api: Api, args) -> int:
     collected = bytearray()
     last: dict[str, Any] = {}
     out = sys.stdout.buffer
+    clean_captured = not args.json and not args.raw and not out.isatty()
+    display_buffer = bytearray() if clean_captured else None
     try:
         while True:
             q = base_q + "&max_bytes=262144" + (f"&offset={offset}" if offset is not None else "")
@@ -754,8 +809,11 @@ def cmd_logs(api: Api, args) -> int:
             if args.json:
                 collected += data
             elif data:
-                out.write(data)
-                out.flush()
+                if display_buffer is not None:
+                    display_buffer += data
+                else:
+                    out.write(data)
+                    out.flush()
             offset = env.get("next_offset", 0)
             if offset < env.get("end", 0):
                 continue                               # more is cached: keep paging
@@ -763,13 +821,20 @@ def cmd_logs(api: Api, args) -> int:
                 break
             _time.sleep(2.0)
     except KeyboardInterrupt:
+        if display_buffer is not None:
+            out.write(_clean_log_output(bytes(display_buffer)))
+            out.flush()
         return 130
     if args.json:
         emit(args, {**last, "data_b64": base64.b64encode(bytes(collected)).decode()})
-    elif not last.get("complete") and last.get("attempt") is not None:
-        age = last.get("age_s")
-        print("fq: log is still being collected" + (f" (cache {age:.0f}s old)" if age is not None else ""),
-              file=sys.stderr)
+    else:
+        if display_buffer is not None:
+            out.write(_clean_log_output(bytes(display_buffer)))
+            out.flush()
+        if not last.get("complete") and last.get("attempt") is not None:
+            age = last.get("age_s")
+            print("fq: log is still being collected" + (f" (cache {age:.0f}s old)" if age is not None else ""),
+                  file=sys.stderr)
     return 0
 
 
@@ -1026,6 +1091,8 @@ def build_parser() -> argparse.ArgumentParser:
     lg.add_argument("--offset", type=int)
     lg.add_argument("--attempt", type=int)
     lg.add_argument("--follow", "-f", action="store_true", help="keep reading until the log is complete")
+    lg.add_argument("--raw", action="store_true",
+                    help="write exact stored bytes instead of cleaning captured terminal progress output")
     ft = sub.add_parser("fetch", help="download a job's collected outputs")
     ft.add_argument("job", type=int)
     ft.add_argument("paths", nargs="*", help="only these relative paths (default: all)")
