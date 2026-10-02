@@ -13,8 +13,10 @@ import asyncio
 import json
 import logging
 import urllib.request
+from urllib.parse import urlsplit, urlunsplit
 
 from ..engine.idle import IdleHistory, ingest_capacity_feed
+from .usage import UsageCache
 
 log = logging.getLogger("fleetq.feed")
 POLL_S = 10.0
@@ -33,6 +35,25 @@ def fetch(url: str, token: str | None = None) -> dict:
     if len(raw) > MAX_BYTES:
         raise ValueError("capacity feed exceeds the size cap")
     return json.loads(raw)
+
+
+def usage_url(capacity_url: str) -> str:
+    parts = urlsplit(capacity_url)
+    suffix = "/api/feed/v1/capacity"
+    if not parts.path.endswith(suffix):
+        raise ValueError("fleetmon_feed_url must end in /api/feed/v1/capacity for usage")
+    return urlunsplit(parts._replace(path=parts.path[:-len(suffix)] + "/api/feed/v1/usage"))
+
+
+async def poll_usage_forever(cache: UsageCache, url: str, token: str | None = None) -> None:
+    while True:
+        try:
+            doc = await asyncio.to_thread(fetch, usage_url(url), token)
+            cache.update(doc)
+        except Exception:  # keep the last measurement; report the source outage
+            cache.failed = True
+            log.warning("usage feed unavailable")
+        await asyncio.sleep(POLL_S)
 
 
 async def poll_forever(history: IdleHistory, url: str, token: str | None = None) -> None:

@@ -1,0 +1,204 @@
+{
+  "$defs": {
+    "_Gpu": {
+      "properties": {
+        "uuid": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Uuid",
+          "type": "string"
+        },
+        "index": {
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Model"
+        },
+        "utilization_fraction": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Utilization Fraction"
+        },
+        "vram_used_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Vram Used Bytes"
+        },
+        "vram_total_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Vram Total Bytes"
+        },
+        "supported": {
+          "title": "Supported",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "uuid",
+        "index",
+        "model",
+        "utilization_fraction",
+        "vram_used_bytes",
+        "vram_total_bytes",
+        "supported"
+      ],
+      "title": "_Gpu",
+      "type": "object"
+    },
+    "_Host": {
+      "properties": {
+        "target": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Target",
+          "type": "string"
+        },
+        "state": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "State",
+          "type": "string"
+        },
+        "sample_time": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sample Time"
+        },
+        "freshness_seconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 259200,
+          "title": "Freshness Seconds",
+          "type": "number"
+        },
+        "cpu_busy_fraction": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Cpu Busy Fraction"
+        },
+        "ram_used_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ram Used Bytes"
+        },
+        "ram_total_bytes": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ram Total Bytes"
+        },
+        "gpus": {
+          "items": {
+            "$ref": "#/$defs/_Gpu"
+          },
+          "maxItems": 64,
+          "title": "Gpus",
+          "type": "array"
+        }
+      },
+      "required": [
+        "target",
+        "state",
+        "sample_time",
+        "freshness_seconds",
+        "cpu_busy_fraction",
+        "ram_used_bytes",
+        "ram_total_bytes",
+        "gpus"
+      ],
+      "title": "_Host",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema": {
+      "const": "fleetmon.usage/v1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "generated_at": {
+      "minimum": 0,
+      "title": "Generated At",
+      "type": "number"
+    },
+    "hosts": {
+      "items": {
+        "$ref": "#/$defs/_Host"
+      },
+      "maxItems": 256,
+      "title": "Hosts",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema",
+    "generated_at",
+    "hosts"
+  ],
+  "title": "Fleetmon cached usage feed",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fleetmon.usage/v1",
+  "description": "Latest stored telemetry only. Fractions are 0\u20131; memory is bytes. sample_time is the hub receipt time, never the response generation time. Unknown metrics are null. Additive changes allowed within v1."
+}

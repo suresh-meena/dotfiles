@@ -159,6 +159,7 @@ def build_runtime(cfg: DaemonConfig, *, executors: dict[str, Any] | None = None,
                       log_cache=log_cache, artifact_dir=cfg.state_dir / "artifacts", ui_origin=cfg.ui_origin,
                       ui_dev_mode=cfg.dev_mode, clock_ok=clock_ok, clock_health=clock_health)
     controller.outbox = outbox
+    runtime.usage_cache.configured = bool(cfg.fleetmon_feed_url)
     return store, controller, runtime
 
 
@@ -187,15 +188,17 @@ async def serve(cfg: DaemonConfig, *, restored_from_backup: bool = False) -> Non
     clock_task = asyncio.create_task(runtime.clock_health.run()) if runtime.clock_health else None
     outbox_task = asyncio.create_task(controller.outbox.run(store))
     if cfg.fleetmon_feed_url:
-        from .feeds.fleetmon import poll_forever
+        from .feeds.fleetmon import poll_forever, poll_usage_forever
         feed_task = asyncio.create_task(poll_forever(controller.shared_capacity, cfg.fleetmon_feed_url))
+        usage_task = asyncio.create_task(poll_usage_forever(runtime.usage_cache, cfg.fleetmon_feed_url))
     else:
         feed_task = asyncio.create_task(asyncio.sleep(0))   # no feed: shared nodes stay unplaceable
+        usage_task = asyncio.create_task(asyncio.sleep(0))
     srv_task = asyncio.create_task(server.serve())
     await stop.wait()
     server.should_exit = True
     await controller.stop()
-    tasks = [ctl_task, outbox_task, feed_task]
+    tasks = [ctl_task, outbox_task, feed_task, usage_task]
     if clock_task is not None:
         tasks.append(clock_task)
     for task in tasks:

@@ -27,6 +27,7 @@ from ..db.store import Store
 from ..engine import admission, fence, state
 from ..engine.controller import Controller
 from ..errors import FqError
+from ..feeds.usage import UsageCache
 from ..util import utcnow
 from ..views import job_envelope, job_summary
 
@@ -107,6 +108,7 @@ class Runtime:
     controller_task: asyncio.Task | None = None
     ui_origin: str | None = None
     ui_dev_mode: bool = False
+    usage_cache: UsageCache = field(default_factory=UsageCache)
 
 
 def _error(exc: FqError) -> JSONResponse:
@@ -778,6 +780,12 @@ def create_app(rt: Runtime) -> FastAPI:
         return result
 
     # ---- nodes / admin ----------------------------------------------------------------
+
+    @app.get("/api/v1/usage")
+    async def usage(request: Request, machine: str | None = None):
+        p = await principal(request)
+        p.require("read")
+        return rt.usage_cache.view(machine)
 
     @app.get("/api/v1/nodes")
     async def nodes(request: Request):

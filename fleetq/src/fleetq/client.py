@@ -756,6 +756,54 @@ def cmd_nodes(api: Api, args) -> int:
     return 0
 
 
+def fmt_usage(env: dict) -> str:
+    def text(value):
+        return "".join(c for c in str(value) if c.isprintable()) if value is not None else "-"
+
+    def percent(value):
+        return f"{value * 100:.0f}%" if value is not None else "-"
+
+    def memory(used, total):
+        def gib(value):
+            return f"{value / 2**30:.1f}" if value is not None else "?"
+        return f"{gib(used)}/{gib(total)}" if used is not None or total is not None else "-"
+
+    rows = [["MACHINE", "STATE", "CPU", "RAM GiB", "GPU", "MODEL", "GPU %", "VRAM GiB", "AGE"]]
+    for host in env["hosts"]:
+        for gpu in host["gpus"] or [None]:
+            gpu = gpu or {}
+            state = host["state"]
+            if host["stale"] and state not in {"stale", "unknown"}:
+                state += " (stale)"
+            rows.append([
+                text(host["target"]), text(state), percent(host["cpu_busy_fraction"]),
+                memory(host["ram_used_bytes"], host["ram_total_bytes"]),
+                text(gpu.get("index")), text(gpu.get("model")),
+                percent(gpu.get("utilization_fraction")),
+                memory(gpu.get("vram_used_bytes"), gpu.get("vram_total_bytes")),
+                fmt_duration(host["sample_age_s"]),
+            ])
+    if len(rows) == 1:
+        output = "no machines in Fleetmon's cached inventory"
+    else:
+        widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+        output = "\n".join("  ".join(value.ljust(width) for value, width in zip(row, widths, strict=True)).rstrip()
+                           for row in rows)
+        output += "\nCached telemetry; memory is used/total, AGE is sample age, '-' means unavailable."
+    if env["source"]["state"] != "live":
+        output += f"\nFleetmon feed {env['source']['state']}; showing the last cached measurements."
+    return output
+
+
+def cmd_usage(api: Api, args) -> int:
+    path = "/api/v1/usage"
+    if args.machine is not None:
+        path += "?machine=" + quote(args.machine, safe="")
+    env = api.ok("GET", path)
+    emit(args, env, fmt_usage(env))
+    return 0
+
+
 def cmd_admin(api: Api, args) -> int:
     """Change one durable admission/dispatch switch on the controller."""
     switch, value = {
@@ -1100,6 +1148,8 @@ def build_parser() -> argparse.ArgumentParser:
     ft.add_argument("--overwrite", action="store_true", help="replace existing destination files")
     ft.add_argument("--attempt", type=int)
     sub.add_parser("nodes")
+    usage = sub.add_parser("usage", help="GPU, CPU and memory usage from numpi's telemetry cache")
+    usage.add_argument("machine", nargs="?", help="one Fleetmon machine (default: all)")
     admin = sub.add_parser("admin", help="pause dispatch or stop new admission while preserving cancellation")
     admin.add_argument("operation", choices=("pause", "resume", "accept-off", "accept-on"))
     node = sub.add_parser("node", help="drain or resume one node")
@@ -1127,7 +1177,7 @@ def main(argv: list[str] | None = None) -> int:
         handlers = {"submit": cmd_submit, "wait": cmd_wait, "queue": cmd_queue, "q": cmd_queue, "show": cmd_show,
                     "explain": cmd_explain, "cancel": cmd_action, "hold": cmd_action, "release": cmd_action,
                     "priority": cmd_action, "top": cmd_action, "requeue": cmd_action, "modify": cmd_modify,
-                    "nodes": cmd_nodes, "node": cmd_node_action, "admin": cmd_admin,
+                    "nodes": cmd_nodes, "usage": cmd_usage, "node": cmd_node_action, "admin": cmd_admin,
                     "whoami": cmd_whoami, "logs": cmd_logs,
                     "history": cmd_history, "sacct": cmd_history,
                     "shell": cmd_shell, "alloc": cmd_alloc, "salloc": cmd_alloc,

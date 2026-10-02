@@ -883,6 +883,36 @@ class HubRuntime:
         self._annotate_gpu_summary(rows)
         return rows
 
+    def usage_feed(self) -> dict[str, Any]:
+        """Compact latest telemetry from SQLite only; never starts collection."""
+
+        hosts = []
+        for row in self.db.overview(limit=256):
+            row = self._freshen_host(dict(row))
+            gpus = []
+            for gpu in self.db.query(
+                "SELECT uuid, idx, model, utilization, vram_used, vram_total, "
+                "supported, error FROM gpu_samples WHERE poll_id=? ORDER BY idx LIMIT 64",
+                (row["sample_poll_id"],),
+            ):
+                supported = bool(gpu["supported"]) and not gpu["error"]
+                gpus.append({
+                    "uuid": gpu["uuid"], "index": gpu["idx"], "model": gpu["model"],
+                    "utilization_fraction": gpu["utilization"] if supported else None,
+                    "vram_used_bytes": gpu["vram_used"] if supported else None,
+                    "vram_total_bytes": gpu["vram_total"] if supported else None,
+                    "supported": supported,
+                })
+            hosts.append({
+                "target": row["target"], "state": row["state"],
+                "sample_time": row["sample_received_at"],
+                "freshness_seconds": self._gpu_freshness_seconds(),
+                "cpu_busy_fraction": row["cpu_busy"],
+                "ram_used_bytes": row["ram_used"], "ram_total_bytes": row["ram_total"],
+                "gpus": gpus,
+            })
+        return {"schema": "fleetmon.usage/v1", "generated_at": time.time(), "hosts": hosts}
+
     def _classify_slots(
         self, slots_by_uuid: dict[str, list[dict[str, Any] | None]]
     ) -> dict[str, tuple[str, str]]:

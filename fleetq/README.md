@@ -171,6 +171,31 @@ dispatch waits for independent idle samples and an immediate node gate. A
 managed Slurm target must have one budgeted queue observer on fleetqd; do not
 enable duplicate direct polling in fleetmon.
 
+Read cached GPU utilization, VRAM, CPU and RAM from any client:
+
+```bash
+fq usage                 # all machines in Fleetmon's monitored inventory
+fq usage rtx4090         # one machine, by its Fleetmon/fleetctl target name
+fq --json usage rtx4090  # fq.usage/v1; fractions 0–1 and memory in bytes
+```
+
+The table lists every GPU and reports used/total memory in GiB and sample age.
+Missing measurements remain unknown (`-`); stale or unreachable hosts retain
+their last measurements with an explicit state. These are measured usage
+values, separate from the fleetq reservations shown by `fq nodes`. Slurm login
+targets do not provide compute-node GPU telemetry through this feed.
+
+Configure the existing `[daemon] fleetmon_feed_url` capacity URL on numpi and
+upgrade both Fleetmon and fleetqd. Fleetqd derives `/api/feed/v1/usage` from
+that URL and refreshes its in-memory telemetry cache every 10 seconds,
+independently of scheduling's capacity feed. `/api/v1/usage[?machine=NAME]`
+requires the `read` scope and only reads this cache: CLI/API requests never
+contact a fleet machine or trigger collection. Fleetmon's collection cadence
+is unchanged. A source outage or a feed older than 30 seconds marks cached
+measurements stale; individual samples also expire using Fleetmon's freshness
+limit. Restarting fleetqd empties the cache until its first valid feed arrives.
+An unconfigured feed or empty startup cache returns an explicit error.
+
 ## Release checks
 
 The code's presence is not a phase exit. Follow the evidence table in

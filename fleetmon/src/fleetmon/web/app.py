@@ -552,6 +552,16 @@ def create_app(
             raise HTTPException(503, "capacity feed unavailable")
         return value
 
+    @app.get("/api/feed/v1/usage")
+    async def usage_feed():
+        value = await _invoke_with_executor(
+            app.state.query_executor, app.state.query, "usage_feed",
+            capacity=app.state.query_capacity,
+        )
+        if not isinstance(value, dict) or value.get("schema") != "fleetmon.usage/v1":
+            raise HTTPException(503, "usage feed unavailable")
+        return value
+
     async def _scheduler(name: str, **kwargs: Any) -> dict[str, Any]:
         value = await _invoke_with_executor(
             app.state.query_executor,

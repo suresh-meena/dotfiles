@@ -247,6 +247,14 @@ directions, and neither direction can change anything:
 - **Managed nodes, fleetq → fleetmon.** The read-only Nodes page uses
   fleetqd's cached `/api/v1/nodes` response to show fleetq node state and GPU
   reservations. It does not show all Slurm nodes or other users' allocations.
+- **Usage feed, fleetmon → fleetq.** `GET /api/feed/v1/usage` returns each
+  monitored host's latest stored CPU/RAM sample and per-GPU utilization/VRAM,
+  with the hub receipt time, host state and freshness limit. Fractions are
+  0–1 and memory is in bytes; unsupported metrics are null. The compact feed
+  is bounded to 256 hosts and 64 GPUs per host and includes no process or
+  connection information. It reads SQLite only and never triggers collection.
+  Fleetqd caches it for `fq usage [machine]`, so frequent CLI reads add no
+  machine polls. Slurm login hosts do not expose compute-node GPU usage.
 
 ## Development checks
 

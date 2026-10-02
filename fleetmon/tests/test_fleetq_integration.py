@@ -31,6 +31,49 @@ FLEETQ_COPY = Path(__file__).resolve().parents[2] / "fleetq" / "contracts" / "fl
 # ---- the capacity feed ---------------------------------------------------------------
 
 
+def test_usage_feed_reads_latest_metrics_without_collecting(tmp_path):
+    from fleetmon.web.app import create_app
+
+    runtime = _runtime(tmp_path, [gpu_document(idle=True), gpu_document(idle=False)])
+    try:
+        _poll(runtime, 2)
+        calls = list(runtime.controller.calls)
+        for _ in range(3):
+            body = request(create_app(runtime), "GET", "/api/feed/v1/usage").json()
+            assert body["schema"] == "fleetmon.usage/v1"
+            host = body["hosts"][0]
+            assert host["cpu_busy_fraction"] == 0.5
+            assert host["ram_used_bytes"] == 50 and host["ram_total_bytes"] == 100
+            assert host["sample_time"] <= body["generated_at"]
+            assert host["gpus"][0]["utilization_fraction"] == 0.6
+            assert host["gpus"][1]["vram_used_bytes"] == 500
+            assert "processes" not in host and "addresses" not in host
+        assert runtime.controller.calls == calls
+        runtime.controller = Controller(PollResult(255, b"", b"unreachable"))
+        asyncio.run(runtime.poll_target(runtime.inventory.direct_targets[0], "/opt/fleetmon/snapshot"))
+        body = runtime.usage_feed()
+        assert body["hosts"][0]["state"] != "live"
+        assert body["hosts"][0]["gpus"][0]["utilization_fraction"] == 0.6
+    finally:
+        runtime.close()
+
+
+def test_usage_feed_unknown_is_not_zero(tmp_path):
+    broken = gpu_document(idle=True)
+    broken["gpus"][0]["supported"] = False
+    broken["gpus"][0]["error"] = "NVML_ERROR_GPU_IS_LOST"
+    broken["status"] = "partial"
+    runtime = _runtime(tmp_path, [broken])
+    try:
+        assert runtime.usage_feed()["hosts"][0]["sample_time"] is None
+        _poll(runtime, 1)
+        gpu = runtime.usage_feed()["hosts"][0]["gpus"][0]
+        assert gpu["supported"] is False
+        assert gpu["utilization_fraction"] is None and gpu["vram_used_bytes"] is None
+    finally:
+        runtime.close()
+
+
 class Sequence(Controller):
     """Answers each poll with the next document (the last one repeats)."""
 
