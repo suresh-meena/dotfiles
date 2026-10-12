@@ -149,6 +149,8 @@ directory. It must be an absolute path on a different filesystem than
 `state_dir`; the hub fails to start otherwise. The seven newest `fleet-*.db`
 backups are kept, and `/api/hub-status` reports `backup_ok`, `backup_error`,
 or `backup_pending`. When unset, hub status keeps reporting `backup_disabled`.
+The copy reads one snapshot through its own read-only connection, so the
+dashboard and polls keep working while a multi-GB backup runs.
 
 Scheduler targets (login nodes) are polled with `squeue`/`sacct` through
 `fleetctl exec --admin` and never receive the helper. `[polling]
@@ -200,7 +202,13 @@ Slurm call and requires `FLEETMON_NOTIFY_URL` for delivery.
 The hub discovers the managed inventory with `fleetctl list --json`, admits
 only enabled workstation/compute targets using the direct protocol, and treats
 unsupported Python, missing helpers, unreachable hosts, partial snapshots, and
-data gaps as explicit states.
+data gaps as explicit states. A host is `partial` (shown as "live · limited")
+only when its snapshot is missing data: a scan or its CPU counters cut short,
+processes hidden by permissions, an NVML or psutil failure, or a full user
+list. The helper always sends just its top 80 processes; that alone keeps a
+host `live`. When NVML cannot start at all (for example, a driver updated
+without a reboot), the host lists no GPUs, so the dashboard shows them as
+`unreadable` with the reason and counts the host as needing attention.
 
 ## Fleet queue (fleetq)
 

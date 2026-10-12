@@ -258,6 +258,40 @@ def _is_finite_interval(value: Any) -> bool:
         return False
 
 
+def sample_host_state(sample: dict[str, Any]) -> str:
+    """``partial`` only when a sample is missing data the dashboard shows.
+
+    The helper sends at most its top ``limits.processes`` records, and the
+    protocol makes it flag the rest as truncated, so on any real host that
+    flag alone is the normal case: per-user totals still count every
+    scanned process. Data is missing when the scan or its CPU counters were
+    cut short, permissions hid processes, NVML or psutil failed, the user
+    list hit its cap, or the byte limit trimmed records below the window.
+    """
+
+    if sample["status"] != "partial":
+        return "live"
+    visibility = sample.get("visibility") or {}
+    limits = sample.get("limits") or {}
+    capabilities = sample.get("capabilities") or {}
+    try:
+        window = min(int(limits["processes"]), int(visibility["processes_visible"]))
+        trimmed = int(visibility["processes_emitted"]) < window
+        users_full = len(sample.get("users") or []) >= int(limits["users"])
+    except (KeyError, TypeError, ValueError):
+        return "partial"
+    missing = (
+        visibility.get("partial", True)
+        or visibility.get("counters_truncated", True)
+        or visibility.get("permission_denied", 1)
+        or capabilities.get("nvml_error")
+        or capabilities.get("psutil_error")
+        or users_full
+        or trimmed
+    )
+    return "partial" if missing else "live"
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -589,13 +623,22 @@ class Database:
         descriptor = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(descriptor)
         try:
-            with self._lock:
+            # Copy from a second, read-only connection in one step: it reads a
+            # single WAL snapshot, so it never holds self._lock. Copying a
+            # multi-GB database takes a minute on the Pi, and every API
+            # request and poll write waits on that lock.
+            source = sqlite3.connect(
+                self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30
+            )
+            try:
                 target_conn = sqlite3.connect(dest)
                 try:
-                    self.conn.backup(target_conn)
+                    source.backup(target_conn)
                     target_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 finally:
                     target_conn.close()
+            finally:
+                source.close()
         except BaseException:
             dest.unlink(missing_ok=True)
             raise
@@ -1256,7 +1299,7 @@ class Database:
                                 allocation.get("vram_bytes"),
                             ),
                         )
-                state = "partial" if sample["status"] == "partial" else "live"
+                state = sample_host_state(sample)
                 cursor.execute(
                     """
                     UPDATE hosts SET

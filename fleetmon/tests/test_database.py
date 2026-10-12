@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 
 import pytest
 
@@ -528,6 +529,75 @@ def test_online_backup_restores_with_integrity_and_row_parity(tmp_path):
             restored.close()
     finally:
         db.close()
+
+
+def test_backup_does_not_hold_the_database_lock(tmp_path):
+    """Copying a multi-GB database takes a minute; reads and polls must not queue behind it."""
+    db = Database(tmp_path / "x.db")
+    try:
+        db.upsert_host("h", "compute", "direct")
+        destination = tmp_path / "backup.db"
+        done = threading.Event()
+        with db._lock:
+            worker = threading.Thread(target=lambda: (db.backup(destination), done.set()))
+            worker.start()
+            assert done.wait(10), "backup waited for the hub's database lock"
+        worker.join()
+        restored = sqlite3.connect(destination)
+        try:
+            assert restored.execute("SELECT target FROM hosts").fetchall() == [("h",)]
+        finally:
+            restored.close()
+    finally:
+        db.close()
+
+
+def _top_window_sample():
+    """What every real host sends: its top 80 processes of 483, nothing missing."""
+    document = sample()
+    document["processes"] = [{"pid": pid} for pid in range(2, 82)]
+    document["visibility"].update(processes_visible=483, processes_emitted=80)
+    document["limits"]["truncated"] = True
+    return document
+
+
+def _host_state(tmp_path, document):
+    db = Database(tmp_path / "x.db")
+    try:
+        db.upsert_host("h", "workstation", "direct")
+        db.snapshot("p", "h", document, 10)
+        return db.query("SELECT state FROM hosts")[0]["state"], db.query(
+            "SELECT partial FROM host_samples")[0]["partial"]
+    finally:
+        db.close()
+
+
+def test_the_top_process_window_alone_reads_live(tmp_path):
+    # The raw sample flag is kept for diagnostics; only the host state changes.
+    assert _host_state(tmp_path, _top_window_sample()) == ("live", 1)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda d: d["visibility"].update(partial=True),
+        lambda d: d["visibility"].update(counters_truncated=True),
+        lambda d: d["visibility"].update(permission_denied=3),
+        lambda d: d["capabilities"].update(
+            nvml_supported=False, nvml_error="nvmlerror_librmversionmismatch"
+        ),
+        lambda d: d["capabilities"].update(psutil_error="importerror"),
+        lambda d: d.update(users=[{**d["users"][0], "uid": uid} for uid in range(128)]),
+        lambda d: (d["processes"].pop(), d["visibility"].update(processes_emitted=79)),
+        lambda d: d.pop("visibility"),
+    ],
+    ids=["scan_cut_short", "counters", "permissions", "nvml", "psutil",
+         "user_cap", "byte_trimmed", "unknown_shape"],
+)
+def test_missing_data_keeps_a_host_partial(tmp_path, change):
+    document = _top_window_sample()
+    change(document)
+    assert _host_state(tmp_path, document) == ("partial", 1)
 
 
 def test_backup_refuses_to_overwrite_an_existing_file(tmp_path):
