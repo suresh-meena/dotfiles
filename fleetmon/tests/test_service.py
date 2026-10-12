@@ -623,6 +623,29 @@ def test_prune_backups_keeps_only_the_newest_seven(tmp_path):
     ]
 
 
+def test_retention_drops_upgrade_backups_past_the_window(tmp_path):
+    runtime = HubRuntime(config(tmp_path), discover_fn=inventory)
+    try:
+        backups = runtime.config.state_dir / "backups"
+        backups.mkdir(mode=0o700)
+        now = time.time()
+        ages = {"fleet-20260901T000000Z.db": 30, "fleet-20260920T000000Z.db": 15,
+                "fleet-20261001T000000Z.db": 3, "notes.txt": 30}
+        for name, days in ages.items():
+            (backups / name).touch()
+            os.utime(backups / name, (now - days * 86_400,) * 2)
+        runtime.retain()
+        assert sorted(path.name for path in backups.iterdir()) == [
+            "fleet-20261001T000000Z.db", "notes.txt",
+        ]
+        # Past the window too, but the newest backup undoes the last upgrade.
+        os.utime(backups / "fleet-20261001T000000Z.db", (now - 60 * 86_400,) * 2)
+        runtime.retain()
+        assert (backups / "fleet-20261001T000000Z.db").exists()
+    finally:
+        runtime.close()
+
+
 def test_configured_backup_runs_once_and_reports_ok(tmp_path, monkeypatch):
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir(mode=0o700)

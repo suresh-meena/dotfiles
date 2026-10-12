@@ -65,7 +65,7 @@ class HubConfig:
     remote_timeout_seconds: float = 20.0
     snapshot_stdout_bytes: int = MAX_SNAPSHOT_STDOUT_BYTES
     stderr_bytes: int = MAX_STDERR_BYTES
-    retention_days: int = 30
+    retention_days: int = 14
     disk_reserve_bytes: int = 512 * 1024 * 1024
     backup_dir: Path | None = None
     # fleetqd's read API, for the Queue page and GPU allocation marks. Read-only:

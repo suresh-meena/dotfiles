@@ -138,7 +138,7 @@ remain current.
 Non-secret configuration is read from
 `~/.config/fleetmon/config.toml` (or `FLEETMON_CONFIG`). Defaults are safe for a
 single-user hub: loopback binding, 60-second polling, at most two concurrent
-remote polls, bounded output, and a 30-day retention window. Invalid values,
+remote polls, bounded output, and a 14-day retention window (`[retention] days`). Invalid values,
 unknown keys, relative executable paths, and unsafe resource limits fail
 closed. The authentication token is environment- or credential-file-only (see
 the dashboard section above); it must not be placed in TOML or command
@@ -150,7 +150,10 @@ directory. It must be an absolute path on a different filesystem than
 backups are kept, and `/api/hub-status` reports `backup_ok`, `backup_error`,
 or `backup_pending`. When unset, hub status keeps reporting `backup_disabled`.
 The copy reads one snapshot through its own read-only connection, so the
-dashboard and polls keep working while a multi-GB backup runs.
+dashboard and polls keep working while a multi-GB backup runs. The daily
+retention pass also deletes the full copies `install-hub` leaves in
+`state_dir/backups` once they are older than the retention window, always
+keeping the newest one.
 
 Scheduler targets (login nodes) are polled with `squeue`/`sacct` through
 `fleetctl exec --admin` and never receive the helper. `[polling]

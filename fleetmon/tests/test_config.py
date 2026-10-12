@@ -17,6 +17,7 @@ def test_defaults_are_safe() -> None:
     assert config.scheduler_interval_seconds == 60
     assert config.history_interval_seconds == 60
     assert config.ssh_concurrency == 2
+    assert config.retention_days == 14
     assert config.fleetctl_path.is_absolute()
 
 

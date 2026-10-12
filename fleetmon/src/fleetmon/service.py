@@ -786,8 +786,11 @@ class HubRuntime:
         return "partial"
 
     def retain(self) -> int:
-        deleted = self.db.retain(time.time() - self.config.retention_days * 86_400)
+        before = time.time() - self.config.retention_days * 86_400
+        deleted = self.db.retain(before)
         self.db.checkpoint()
+        # install-hub leaves a full copy of the database here on every upgrade.
+        self._prune_old_backups(self.config.state_dir / "backups", before)
         self.last_retention = time.time()
         return deleted
 
@@ -834,6 +837,26 @@ class HubRuntime:
         for path in backups[: max(0, len(backups) - keep)]:
             with suppress(OSError):
                 path.unlink()
+
+    @staticmethod
+    def _prune_old_backups(directory: Path, before: float) -> None:
+        """Drop fleet backups written before ``before``, always keeping the newest.
+
+        The newest one is what undoes the last upgrade, however old it is.
+        """
+
+        try:
+            backups = sorted(
+                path
+                for path in directory.iterdir()
+                if path.name.startswith("fleet-") and path.suffix == ".db"
+            )
+        except OSError:
+            return
+        for path in backups[:-1]:
+            with suppress(OSError):
+                if path.stat().st_mtime < before:
+                    path.unlink()
 
     def create_app(self):
         from .web.app import create_app
