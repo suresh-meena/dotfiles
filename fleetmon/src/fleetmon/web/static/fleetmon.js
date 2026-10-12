@@ -514,12 +514,29 @@
   function currentError(host) {
     return host && host.last_error && !isSchedulerHost(host) ? host.last_error : null;
   }
+  // NVML start-up failures, by the name the helper reports.
+  const GPU_ERRORS = {
+    nvmlerror_librmversionmismatch: "NVIDIA driver and library versions differ; reboot the host",
+    nvmlerror_drivernotloaded: "the NVIDIA driver is not loaded",
+    nvmlerror_librarynotfound: "the NVML library is missing",
+    nvmlerror_nopermission: "no permission to read the GPUs",
+  };
+  // A snapshot whose NVML never started has no GPU rows, which must not read
+  // as a machine without GPUs.
+  function gpuReadError(code, supported) {
+    if (supported || typeof code !== "string" || !code) return null;
+    return `GPUs unreadable: ${GPU_ERRORS[code] || code}`;
+  }
+  function hostGpuError(host) {
+    if (!host || isSchedulerHost(host) || snapshotStale(host)) return null;
+    return gpuReadError(host.sample_nvml_error, host.sample_nvml_supported);
+  }
   function hostNeedsAttention(host) {
     if (!host || typeof host !== "object") return false;
     const state = typeof host.state === "string" && host.state ? host.state : UNKNOWN;
     if (!OK_STATES[state]) return true;
     if (isSchedulerHost(host)) return false;
-    if (host.last_error) return true;
+    if (host.last_error || hostGpuError(host)) return true;
     const age = _ageRaw(host.last_received);
     if (_number(age) && age > STALE_SAMPLE_S) return true;
     const disk = diskFraction(host);
@@ -527,6 +544,12 @@
     return false;
   }
   function gpuSummary(host, counts) {
+    const gpuError = hostGpuError(host);
+    if (gpuError) {
+      const bad = el("span", "st st-bad", "unreadable");
+      bad.title = gpuError;
+      return {node: bad, raw: ""};
+    }
     if (_number(host.gpu_count) && host.gpu_count === 0) {
       const none = el("span", "gpu-none", "no GPUs");
       return {node: none, raw: ""};
@@ -621,7 +644,7 @@
           ),
           raw: host.gpu_vram_used,
         },
-        currentError(host) ? token(currentError(host)) : DASH,
+        currentError(host) ? token(currentError(host)) : hostGpuError(host) || DASH,
       ]);
       // An old snapshot's numbers stay readable but must not pass for live:
       // dim the measurements, keep host, state, age and error at full strength.
@@ -700,6 +723,8 @@
       const disk = diskFraction(latest);
       if (disk !== null && disk >= DISK_ISSUE_FRACTION)
         issues.push(`Disk ${Math.round(disk * 100)}% full · ${_bytes(latest.root_free)} remaining`);
+      const gpuError = gpuReadError(latest.nvml_error, latest.nvml_supported);
+      if (gpuError) issues.push(gpuError);
       const skew = latest.capture_skew_seconds;
       if (_number(skew) && Math.abs(skew) > CLOCK_DRIFT_S)
         issues.push(`clock drift ${skew.toFixed(0)} s vs hub`);
@@ -1294,6 +1319,10 @@
       note("GPU data is temporarily unavailable.");
       return;
     }
+    (Array.isArray(doc.unreadable) ? doc.unreadable : []).forEach((host) => {
+      if (host && typeof host.target === "string")
+        note(`${host.target}: ${gpuReadError(host.error, false) || "GPUs unreadable"}. Its GPUs are not listed or counted.`);
+    });
     if (!idleFilterBar) idleFilterBar = buildIdleFilters();
     content.append(idleFilterBar);
     idleWrap = el("div");

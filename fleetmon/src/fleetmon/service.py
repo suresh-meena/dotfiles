@@ -884,11 +884,22 @@ class HubRuntime:
         return rows
 
     def usage_feed(self) -> dict[str, Any]:
-        """Compact latest telemetry from SQLite only; never starts collection."""
+        """Compact latest telemetry from SQLite only; never starts collection.
 
+        Each GPU also carries the idle/busy/unknown verdict the Idle GPUs page
+        and alerts use, so a client can answer "which GPUs are free" without
+        inventing a second, looser rule from one utilization sample.
+        """
+
+        verdicts = {
+            target: self._classify_slots(observation_slots(observations))
+            for target, observations in self._gpu_window_cached().items()
+        }
         hosts = []
         for row in self.db.overview(limit=256):
             row = self._freshen_host(dict(row))
+            host_verdicts = verdicts.get(row["target"], {})
+            reachable = row["state"] in {"live", "partial"}
             gpus = []
             for gpu in self.db.query(
                 "SELECT uuid, idx, model, utilization, vram_used, vram_total, "
@@ -896,12 +907,19 @@ class HubRuntime:
                 (row["sample_poll_id"],),
             ):
                 supported = bool(gpu["supported"]) and not gpu["error"]
+                availability, reason = (
+                    host_verdicts.get(gpu["uuid"], (notify.GPU_UNKNOWN, "no_observation"))
+                    if reachable
+                    else (notify.GPU_UNKNOWN, "host_unavailable")
+                )
                 gpus.append({
                     "uuid": gpu["uuid"], "index": gpu["idx"], "model": gpu["model"],
                     "utilization_fraction": gpu["utilization"] if supported else None,
                     "vram_used_bytes": gpu["vram_used"] if supported else None,
                     "vram_total_bytes": gpu["vram_total"] if supported else None,
                     "supported": supported,
+                    "availability": availability,
+                    "availability_reason": reason,
                 })
             hosts.append({
                 "target": row["target"], "state": row["state"],
@@ -909,9 +927,23 @@ class HubRuntime:
                 "freshness_seconds": self._gpu_freshness_seconds(),
                 "cpu_busy_fraction": row["cpu_busy"],
                 "ram_used_bytes": row["ram_used"], "ram_total_bytes": row["ram_total"],
+                "gpu_error": self._gpu_read_error(row),
                 "gpus": gpus,
             })
         return {"schema": "fleetmon.usage/v1", "generated_at": time.time(), "hosts": hosts}
+
+    @staticmethod
+    def _gpu_read_error(row: dict[str, Any]) -> str | None:
+        """NVML's failure code when a current sample could not open NVML at all.
+
+        Such a host reports no GPU rows, so without this its GPUs would simply
+        vanish from every count instead of reading as unknown.
+        """
+
+        if row.get("state") not in {"live", "partial"} or row.get("sample_nvml_supported"):
+            return None
+        error = row.get("sample_nvml_error")
+        return error[:64] if isinstance(error, str) and error else None
 
     def _classify_slots(
         self, slots_by_uuid: dict[str, list[dict[str, Any] | None]]
@@ -1529,6 +1561,8 @@ class HubRuntime:
         latest telemetry plus the shared availability classification and its
         reason, built from the two latest consecutive observations, the
         hardened flag, and the current owners of the GPU's allocations.
+        ``unreadable`` names current hosts whose GPUs NVML could not read at
+        all, since those have no rows to count.
         """
 
         now = time.time()
@@ -1603,7 +1637,12 @@ class HubRuntime:
                     }
                 )
                 summary[availability] += 1
-        return {"items": items, "summary": summary}
+        unreadable = []
+        for row in self.db.overview(limit=256):
+            error = self._gpu_read_error(self._freshen_host(dict(row)))
+            if error:
+                unreadable.append({"target": row["target"], "error": error})
+        return {"items": items, "summary": summary, "unreadable": unreadable}
 
     def _gpu_owners(self, target: str) -> dict[str, list[str]]:
         """Map GPU uuid to the distinct owners of its current allocations.

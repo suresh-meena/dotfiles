@@ -257,7 +257,11 @@ directions, and neither direction can change anything:
   reservations. It does not show all Slurm nodes or other users' allocations.
 - **Usage feed, fleetmon → fleetq.** `GET /api/feed/v1/usage` returns each
   monitored host's latest stored CPU/RAM sample and per-GPU utilization/VRAM,
-  with the hub receipt time, host state and freshness limit. Fractions are
+  with the hub receipt time, host state and freshness limit, plus each GPU's
+  `availability` (idle/busy/unknown) and `availability_reason` from the same
+  rule as the Idle GPUs page and alerts. A current host whose NVML could not
+  start carries its error code in `gpu_error` (its `gpus` list is empty), and
+  `/api/idle-gpus` lists such hosts under `unreadable`. Fractions are
   0–1 and memory is in bytes; unsupported metrics are null. The compact feed
   is bounded to 256 hosts and 64 GPUs per host and includes no process or
   connection information. It reads SQLite only and never triggers collection.

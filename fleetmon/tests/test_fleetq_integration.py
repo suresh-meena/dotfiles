@@ -58,6 +58,48 @@ def test_usage_feed_reads_latest_metrics_without_collecting(tmp_path):
         runtime.close()
 
 
+def test_usage_feed_carries_the_idle_gpus_verdict(tmp_path):
+    runtime = _runtime(tmp_path, [gpu_document(idle=True), gpu_document(idle=True)])
+    try:
+        _poll(runtime, 2)
+        feed = {g["uuid"]: g for g in runtime.usage_feed()["hosts"][0]["gpus"]}
+        page = {g["uuid"]: g for g in runtime.idle_gpus()["items"]}
+        assert feed and feed.keys() == page.keys()
+        for gpu_uuid, gpu in feed.items():
+            # One rule: what the Idle GPUs page and alerts say, the feed says.
+            assert (gpu["availability"], gpu["availability_reason"]) == (
+                page[gpu_uuid]["availability"], page[gpu_uuid]["reason"])
+        assert "idle" in {g["availability"] for g in feed.values()}
+        runtime.controller = Controller(PollResult(255, b"", b"unreachable"))
+        asyncio.run(runtime.poll_target(runtime.inventory.direct_targets[0], "/opt/fleetmon/snapshot"))
+        runtime._gpu_window_cache = None
+        for gpu in runtime.usage_feed()["hosts"][0]["gpus"]:
+            assert (gpu["availability"], gpu["availability_reason"]) == ("unknown", "host_unavailable")
+    finally:
+        runtime.close()
+
+
+def test_unreadable_gpus_are_reported_not_dropped(tmp_path):
+    """A driver update without a reboot stops NVML; the host must not read as GPU-less."""
+    broken = gpu_document(with_rows=False)
+    broken["capabilities"].update(nvml_supported=False, nvml_error="nvmlerror_librmversionmismatch")
+    runtime = _runtime(tmp_path, [broken])
+    try:
+        _poll(runtime, 1)
+        host = runtime.usage_feed()["hosts"][0]
+        assert host["state"] == "partial" and host["gpus"] == []
+        assert host["gpu_error"] == "nvmlerror_librmversionmismatch"
+        assert runtime.idle_gpus()["unreadable"] == [
+            {"target": host["target"], "error": "nvmlerror_librmversionmismatch"}]
+        runtime.controller = Controller(PollResult(255, b"", b"unreachable"))
+        asyncio.run(runtime.poll_target(runtime.inventory.direct_targets[0], "/opt/fleetmon/snapshot"))
+        # The error came from a sample that is no longer current.
+        assert runtime.usage_feed()["hosts"][0]["gpu_error"] is None
+        assert runtime.idle_gpus()["unreadable"] == []
+    finally:
+        runtime.close()
+
+
 def test_usage_feed_unknown_is_not_zero(tmp_path):
     broken = gpu_document(idle=True)
     broken["gpus"][0]["supported"] = False

@@ -996,4 +996,36 @@ const cardValues = (content) =>
   assert.ok(links.some((h) => String(h).startsWith("/queue?job=42")), `fleetq job link: ${links}`);
 }
 
+// ---- a host whose NVML never started is flagged, not shown as GPU-less ----
+{
+  const MISMATCH = "nvmlerror_librmversionmismatch";
+  const rows = [{...OVERVIEW[0], target: "r1", state: "partial", gpu_count: 0,
+    sample_nvml_supported: 0, sample_nvml_error: MISMATCH}];
+  const overview = await run("overview", "", {
+    "/api/overview": rows, "/api/overview/sparklines": SPARKS, [IDLE_URL]: IDLE,
+  });
+  const text = textOf(overview.shim.content);
+  assert.doesNotMatch(text, /no GPUs/, "an NVML failure is not a machine without GPUs");
+  assert.match(text, /unreadable/, "the gpus cell says the GPUs could not be read");
+  assert.match(text, /driver and library versions differ; reboot the host/, "the error column says why");
+  assert.match(text, /1needs attention/, "the host counts as needing attention");
+
+  const stale = await run("overview", "", {
+    "/api/overview": [{...rows[0], last_received: RECENT - 8 * 86400}], "/api/overview/sparklines": SPARKS, [IDLE_URL]: IDLE,
+  });
+  assert.doesNotMatch(textOf(stale.shim.content), /reboot the host/, "an old snapshot's error is not current");
+
+  const host = await run("host", "r1", {
+    "/api/hosts/r1?limit=1": {...HOST, target: "r1",
+      items: HOST.items.map((item) => ({...item, nvml_supported: 0, nvml_error: MISMATCH}))},
+    "/api/hosts/r1/charts?hours=24": CHARTS,
+    "/api/overview": rows,
+  });
+  assert.match(textOf(host.shim.content), /GPUs unreadable: NVIDIA driver/, "host issues name the GPU failure");
+
+  const idle = await run("idle-gpus", "", {[IDLE_URL]: {...IDLE, unreadable: [{target: "r1", error: MISMATCH}]}});
+  assert.match(textOf(idle.shim.content), /r1: GPUs unreadable: NVIDIA driver and library versions differ/,
+    "the Idle GPUs page says which host's GPUs are missing from it");
+}
+
 console.log("js harness ok");
