@@ -9,7 +9,7 @@ import sqlite3
 import stat
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -1604,11 +1604,24 @@ class Database:
                 raise
         return len(victims)
 
-    def retain(self, before: float, batch: int = 1000) -> int:
+    def retain(
+        self,
+        before: float,
+        batch: int = 1000,
+        *,
+        pace: Callable[[float], bool] | None = None,
+    ) -> int:
+        """Delete history older than ``before`` in batches, one transaction each.
+
+        ``pace`` runs between batches, outside the lock, with the seconds the
+        last batch held it; returning False stops early.
+        """
+
         if batch < 1 or batch > 10_000:
             raise ValueError("retention batch must be 1..10000")
         total = 0
         while True:
+            held_since = time.monotonic()
             with self._lock:
                 cursor = self.conn.cursor()
                 try:
@@ -1656,6 +1669,8 @@ class Database:
                     raise
             total += count
             if max(count, job_count, host_count) < batch:
+                break
+            if pace is not None and not pace(time.monotonic() - held_since):
                 break
         return total
 

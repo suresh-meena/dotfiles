@@ -646,6 +646,22 @@ def test_retention_drops_upgrade_backups_past_the_window(tmp_path):
         runtime.close()
 
 
+def test_retention_stops_at_shutdown_and_resumes_next_pass(tmp_path, monkeypatch):
+    monkeypatch.setattr(service_module, "RETENTION_BATCH", 1)
+    runtime = HubRuntime(config(tmp_path), discover_fn=inventory)
+    try:
+        for index in range(3):
+            runtime.db.snapshot(f"old-{index}", "gpu1", document(), 1, started_at=0)
+        runtime._stopping.set()
+        assert runtime.retain() == 1
+        assert runtime.last_retention == 0.0
+        runtime._stopping.clear()
+        assert runtime.retain() == 2
+        assert runtime.last_retention > 0
+    finally:
+        runtime.close()
+
+
 def test_configured_backup_runs_once_and_reports_ok(tmp_path, monkeypatch):
     backup_dir = tmp_path / "backups"
     backup_dir.mkdir(mode=0o700)

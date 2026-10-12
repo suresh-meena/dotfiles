@@ -14,7 +14,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -53,6 +53,10 @@ LOG = logging.getLogger(__name__)
 SUPPORTED_HELPER_VERSION = str(SCHEMA_VERSION)
 SLURM_OUTPUT_LIMIT = 1024 * 1024
 RETENTION_INTERVAL_SECONDS = 24 * 60 * 60
+# On the Pi's SD card one retention batch of 100 polls holds the database lock
+# for about two seconds; pausing as long again keeps the dashboard answering.
+RETENTION_BATCH = 100
+RETENTION_MAX_PAUSE_SECONDS = 5.0
 MAX_CAPTURE_SKEW_SECONDS = 24 * 60 * 60
 STALE_AFTER_POLL_INTERVALS = 2
 SCHEDULER_MIN_INTERVAL_SECONDS = 60.0
@@ -114,6 +118,13 @@ class HubRuntime:
             max_workers=1, thread_name_prefix="fleetmon-local"
         )
         self._local_capacity = threading.BoundedSemaphore(MAX_TARGETS + 8)
+        # Retention and backups take minutes on the Pi, so they get their own
+        # worker: on the poll worker every snapshot write queued behind them.
+        self._maintenance_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="fleetmon-maintenance"
+        )
+        self._maintenance: Future[None] | None = None
+        self._stopping = threading.Event()
         self._gpu_window_lock = threading.Lock()
         self.scheduler = (
             SchedulerClient(self.config.scheduler_url, self.config.scheduler_token)
@@ -787,12 +798,33 @@ class HubRuntime:
 
     def retain(self) -> int:
         before = time.time() - self.config.retention_days * 86_400
-        deleted = self.db.retain(before)
+        deleted = self.db.retain(before, batch=RETENTION_BATCH, pace=self._retention_pause)
+        if self._stopping.is_set():
+            return deleted
         self.db.checkpoint()
         # install-hub leaves a full copy of the database here on every upgrade.
         self._prune_old_backups(self.config.state_dir / "backups", before)
         self.last_retention = time.time()
         return deleted
+
+    def _retention_pause(self, held_seconds: float) -> bool:
+        """Leave the lock free between batches as long as the last one held it.
+
+        Requests and poll writes take it meanwhile. False stops the pass when
+        the hub is shutting down; the next pass resumes where this one ended.
+        """
+
+        pause = min(max(held_seconds, 0.05), RETENTION_MAX_PAUSE_SECONDS)
+        return not self._stopping.wait(pause)
+
+    def _maintain(self) -> None:
+        try:
+            if time.time() - self.last_retention >= RETENTION_INTERVAL_SECONDS:
+                self.retain()
+            if not self._stopping.is_set():
+                self.maybe_backup()
+        except Exception as exc:
+            LOG.error("maintenance failed: %s", type(exc).__name__)
 
     def maybe_backup(self) -> None:
         """Run at most one daily online backup; failures are a status field.
@@ -2085,9 +2117,10 @@ class HubRuntime:
                         schedules[key] = asyncio.create_task(
                             self._run_schedule(key, poller, target)
                         )
-                    if time.time() - self.last_retention >= RETENTION_INTERVAL_SECONDS:
-                        await self._local(self.retain)
-                    await self._local(self.maybe_backup)
+                    if self._maintenance is None or self._maintenance.done():
+                        self._maintenance = self._maintenance_executor.submit(
+                            self._maintain
+                        )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -2115,5 +2148,7 @@ class HubRuntime:
             raise
 
     def close(self) -> None:
+        self._stopping.set()
+        self._maintenance_executor.shutdown(wait=True, cancel_futures=True)
         self._local_executor.shutdown(wait=True, cancel_futures=True)
         self.db.close()

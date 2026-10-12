@@ -385,6 +385,26 @@ def test_retention_cascades_children(tmp_path):
     )
 
 
+def test_retention_paces_between_batches_and_stops_when_told(tmp_path):
+    db = Database(tmp_path / "x.db")
+    try:
+        for index in range(5):
+            db.snapshot(f"p{index}", "h", sample(), 1)
+        held = []
+
+        def pace(seconds):
+            held.append(seconds)
+            return len(held) < 2
+
+        assert db.retain(2, batch=1, pace=pace) == 2
+        assert len(held) == 2 and all(seconds >= 0 for seconds in held)
+        assert len(db.query("select * from polls")) == 3
+        assert db.retain(2, batch=1, pace=lambda _seconds: True) == 3
+        assert db.query("select * from polls") == []
+    finally:
+        db.close()
+
+
 def test_retention_removes_all_terminal_slurm_jobs_but_keeps_active(tmp_path):
     db = Database(tmp_path / "x.db")
     db.upsert_slurm_jobs(
