@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Literal
 
@@ -24,6 +25,10 @@ class _Gpu(_Metrics):
     vram_used_bytes: StrictInt | None = Field(ge=0)
     vram_total_bytes: StrictInt | None = Field(ge=0)
     supported: StrictBool
+    # Fleetmon's own idle rule (two fresh, consecutive idle observations).
+    # Optional: a Fleetmon older than this field simply has no verdict.
+    availability: Literal["idle", "busy", "unknown"] | None = None
+    availability_reason: StrictStr | None = Field(default=None, max_length=64)
 
 
 class _Host(_Metrics):
@@ -34,6 +39,9 @@ class _Host(_Metrics):
     cpu_busy_fraction: float | None = Field(ge=0, le=1)
     ram_used_bytes: StrictInt | None = Field(ge=0)
     ram_total_bytes: StrictInt | None = Field(ge=0)
+    # NVML's failure code when a current sample could not read any GPU, so the
+    # host's GPUs are missing from the list rather than absent. Optional.
+    gpu_error: StrictStr | None = Field(default=None, max_length=64)
     gpus: list[_Gpu] = Field(max_length=64)
 
 
@@ -41,6 +49,23 @@ class _Feed(_Metrics):
     schema_: Literal["fleetmon.usage/v1"] = Field(alias="schema")
     generated_at: float = Field(ge=0)
     hosts: list[_Host] = Field(max_length=256)
+
+
+USAGE_SCHEMA_HEADER = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "fleetmon.usage/v1",
+    "description": ("Latest stored telemetry only. Fractions are 0\u20131; memory is bytes. "
+                    "sample_time is the hub receipt time, never the response generation time. "
+                    "Unknown metrics are null. Additive changes allowed within v1."),
+}
+
+
+def usage_schema_json() -> str:
+    """The contract file both repositories commit, rendered from the model that enforces it."""
+    schema = _Feed.model_json_schema(by_alias=True)
+    schema["title"] = "Fleetmon cached usage feed"
+    schema.update(USAGE_SCHEMA_HEADER)
+    return json.dumps(schema, indent=2) + "\n"
 
 
 class UsageCache:
@@ -94,6 +119,12 @@ class UsageCache:
                      or age is None or age > host["freshness_seconds"])
             host["sample_age_s"] = round(age, 1) if age is not None else None
             host["stale"] = stale
+            if stale:
+                host["gpu_error"] = None
+                # A verdict is only as fresh as the samples it came from.
+                for gpu in host["gpus"]:
+                    if gpu.get("availability") is not None:
+                        gpu["availability"], gpu["availability_reason"] = "unknown", "stale"
             if host["state"] in {"live", "partial"} and stale:
                 host["state"] = "stale" if sample is not None else "unknown"
             hosts.append(host)

@@ -65,6 +65,36 @@
         "supported": {
           "title": "Supported",
           "type": "boolean"
+        },
+        "availability": {
+          "anyOf": [
+            {
+              "enum": [
+                "idle",
+                "busy",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Availability"
+        },
+        "availability_reason": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Availability Reason"
         }
       },
       "required": [
@@ -147,6 +177,19 @@
             }
           ],
           "title": "Ram Total Bytes"
+        },
+        "gpu_error": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gpu Error"
         },
         "gpus": {
           "items": {

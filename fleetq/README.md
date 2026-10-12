@@ -9,7 +9,8 @@ gates are in [REFINED_PLAN.md](REFINED_PLAN.md).
 ## Build and local setup
 
 Run `python3 scripts/build.py` in this directory to regenerate the stdlib-only
-`bin/fq` and `build/fq-node` artifacts. `scripts/install-daemon --dry-run`
+`bin/fq` and `build/fq-node` artifacts and the `build/fq.1` man page, which is
+rendered from the same parser as `fq --help`. `scripts/install-daemon --dry-run`
 shows the release paths. Installation creates an immutable release and user
 unit, but does not start it. Python's linked SQLite must carry the WAL-reset
 fix, or its distribution backport must be recorded in the daemon config.
@@ -165,6 +166,17 @@ stable idempotency key for retryable client calls.
 an existing destination by default, including a symlink at that path. Pass
 `--overwrite` only when replacing existing files is intentional.
 
+Install the client on any machine with Python 3.11+:
+
+```bash
+install -m 0755 bin/fq ~/.local/bin/fq
+install -Dm 0644 build/fq.1 ~/.local/share/man/man1/fq.1   # then: man fq
+```
+
+`fq --help` lists every command with the exit-code contract, environment and
+examples; `fq COMMAND --help` documents each option. `--json` may go before
+or after the command, and the job's own command always follows a bare `--`.
+
 Fleetmon supplies the read-only capacity feed. Fleetqd supplies cached queue,
 node, and status data; reading those APIs does not contact a node. Shared GPU
 dispatch waits for independent idle samples and an immediate node gate. A
@@ -176,13 +188,22 @@ Read cached GPU utilization, VRAM, CPU and RAM from any client:
 ```bash
 fq usage                 # all machines in Fleetmon's monitored inventory
 fq usage rtx4090         # one machine, by its Fleetmon/fleetctl target name
+fq usage --idle          # only GPUs Fleetmon proves idle right now
 fq --json usage rtx4090  # fq.usage/v1; fractions 0–1 and memory in bytes
 ```
 
 The table lists every GPU and reports used/total memory in GiB and sample age.
 Missing measurements remain unknown (`-`); stale or unreachable hosts retain
 their last measurements with an explicit state. These are measured usage
-values, separate from the fleetq reservations shown by `fq nodes`. Slurm login
+values, separate from the fleetq reservations shown by `fq nodes`. The FREE
+column and `--idle` use Fleetmon's own verdict (two fresh, consecutive idle
+samples, the rule behind its Idle GPUs page); a GPU that is not proven idle or
+busy shows `?`, and a stale host never shows idle. `--idle` refuses (exit 7)
+when Fleetmon or fleetqd is too old to send verdicts, rather than reporting
+that no GPU is free. A machine whose GPUs Fleetmon cannot read (NVML failed,
+for example after a driver update without a reboot) shows `unreadable` and a
+note with the reason, also under `--idle`, so its GPUs are not silently
+missing from the counts. Slurm login
 targets do not provide compute-node GPU telemetry through this feed.
 
 Configure the existing `[daemon] fleetmon_feed_url` capacity URL on numpi and

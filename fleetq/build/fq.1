@@ -1,0 +1,690 @@
+.TH FQ 1 "" "fq 0.1.0" "fleetq"
+.SH NAME
+fq \- Submit and manage jobs on the fleet queue (fleetqd on numpi)
+.SH SYNOPSIS
+.B fq
+[\-\-json] \fICOMMAND\fR [\fIoptions\fR] [\-\- \fIjob command\fR ...]
+.SH COMMANDS
+.SS "fq submit"
+Submit a job.
+.PP
+.nf
+fq submit [\-h] [\-\-json] [\-\-on ON] [\-\-each EACH] [\-\-allow\-clusters]
+                 [\-\-queue QUEUE] [\-\-account ACCOUNT] [\-\-qos QOS]
+                 [\-\-spill\-after SPILL_AFTER] [\-\-spill\-to SPILL_TO]
+                 [\-\-gpus GPUS] [\-\-vram VRAM] [\-\-gpu\-model GPU_MODEL]
+                 [\-\-cpus CPUS] [\-\-mem MEM] [\-\-time TIME] [\-\-scratch SCRATCH]
+                 [\-\-dir DIR] [\-\-in\-place IN_PLACE] [\-\-exclude EXCLUDE]
+                 [\-\-needs NEEDS] [\-\-needs\-rw NEEDS_RW] [\-\-env ENV]
+                 [\-\-env\-file ENV_FILE] [\-\-setup SETUP] [\-\-after AFTER]
+                 [\-\-array ARRAY] [\-\-priority PRIORITY] [\-\-name NAME] [\-\-hold]
+                 [\-\-begin BEGIN] [\-\-retry RETRY] [\-\-retry\-on RETRY_ON]
+                 [\-\-warn\-signal WARN_SIGNAL] [\-\-warn\-before WARN_BEFORE]
+                 [\-\-resume N] [\-\-kill\-grace KILL_GRACE] [\-\-collect COLLECT]
+                 [\-\-idempotency\-key IDEMPOTENCY_KEY] [\-\-wait]
+                 [\-\-timeout TIMEOUT] [\-\-propagate\-exit] [\-\-dry\-run]
+                 [\-\-wrap WRAP] [\-\-script SCRIPT]
+                 [\-\-script\-args [SCRIPT_ARGS ...]]
+                 [argv ...]
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fB\-\-on\fR \fION\fR
+run once on any one of these destinations (a,b)
+.TP
+\fB\-\-each\fR \fIEACH\fR
+run one job per destination (a,b)
+.TP
+\fB\-\-allow\-clusters\fR
+let fleetq place it on a Slurm site without naming one (needs a token that allows it)
+.TP
+\fB\-\-queue\fR \fIQUEUE\fR
+cluster queue, e.g. kiac:a100
+.TP
+\fB\-\-account\fR \fIACCOUNT\fR
+Slurm account on the cluster
+.TP
+\fB\-\-qos\fR \fIQOS\fR
+Slurm QOS on the cluster
+.TP
+\fB\-\-spill\-after\fR \fISPILL_AFTER\fR
+if not started within this long (e.g. 2h), also try \-\-spill\-to
+.TP
+\fB\-\-spill\-to\fR \fISPILL_TO\fR
+destinations to spill to, e.g. kiac:a100,amd
+.TP
+\fB\-\-gpus\fR \fIGPUS\fR
+whole GPUs (required; 0 for CPU\-only)
+.TP
+\fB\-\-vram\fR \fIVRAM\fR
+minimum VRAM per GPU, e.g. 24G
+.TP
+\fB\-\-gpu\-model\fR \fIGPU_MODEL\fR
+only this GPU model, as `fq nodes` names it
+.TP
+\fB\-\-cpus\fR \fICPUS\fR
+CPU cores
+.TP
+\fB\-\-mem\fR \fIMEM\fR
+total RAM, e.g. 32G
+.TP
+\fB\-\-time\fR \fITIME\fR
+walltime, e.g. 4h or 1\-00:00:00
+.TP
+\fB\-\-scratch\fR \fISCRATCH\fR
+writable scratch space, e.g. 50G
+.TP
+\fB\-\-dir\fR \fIDIR\fR
+directory to snapshot and upload (default: .)
+.TP
+\fB\-\-in\-place\fR \fIIN_PLACE\fR
+run code already at this path on the node (needs \-\-on/\-\-each)
+.TP
+\fB\-\-exclude\fR \fIEXCLUDE\fR
+leave this pattern out of the uploaded snapshot (repeatable)
+.TP
+\fB\-\-needs\fR \fINEEDS\fR
+a path that must be readable on the node
+.TP
+\fB\-\-needs\-rw\fR \fINEEDS_RW\fR
+a path that must be writable on the node
+.TP
+\fB\-\-env\fR \fIENV\fR
+KEY=VALUE (repeatable)
+.TP
+\fB\-\-env\-file\fR \fIENV_FILE\fR
+KEY=VALUE lines (never sourced as shell); wins over \-\-env
+.TP
+\fB\-\-setup\fR \fISETUP\fR
+shell run before the command (e.g. activate a venv)
+.TP
+\fB\-\-after\fR \fIAFTER\fR
+[afterok|afterany|afternotok|after:]JOBID or GROUP (grp_...); repeatable
+.TP
+\fB\-\-array\fR \fIARRAY\fR
+indices, e.g. 0\-9%2 (at most 2 at once); each task reads $FQ_ARRAY_TASK_ID
+.TP
+\fB\-\-priority\fR \fIPRIORITY\fR
+\-1000..1000, higher is placed sooner (default 0); waiting jobs also gain priority as they age
+.TP
+\fB\-\-name\fR \fINAME\fR
+job name (default: the command's basename)
+.TP
+\fB\-\-hold\fR
+queue it held; start it later with `fq release`
+.TP
+\fB\-\-begin\fR \fIBEGIN\fR
+not before this time: +2h, or local 2026\-09\-24T09:00
+.TP
+\fB\-\-retry\fR \fIRETRY\fR
+rerun up to N times on the \-\-retry\-on causes
+.TP
+\fB\-\-retry\-on\fR \fIRETRY_ON\fR
+node_fail,exit,timeout,oom,preempted
+.TP
+\fB\-\-warn\-signal\fR \fIWARN_SIGNAL\fR
+signal the job this long before its walltime: USR1, USR2, INT, HUP
+.TP
+\fB\-\-warn\-before\fR \fIWARN_BEFORE\fR
+how long before the walltime to signal (default 5m)
+.TP
+\fB\-\-resume\fR \fIN\fR
+checkpointing job: warn with USR1 before walltime and resubmit up to N times after timeout/preemption/node failure, back on the machine holding $FQ_CHECKPOINT_DIR
+.TP
+\fB\-\-kill\-grace\fR \fIKILL_GRACE\fR
+time between SIGTERM and SIGKILL on cancel (default 60s)
+.TP
+\fB\-\-collect\fR \fICOLLECT\fR
+relative output path to bring back for `fq fetch`
+.TP
+\fB\-\-idempotency\-key\fR \fIIDEMPOTENCY_KEY\fR
+stable key for this exact request (derive it from the task); a retry with the same key returns the original job instead of a second one
+.TP
+\fB\-\-wait\fR
+block until the job ends (prints its id first)
+.TP
+\fB\-\-timeout\fR \fITIMEOUT\fR
+with \-\-wait: stop waiting after this long (exit 4; the job keeps running)
+.TP
+\fB\-\-propagate\-exit\fR
+with \-\-wait on one job: exit with the job's own exit code (which can collide with 2\-8)
+.TP
+\fB\-\-dry\-run\fR
+print the job spec and the upload; submit nothing
+.TP
+\fB\-\-wrap\fR \fIWRAP\fR
+a shell command line, run with bash \-c
+.TP
+\fB\-\-script\fR \fISCRIPT\fR
+a script inside the uploaded snapshot, by relative path
+.TP
+\fB\-\-script\-args\fR \fISCRIPT_ARGS\fR
+arguments for \-\-script
+.TP
+\fIargv\fR
+the command; put it after `\-\-`
+.PP
+.nf
+The command goes last, after `\-\-`:  fq submit \-\-gpus 1 \-\- python train.py \-\-lr 3e\-4
+or use \-\-wrap 'CMD' (run by bash \-c) or \-\-script PATH (a file in the snapshot).
+
+By default the current directory is snapshotted and uploaded (\-\-dir, \-\-exclude);
+\-\-in\-place runs code that already sits at a path on the chosen machine instead.
+Use \-\-dry\-run first to see the spec, and the upload, without submitting.
+.fi
+.SS "fq wait"
+Wait for jobs to finish.
+.PP
+.nf
+fq wait [\-h] [\-\-json] [\-\-timeout TIMEOUT] [\-\-propagate\-exit]
+               jobs [jobs ...]
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjobs\fR
+job ids
+.TP
+\fB\-\-timeout\fR \fITIMEOUT\fR
+stop waiting after this long (exit 4; the jobs keep running)
+.TP
+\fB\-\-propagate\-exit\fR
+with one job: exit with the job's exit code
+.SS "fq queue (q)"
+Squeue: running and waiting jobs, in dispatch order.
+.PP
+.nf
+fq queue [\-h] [\-\-json] [\-\-all] [\-u USER] [\-\-all\-users] [\-t STATE]
+                [\-n NAME] [\-w WHERE] [\-\-group GROUP] [\-o FORMAT] [\-\-noheader]
+                [\-\-watch [SECONDS]] [\-\-limit LIMIT]
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fB\-\-all\fR
+include finished jobs
+.TP
+\fB\-u\fR, \fB\-\-user\fR \fIUSER\fR
+another user's jobs (needs manage_all)
+.TP
+\fB\-\-all\-users\fR
+everyone's jobs (needs manage_all)
+.TP
+\fB\-t\fR, \fB\-\-state\fR \fISTATE\fR
+e.g. PD,R or PENDING,RUNNING
+.TP
+\fB\-n\fR, \fB\-\-name\fR \fINAME\fR
+glob on the job name, e.g. 'sweep\-*'
+.TP
+\fB\-w\fR, \fB\-\-where\fR \fIWHERE\fR
+only jobs placed on this machine or cluster
+.TP
+\fB\-\-group\fR \fIGROUP\fR
+members of one array or \-\-each group
+.TP
+\fB\-o\fR, \fB\-\-format\fR \fIFORMAT\fR
+columns, default id,name,user,st,where,gpus,time,limit,prio,pos,reason
+.TP
+\fB\-\-noheader\fR
+no column header
+.TP
+\fB\-\-watch\fR \fISECONDS\fR
+redraw every N s (at least 2; default 5); not with \-\-json
+.TP
+\fB\-\-limit\fR \fILIMIT\fR
+at most this many rows (default 500)
+.SS "fq history (sacct)"
+Sacct: finished jobs with wait, run time and GPU\-hours.
+.PP
+.nf
+fq history [\-h] [\-\-json] [\-\-since SINCE] [\-\-summary] [\-u USER]
+                  [\-\-all\-users] [\-w WHERE] [\-o FORMAT] [\-\-limit LIMIT]
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fB\-\-since\fR \fISINCE\fR
+how far back, e.g. 24h, 30d (default 7d)
+.TP
+\fB\-\-summary\fR
+totals per machine
+.TP
+\fB\-u\fR, \fB\-\-user\fR \fIUSER\fR
+another user's jobs (needs manage_all)
+.TP
+\fB\-\-all\-users\fR
+everyone's jobs (needs manage_all)
+.TP
+\fB\-w\fR, \fB\-\-where\fR \fIWHERE\fR
+only jobs that ran on this machine or cluster
+.TP
+\fB\-o\fR, \fB\-\-format\fR \fIFORMAT\fR
+columns, default id,name,st,where,gpus,wait,time,gpuh,outcome,reason
+.TP
+\fB\-\-limit\fR \fILIMIT\fR
+at most this many rows (default 1000)
+.SS "fq show"
+One job's full record, as JSON.
+.PP
+.nf
+fq show [\-h] [\-\-json] job
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjob\fR
+job id
+.SS "fq explain"
+Why a job is waiting, or where it was placed.
+.PP
+.nf
+fq explain [\-h] [\-\-json] job
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjob\fR
+job id
+.SS "fq cancel"
+Cancel jobs by id, or every unfinished job matching the filters.
+.PP
+.nf
+fq cancel [\-h] [\-\-json] [\-\-name NAME] [\-\-group GROUP] [\-\-phase PHASE]
+                 [jobs ...]
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjobs\fR
+job ids
+.TP
+\fB\-\-name\fR \fINAME\fR
+glob on the job name, e.g. 'sweep\-*'
+.TP
+\fB\-\-group\fR \fIGROUP\fR
+every member of an \-\-each group or array (grp_...)
+.TP
+\fB\-\-phase\fR \fIPHASE\fR
+only jobs in this phase, e.g. PENDING
+.SS "fq hold"
+Hold jobs by id, or every unfinished job matching the filters.
+.PP
+.nf
+fq hold [\-h] [\-\-json] [\-\-name NAME] [\-\-group GROUP] [\-\-phase PHASE]
+               [jobs ...]
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjobs\fR
+job ids
+.TP
+\fB\-\-name\fR \fINAME\fR
+glob on the job name, e.g. 'sweep\-*'
+.TP
+\fB\-\-group\fR \fIGROUP\fR
+every member of an \-\-each group or array (grp_...)
+.TP
+\fB\-\-phase\fR \fIPHASE\fR
+only jobs in this phase, e.g. PENDING
+.SS "fq release"
+Release jobs by id, or every unfinished job matching the filters.
+.PP
+.nf
+fq release [\-h] [\-\-json] [\-\-name NAME] [\-\-group GROUP] [\-\-phase PHASE]
+                  [jobs ...]
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjobs\fR
+job ids
+.TP
+\fB\-\-name\fR \fINAME\fR
+glob on the job name, e.g. 'sweep\-*'
+.TP
+\fB\-\-group\fR \fIGROUP\fR
+every member of an \-\-each group or array (grp_...)
+.TP
+\fB\-\-phase\fR \fIPHASE\fR
+only jobs in this phase, e.g. PENDING
+.SS "fq top"
+Move a job ahead of your other waiting jobs.
+.PP
+.nf
+fq top [\-h] [\-\-json] job
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjob\fR
+job id
+.SS "fq requeue"
+Run a finished job again, as a new job.
+.PP
+.nf
+fq requeue [\-h] [\-\-json] job
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjob\fR
+job id
+.SS "fq modify"
+Change a job that has not started (what it runs cannot change).
+.PP
+.nf
+fq modify [\-h] [\-\-json] [\-\-vram VRAM] [\-\-gpu\-model GPU_MODEL]
+                 [\-\-mem MEM] [\-\-time TIME] [\-\-scratch SCRATCH] [\-\-on ON]
+                 [\-\-queue QUEUE] [\-\-account ACCOUNT] [\-\-qos QOS]
+                 [\-\-begin BEGIN] [\-\-name NAME] [\-\-gpus GPUS] [\-\-cpus CPUS]
+                 [\-\-priority PRIORITY] [\-\-retry RETRY] [\-\-allow\-clusters]
+                 [\-\-begin\-now]
+                 job
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjob\fR
+job id
+.TP
+\fB\-\-vram\fR \fIVRAM\fR
+minimum VRAM per GPU, e.g. 24G
+.TP
+\fB\-\-gpu\-model\fR \fIGPU_MODEL\fR
+only this GPU model
+.TP
+\fB\-\-mem\fR \fIMEM\fR
+total RAM, e.g. 32G
+.TP
+\fB\-\-time\fR \fITIME\fR
+walltime, e.g. 4h
+.TP
+\fB\-\-scratch\fR \fISCRATCH\fR
+scratch space, e.g. 50G
+.TP
+\fB\-\-on\fR \fION\fR
+destinations (a,b)
+.TP
+\fB\-\-queue\fR \fIQUEUE\fR
+cluster queue, e.g. kiac:a100
+.TP
+\fB\-\-account\fR \fIACCOUNT\fR
+Slurm account
+.TP
+\fB\-\-qos\fR \fIQOS\fR
+Slurm QOS
+.TP
+\fB\-\-begin\fR \fIBEGIN\fR
+not before: +2h or 2026\-09\-24T09:00
+.TP
+\fB\-\-name\fR \fINAME\fR
+job name
+.TP
+\fB\-\-gpus\fR \fIGPUS\fR
+whole GPUs
+.TP
+\fB\-\-cpus\fR \fICPUS\fR
+CPU cores
+.TP
+\fB\-\-priority\fR \fIPRIORITY\fR
+\-1000..1000, higher is placed sooner
+.TP
+\fB\-\-retry\fR \fIRETRY\fR
+reruns allowed
+.TP
+\fB\-\-allow\-clusters\fR
+let it be placed on a Slurm site
+.TP
+\fB\-\-begin\-now\fR
+drop a \-\-begin time (wins over \-\-begin)
+.SS "fq priority"
+Set a waiting job's priority.
+.PP
+.nf
+fq priority [\-h] [\-\-json] job value
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjob\fR
+job id
+.TP
+\fIvalue\fR
+new priority, \-1000..1000; higher is placed sooner
+.SS "fq shell"
+A shell (or `\-\- CMD`) inside a running workstation job.
+.PP
+.nf
+fq shell [\-h] [\-\-json] job
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjob\fR
+job id
+.SS "fq alloc (salloc)"
+Hold idle GPUs on a workstation for interactive work.
+.PP
+.nf
+fq alloc [\-h] [\-\-json] [\-\-gpus GPUS] [\-\-time TIME] [\-\-on ON]
+                [\-\-mem MEM] [\-\-vram VRAM] [\-\-gpu\-model GPU_MODEL]
+                [\-\-in\-place IN_PLACE] [\-\-dir DIR]
+                [\-\-idempotency\-key IDEMPOTENCY_KEY] [\-\-cpus CPUS]
+                [\-\-priority PRIORITY] [\-\-name NAME] [\-\-timeout TIMEOUT]
+                [\-\-shell] [\-\-keep]
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fB\-\-gpus\fR \fIGPUS\fR
+whole GPUs (default 1)
+.TP
+\fB\-\-time\fR \fITIME\fR
+how long to hold them (default 2h)
+.TP
+\fB\-\-on\fR \fION\fR
+any one of these workstations
+.TP
+\fB\-\-mem\fR \fIMEM\fR
+total RAM, e.g. 32G
+.TP
+\fB\-\-vram\fR \fIVRAM\fR
+minimum VRAM per GPU, e.g. 24G
+.TP
+\fB\-\-gpu\-model\fR \fIGPU_MODEL\fR
+only this GPU model
+.TP
+\fB\-\-in\-place\fR \fIIN_PLACE\fR
+work in code already at this path
+.TP
+\fB\-\-dir\fR \fIDIR\fR
+directory to snapshot and upload (default: .)
+.TP
+\fB\-\-idempotency\-key\fR \fIIDEMPOTENCY_KEY\fR
+stable key: a retry returns the same allocation
+.TP
+\fB\-\-cpus\fR \fICPUS\fR
+CPU cores
+.TP
+\fB\-\-priority\fR \fIPRIORITY\fR
+\-1000..1000, higher is placed sooner
+.TP
+\fB\-\-name\fR \fINAME\fR
+job name (default alloc)
+.TP
+\fB\-\-timeout\fR \fITIMEOUT\fR
+give up waiting for GPUs after this long (job stays queued)
+.TP
+\fB\-\-shell\fR
+open a shell at once; release the GPUs when it exits
+.TP
+\fB\-\-keep\fR
+with \-\-shell: keep the allocation after the shell exits
+.SS "fq logs"
+Print a job's output from the numpi log cache.
+.PP
+.nf
+fq logs [\-h] [\-\-json] [\-\-err] [\-\-tail BYTES] [\-\-offset OFFSET]
+               [\-\-attempt ATTEMPT] [\-\-follow] [\-\-raw]
+               job
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjob\fR
+job id
+.TP
+\fB\-\-err\fR
+stderr instead of stdout
+.TP
+\fB\-\-tail\fR \fIBYTES\fR
+only the last BYTES (ignored with \-\-offset)
+.TP
+\fB\-\-offset\fR \fIOFFSET\fR
+start at this byte offset
+.TP
+\fB\-\-attempt\fR \fIATTEMPT\fR
+an earlier attempt of a retried job
+.TP
+\fB\-\-follow\fR, \fB\-f\fR
+keep reading until the log is complete
+.TP
+\fB\-\-raw\fR
+write exact stored bytes instead of cleaning captured terminal progress output
+.SS "fq fetch"
+Download a job's collected outputs (\-\-collect), checking each hash.
+.PP
+.nf
+fq fetch [\-h] [\-\-json] [\-o OUTPUT] [\-\-overwrite] [\-\-attempt ATTEMPT]
+                job [paths ...]
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIjob\fR
+job id
+.TP
+\fIpaths\fR
+only these relative paths (default: all)
+.TP
+\fB\-o\fR, \fB\-\-output\fR \fIOUTPUT\fR
+directory to write into (default: .)
+.TP
+\fB\-\-overwrite\fR
+replace existing destination files
+.TP
+\fB\-\-attempt\fR \fIATTEMPT\fR
+an earlier attempt of a retried job
+.SS "fq nodes"
+Fleetq's machines: state, drain, and the GPUs it has reserved.
+.PP
+.nf
+fq nodes [\-h] [\-\-json]
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.SS "fq usage"
+Measured GPU, CPU and memory use, and which GPUs are idle (cached).
+.PP
+.nf
+fq usage [\-h] [\-\-json] [\-\-idle] [machine]
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fImachine\fR
+one Fleetmon machine (default: all)
+.TP
+\fB\-\-idle\fR
+only GPUs Fleetmon proves idle (two fresh idle samples)
+.SS "fq admin"
+Pause dispatch or stop new admission while preserving cancellation.
+.PP
+.nf
+fq admin [\-h] [\-\-json] {pause,resume,accept\-off,accept\-on}
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIoperation\fR {pause,resume,accept-off,accept-on}
+pause/resume dispatch, or stop/start accepting new jobs
+.SS "fq node"
+Drain or resume one node.
+.PP
+.nf
+fq node [\-h] [\-\-json] [\-\-reason REASON] {drain,resume} name
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.TP
+\fIoperation\fR {drain,resume}
+stop placing work there, or start again
+.TP
+\fIname\fR
+node id, as `fq nodes` lists it
+.TP
+\fB\-\-reason\fR \fIREASON\fR
+reason recorded with a drain
+.SS "fq whoami"
+The token's owner, kind and scopes.
+.PP
+.nf
+fq whoami [\-h] [\-\-json]
+.fi
+.TP
+\fB\-\-json\fR
+print exactly one JSON object on stdout
+.SH "EXIT STATUS"
+.nf
+  0  ok (wait: the job succeeded)        5  fleetqd unreachable: retry, same \-\-idempotency\-key
+  1  the job ended unsuccessfully        6  authentication (token missing, revoked, unreadable)
+  2  refused or usage error: the answer  7  server or version error
+  3  not found                           8  rate limited
+  4  wait timed out; the job runs on   130  interrupted; any submitted job runs on
+.fi
+.SH "ENVIRONMENT"
+.nf
+  FQ_URL         fleetqd origin, HTTPS (plain HTTP only on 127.0.0.1 or ::1)
+  FQ_TOKEN_FILE  token file, mode 0600 (default ~/.config/fleetq/token)
+  FQ_CONFIG      client config with `url` and `token_file` (default ~/.config/fleetq/client.toml)
+  FQ_FLEETCTL    fleetctl used by `fq shell`
+.fi
+.SH "EXAMPLES"
+.nf
+  fq usage \-\-idle                                  GPUs free right now (cached; contacts no machine)
+  fq \-\-json submit \-\-idempotency\-key exp1\-seed0 \-\-gpus 1 \-\-on rtx4090 \-\- python train.py \-\-seed 0
+  fq submit \-\-gpus 1 \-\-array 0\-9%4 \-\-name sweep \-\- python train.py   (task id in $FQ_ARRAY_TASK_ID)
+  fq \-\-json wait 42 \-\-timeout 9m                   exit 4 means still running: call it again
+  fq logs 42 \-\-tail 4000 ; fq explain 42 ; fq cancel \-\-name 'sweep*'
+.fi
+.SH NOTES
+\-\-json may go before or after the subcommand. Everything after a bare `\-\-` is
+the job's command, passed through untouched. Reads (q, history, usage, nodes,
+logs) come from numpi's caches and never contact a machine, so they are safe
+to repeat: use them, not squeue, sacct or nvidia\-smi over ssh, for fleetq jobs
+and Fleetmon\-monitored machines. (They do not see other users' Slurm jobs.)
+.SH SEE ALSO
+fleetctl help, fleetqd(1) \- the daemon's own --help, fleetq/README.md
