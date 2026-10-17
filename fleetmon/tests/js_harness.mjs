@@ -583,6 +583,7 @@ const cardValues = (content) =>
   assert.match(text, /clock drift 900 s vs hub/, "issue: clock drift");
   const cards = collect(content, "ARTICLE").filter((n) => n.className === "gpu-card");
   assert.equal(cards.length, 2, "one card per GPU");
+  assert.deepEqual(cards.map((n) => n.dataset.flag), ["busy", "stale"], "card edge follows the flag");
   const busy = textOf(cards[0]);
   assert.match(busy, /GPU 0 · /, "card names gpu by index");
   assert.match(busy, /busy/, "backend availability badge busy");
@@ -619,6 +620,7 @@ const cardValues = (content) =>
   assert.match(text, /History/, "history grid before long tables");
   const figures = collect(content, "FIGURE");
   assert.equal(figures.length, 2, "cpu + gpu_util figures; empty series skipped");
+  assert.deepEqual(figures.map((n) => n.dataset.series), ["1", "2"], "figures carry their series count");
   const linePaths = collect(content, "PATH").filter((p) => p._attrs.class.includes("line"));
   const areaPaths = collect(content, "PATH").filter((p) => p._attrs.class.includes("area"));
   assert.equal(linePaths.length, 3, "one solid line per series");

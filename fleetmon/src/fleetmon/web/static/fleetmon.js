@@ -806,6 +806,7 @@
 
   function gpuCard(gpu, procEntries, owners) {
     const card = el("article", "gpu-card");
+    card.dataset.flag = itemFlag(gpu);
     const head = el("div", "gpu-head");
     const name = el("span", "gpu-name", `GPU ${_int(gpu.idx)} · ${_text(gpu.model)}`);
     name.title = name.textContent;
@@ -1806,8 +1807,8 @@
   const W = 480;
   const H = 180;
   const PAD = {l: 48, r: 12, t: 8, b: 24};
-  const PALETTE = ["c1", "c2", "c3", "c4", "c5"];
-  const CHART_COLORS = {cpu: "c1", ram: "c2", disk: "c3"};
+  const PALETTE = ["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"];
+  const CHART_COLORS = {cpu: "c1", ram: "c7", disk: "c2"};
   const X_LABELS = 4;
   const SPARK = {w: 64, h: 22};
   const CHARTS = [
@@ -1934,6 +1935,7 @@
 
   function chartFigure(title, chartSeries) {
     const fig = el("figure", "chart");
+    fig.dataset.series = String(chartSeries.length);
     const caption = el(
       "figcaption",
       null,

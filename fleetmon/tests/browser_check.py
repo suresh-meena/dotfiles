@@ -137,7 +137,10 @@ with TestClient(runtime.create_app()) as client, sync_playwright() as p:
     page.set_viewport_size({"width": 390, "height": 800})
     page.goto("http://fleetmon.test/host/gpu-01")
     page.get_by_role("searchbox").wait_for()
-    scroller = page.locator(".table-scroll").first
+    # Disks come first but fit at this width; workloads always overflow.
+    scroller = page.locator(".table-scroll").filter(
+        has=page.locator("table[data-table-key=workloads]")
+    )
     scroller.evaluate("el => el.scrollLeft = 150")
     page.wait_for_timeout(2400)
     assert scroller.evaluate("el => el.scrollLeft") == 150
