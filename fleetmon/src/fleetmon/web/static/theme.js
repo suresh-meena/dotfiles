@@ -46,6 +46,14 @@
       apply(next);
     });
   });
+  // "t" cycles the theme from anywhere but a text field.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "t" || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+    const field = event.target;
+    if (field && (/^(INPUT|TEXTAREA|SELECT)$/.test(field.tagName || "") || field.isContentEditable)) return;
+    const button = document.getElementById("theme");
+    if (button) button.click();
+  });
   // Another tab changed the theme.
   window.addEventListener("storage", (event) => {
     if (event.key === KEY) apply(stored());

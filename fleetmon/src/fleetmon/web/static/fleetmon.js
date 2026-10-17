@@ -471,11 +471,31 @@
         link.setAttribute("aria-current", "page");
       }
       link.title = host.target;
+      link.dataset.tone = TOKEN_COLORS[host.state] || "st-bad";
       link.append(el("span", "sb-name", host.target));
       link.append(token(host.state, ""));
+      const strip = rackStrip(host);
+      if (strip) link.append(strip);
       li.append(link);
       listRoot.append(li);
     });
+  }
+
+  // One bar per GPU, idle then busy then stale, from the host's own counts.
+  const RACK_MAX = 16;
+  function rackStrip(host) {
+    const strip = el("span", "rack-gpus");
+    strip.setAttribute("aria-hidden", "true");
+    let shown = 0;
+    [["idle", host.gpu_idle], ["busy", host.gpu_busy], ["stale", host.gpu_stale]].forEach(([flag, count]) => {
+      const n = _number(count) && count > 0 ? Math.floor(count) : 0;
+      for (let i = 0; i < n && shown < RACK_MAX; i += 1, shown += 1) {
+        const bar = el("span");
+        bar.dataset.flag = flag;
+        strip.append(bar);
+      }
+    });
+    return shown ? strip : null;
   }
 
   let sidebarInFlight = false;
@@ -564,6 +584,113 @@
     return {node: wrap, raw: String(entry.idle)};
   }
 
+  // ---- GPU wall: every GPU in the fleet as one tile, grouped by host in
+  // overview order so each machine keeps its place between refreshes. The
+  // fill is utilization, the bottom bar is VRAM in use, and the tile's
+  // treatment (outline, solid, hatched) is its flag, which the legend names.
+  function shortModel(model) {
+    return typeof model === "string" ? model.replace(/^NVIDIA\s+/i, "").replace(/^GeForce\s+/i, "") : "";
+  }
+  function gpuTile(item) {
+    const flag = itemFlag(item);
+    const tile = el("a", "tile");
+    tile.dataset.flag = flag;
+    tile.href = `/host/${encodeURIComponent(item.target)}`;
+    const util = _number(item.utilization) ? Math.min(1, Math.max(0, item.utilization)) : 0;
+    const level = el("span", "tile-level");
+    level.style.height = `${(util * 100).toFixed(0)}%`;
+    const used = _number(item.vram_used)
+      ? item.vram_used
+      : _number(item.vram_total) && _number(item.vram_free) ? item.vram_total - item.vram_free : null;
+    const vram = el("span", "tile-vram");
+    const vramFill = el("span");
+    vramFill.style.width = used !== null && _number(item.vram_total) && item.vram_total > 0
+      ? `${Math.min(100, Math.max(0, (used / item.vram_total) * 100)).toFixed(0)}%`
+      : "0%";
+    vram.append(vramFill);
+    tile.append(level, el("span", "tile-idx", _int(item.idx)), vram);
+    const owners = Array.isArray(item.owners) ? item.owners.filter((o) => typeof o === "string" && o) : [];
+    const label = [
+      `${item.target} GPU ${_int(item.idx)}`,
+      shortModel(item.model) || UNKNOWN,
+      flag,
+      `util ${_pct(item.utilization)}`,
+      `vram ${_pair(used, item.vram_total)}`,
+    ];
+    if (owners.length) label.push(`owners ${ownersText(owners)}`);
+    tile.title = label.join(" · ");
+    tile.setAttribute("aria-label", tile.title);
+    return tile;
+  }
+  function gpuWall(hosts, idleDoc) {
+    const byHost = new Map();
+    rowsOf(idleDoc).forEach((item) => {
+      if (!item || typeof item !== "object" || typeof item.target !== "string" || !item.target) return;
+      if (!byHost.has(item.target)) byHost.set(item.target, []);
+      byHost.get(item.target).push(item);
+    });
+    const unreadable = new Map();
+    (idleDoc && Array.isArray(idleDoc.unreadable) ? idleDoc.unreadable : []).forEach((host) => {
+      if (host && typeof host.target === "string" && host.target) unreadable.set(host.target, host.error);
+    });
+    const order = hosts
+      .map((host) => host && host.target)
+      .filter((name) => byHost.has(name) || unreadable.has(name));
+    byHost.forEach((_items, name) => {
+      if (!order.includes(name)) order.push(name);
+    });
+    if (!order.length) return null;
+    const panel = el("section", "wall-panel");
+    panel.setAttribute("aria-label", "GPUs by host");
+    const wall = el("div", "wall");
+    order.forEach((name) => {
+      const items = (byHost.get(name) || []).slice().sort(
+        (a, b) => (_number(a.idx) ? a.idx : 0) - (_number(b.idx) ? b.idx : 0),
+      );
+      const group = el("div", "wall-host");
+      const head = el("div", "wall-head");
+      const link = el("a", "wall-name", name);
+      link.href = `/host/${encodeURIComponent(name)}`;
+      head.append(link);
+      const models = Array.from(new Set(items.map((item) => shortModel(item.model)).filter(Boolean)));
+      if (models.length) head.append(el("span", "wall-model", models.join(" + ")));
+      group.append(head);
+      const tiles = el("div", "wall-gpus");
+      if (!items.length) {
+        const bad = el("a", "tile tile-wide", "?");
+        bad.dataset.flag = "unreadable";
+        bad.href = `/host/${encodeURIComponent(name)}`;
+        bad.title = gpuReadError(unreadable.get(name), false) || "GPUs unreadable";
+        bad.setAttribute("aria-label", `${name}: ${bad.title}`);
+        tiles.append(bad);
+      }
+      items.forEach((item) => tiles.append(gpuTile(item)));
+      group.append(tiles);
+      wall.append(group);
+    });
+    panel.append(wall);
+    const legend = el("div", "wall-legend");
+    ["idle", "busy", "stale"].forEach((flag) => {
+      const key = el("span", "key");
+      const swatch = el("span", "tile tile-key");
+      swatch.dataset.flag = flag;
+      key.append(swatch, el("span", null, flag));
+      legend.append(key);
+    });
+    legend.append(el("span", "key-note", "fill: utilization · bottom bar: vram in use"));
+    panel.append(legend);
+    return panel;
+  }
+
+  // One line in the overview; the full reason is the tooltip and the host
+  // page's issues panel.
+  function errorClip(text) {
+    if (!text) return DASH;
+    const clip = el("span", "cell-clip", text);
+    clip.title = text;
+    return {node: clip, raw: text};
+  }
+
   function renderOverview(rows, idleDoc) {
     clear();
     const list = rowsOf(rows);
@@ -580,6 +707,8 @@
     cards.append(card("stale GPUs", summaryValue(idleDoc, "unknown"), "stale"));
     cards.append(card("needs attention", String(attention), attention ? "bad" : "ok"));
     content.append(cards);
+    const wall = gpuWall(list, idleDoc);
+    if (wall) content.append(wall);
     const sparks = sparkMap(lastSparks);
     const columns = [
       {label: "host"},
@@ -644,7 +773,7 @@
           ),
           raw: host.gpu_vram_used,
         },
-        currentError(host) ? token(currentError(host)) : hostGpuError(host) || DASH,
+        currentError(host) ? token(currentError(host)) : errorClip(hostGpuError(host)),
       ]);
       // An old snapshot's numbers stay readable but must not pass for live:
       // dim the measurements, keep host, state, age and error at full strength.
@@ -1936,6 +2065,11 @@
   function chartFigure(title, chartSeries) {
     const fig = el("figure", "chart");
     fig.dataset.series = String(chartSeries.length);
+    const unit = chartSeries.some((item) => item.unit === "percent")
+      ? "percent"
+      : "value";
+    // The latest reading, so the caption answers "how much now" directly.
+    const latest = (item) => item.points[item.points.length - 1][1];
     const caption = el(
       "figcaption",
       null,
@@ -1946,8 +2080,11 @@
         const label = el("span", "series", item.label.replace(/^gpu(\d+)\s.*/, "GPU $1"));
         label.title = item.label;
         label.prepend(el("span", `swatch ${seriesColor(item.chart, index)}`));
+        label.append(el("span", "series-now", unitText(unit, latest(item))));
         caption.append(label);
       });
+    } else {
+      caption.append(el("span", "fig-now", unitText(unit, latest(chartSeries[0]))));
     }
     fig.append(caption);
     let x0 = Infinity;
@@ -1962,9 +2099,6 @@
       fig.append(el("p", "note", "not enough points"));
       return fig;
     }
-    const unit = chartSeries.some((item) => item.unit === "percent")
-      ? "percent"
-      : "value";
     const plot = {w: W - PAD.l - PAD.r, h: H - PAD.t - PAD.b};
     const root = svg("svg");
     root.setAttribute("viewBox", `0 0 ${W} ${H}`);
@@ -1997,7 +2131,12 @@
       tick.setAttribute("x", PAD.l + plot.w * fraction);
       tick.setAttribute("y", H - 3);
       tick.setAttribute("text-anchor", index === 0 ? "start" : index === X_LABELS - 1 ? "end" : "middle");
-      root.append(tick);
+      const grid = svg("line", "grid");
+      grid.setAttribute("x1", PAD.l + plot.w * fraction);
+      grid.setAttribute("x2", PAD.l + plot.w * fraction);
+      grid.setAttribute("y1", PAD.t);
+      grid.setAttribute("y2", PAD.t + plot.h);
+      root.append(grid, tick);
     }
     chartSeries.forEach((item, index) => {
       const coords = item.points.map(([t, v], point) => {
@@ -2286,6 +2425,21 @@
   document.getElementById("menu").addEventListener("click", () => {
     const open = document.getElementById("nav").classList.toggle("open");
     document.getElementById("menu").setAttribute("aria-expanded", String(open));
+  });
+  const PAGE_KEYS = {1: "/overview", 2: "/idle-gpus", 3: "/queue", 4: "/nodes", 5: "/jobs", 6: "/hub-status"};
+  document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+    const field = event.target;
+    if (field && (/^(INPUT|TEXTAREA|SELECT)$/.test(field.tagName || "") || field.isContentEditable)) return;
+    if (PAGE_KEYS[event.key]) {
+      location.href = PAGE_KEYS[event.key];
+    } else if (event.key === "/") {
+      const search = document.querySelector("input[type=search]");
+      if (search) {
+        event.preventDefault();
+        search.focus();
+      }
+    }
   });
   document.addEventListener("visibilitychange", () => {
     // Pause while hidden; on return, refresh immediately (at most once each).

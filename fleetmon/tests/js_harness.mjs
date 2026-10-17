@@ -294,6 +294,9 @@ const OVERVIEW = [
     gpu_utilization: 0.75,
     gpu_vram_used: 8 * 2 ** 30,
     gpu_vram_total: 11 * 2 ** 30,
+    gpu_idle: 0,
+    gpu_busy: 0,
+    gpu_stale: 1,
     visible_users: 2,
     last_error: null,
   },
@@ -507,6 +510,17 @@ const cardValues = (content) =>
   assert.equal(sidebar.childNodes.length, 2, "sidebar populated on overview");
   assert.match(sidebar.childNodes[0].textContent, /alpha.*live/, "sidebar text labels");
   assert.deepEqual(cardValues(shim.content), ["1", "1", "1", "1"], "summary card values");
+  const strip = collect(sidebar.childNodes[0], "SPAN").find((n) => n.className === "rack-gpus");
+  assert.deepEqual(strip.childNodes.map((n) => n.dataset.flag), ["stale"], "rack strip mirrors the host's GPU counts");
+  const tiles = collect(shim.content, "A").filter((n) => n.className === "tile");
+  assert.deepEqual(
+    tiles.map((n) => [n.href, n.dataset.flag]),
+    [["/host/alpha", "stale"], ["/host/beta", "busy"], ["/host/gamma", "idle"]],
+    "gpu wall: one tile per GPU, in overview host order, carrying its flag",
+  );
+  const level = collect(tiles[1], "SPAN").find((n) => n.className === "tile-level");
+  assert.equal(level.style.height, "95%", "tile fill is utilization as a fraction");
+  assert.match(tiles[1].title, /owners alice, bob, carol \+1 more/, "tile tooltip names the owners");
   const table = tables(shim.content)[0];
   const rows = table.querySelector("tbody").rows;
   assert.equal(rows.length, 2, "overview rows");

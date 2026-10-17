@@ -349,11 +349,33 @@ def test_idle_gpus_endpoint_sanitizes_hostile_summaries():
     assert body["count"] == 1
 
 
+def test_idle_gpus_endpoint_passes_unreadable_hosts_through():
+    class Unreadable:
+        def idle_gpus(self, **kwargs):
+            return {
+                "items": [],
+                "summary": {"idle": 0, "busy": 0, "unknown": 0},
+                "unreadable": [
+                    {"target": "r1", "error": "nvmlerror_librmversionmismatch"},
+                    {"target": 5, "error": "nvmlerror_drivernotloaded"},
+                    "junk",
+                ],
+            }
+
+    body = request(
+        app=create_app(Unreadable()), method="GET", path="/api/idle-gpus"
+    ).json()
+    assert body["unreadable"] == [
+        {"target": "r1", "error": "nvmlerror_librmversionmismatch"}
+    ]
+
+
 def test_idle_gpus_degrades_to_empty_when_provider_lacks_the_method():
     app = create_app(Queries())
     body = request(app, "GET", "/api/idle-gpus").json()
     assert body["items"] == []
     assert body["summary"] == {"idle": 0, "busy": 0, "unknown": 0}
+    assert body["unreadable"] == []
 
 
 def test_idle_gpus_page_route_renders():

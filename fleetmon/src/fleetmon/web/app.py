@@ -413,6 +413,16 @@ def create_app(
                     summary[key] = count
         document = _page_doc(_bounded(raw_items, limit, offset), limit, offset)
         document["summary"] = summary
+        # Hosts whose GPUs NVML could not read. Their GPUs are missing from
+        # the items, and the dashboard must say so rather than count fewer.
+        raw_unreadable = value.get("unreadable") if isinstance(value, dict) else None
+        document["unreadable"] = [
+            {"target": entry["target"], "error": entry["error"]}
+            for entry in (raw_unreadable if isinstance(raw_unreadable, list) else [])[:256]
+            if isinstance(entry, dict)
+            and isinstance(entry.get("target"), str)
+            and isinstance(entry.get("error"), str)
+        ]
         return document
 
     @app.get("/api/hosts")
