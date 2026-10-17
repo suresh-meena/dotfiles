@@ -377,7 +377,7 @@ main {
    grid item's stretch (auto margins on main made short pages float and
    narrow tables shrink-wrap). */
 main > * {
-  max-width: 1320px;
+  max-width: 1600px;
   margin-left: auto;
   margin-right: auto;
 }
@@ -928,7 +928,7 @@ table {
 }
 th,
 td {
-  padding: 0.42rem 0.6rem;
+  padding: 0.42rem 0.5rem;
   border-bottom: 1px solid var(--border);
   text-align: left;
   font-size: 0.82rem;
@@ -940,7 +940,7 @@ thead th {
   font-size: 0.68rem;
   font-weight: 650;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.03em;
   color: var(--text-3);
   background: var(--surface-2);
   border-bottom: 1px solid var(--border);
@@ -993,9 +993,31 @@ th.num {
   margin: 0;
   background: transparent;
 }
+/* break-word, not anywhere: anywhere lets a column's minimum shrink to one
+   character once the table overflows, and a long error then stands a row
+   hundreds of pixels tall. */
 .table-scroll td {
   max-width: 24rem;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+}
+/* Overview: the error reason wraps to a few lines rather than a sliver,
+   and the host column stays put while the wide table scrolls sideways. */
+table[data-table-key="overview"] td:last-child {
+  min-width: 11rem;
+}
+table[data-table-key="overview"] th:first-child,
+table[data-table-key="overview"] td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface);
+  box-shadow: inset -1px 0 0 var(--border);
+}
+table[data-table-key="overview"] th:first-child {
+  background: var(--surface-2);
+}
+table[data-table-key="overview"] tbody tr:hover td:first-child {
+  background: var(--surface-2);
 }
 .kv {
   max-width: 40rem;
