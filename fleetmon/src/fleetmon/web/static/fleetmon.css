@@ -2,7 +2,8 @@
    hairline rules. Color means state and nothing else: signal green is a
    GPU you can have, blue is one at work, hatching is one nobody can vouch
    for, amber and red are warnings. Everything else is ink on the panel.
-   Two themes, each its own object: "console" (dark) and "paper" (light,
+   Two themes, each its own object: "console" (dark graphite, kept soft:
+   body text near 10:1, not white on black) and "paper" (light,
    graph-paper ground). Every color is a token on :root; the console block
    appears twice (OS setting, and the header's theme toggle) and the two
    copies must stay identical.
@@ -67,35 +68,35 @@
   :root:not([data-theme="light"]) {
     color-scheme: dark;
     /* console */
-    --bg: #090b0c;
-    --ground: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1.2px) 0 0 / 18px 18px;
-    --panel: #0e1112;
-    --panel-2: #14181a;
-    --line: #1c2224;
-    --line-2: #2b3336;
-    --ink: #e6ebe8;
-    --ink-2: #a9b3b0;
-    --ink-3: #77827f;
-    --ink-4: #47504e;
-    --link: #e6ebe8;
-    --focus: #f0b440;
-    --free: #3ee08f;
-    --free-dim: rgba(62, 224, 143, 0.08);
-    --busy: #5fa8ff;
-    --busy-dim: rgba(95, 168, 255, 0.16);
-    --hatch: #39413f;
-    --warn: #f0b440;
-    --warn-dim: rgba(240, 180, 64, 0.1);
-    --bad: #ff6b5b;
-    --bad-dim: rgba(255, 107, 91, 0.08);
-    --seg-off: #1b2123;
-    --seg-ok: #a9b3b0;
-    --seg-warn: #f0b440;
-    --seg-high: #ff6b5b;
-    --seg-neutral: #5fa8ff;
-    --plot-grid: #1a2022;
-    --axis: #5f6a67;
-    --area-opacity: 0.12;
+    --bg: #1b1f22;
+    --ground: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1.2px) 0 0 / 18px 18px;
+    --panel: #22272b;
+    --panel-2: #292f33;
+    --line: #31383d;
+    --line-2: #3e464c;
+    --ink: #d3d8d5;
+    --ink-2: #a8b0ad;
+    --ink-3: #8a9390;
+    --ink-4: #6b7471;
+    --link: #d3d8d5;
+    --focus: #d9a75a;
+    --free: #6fcf97;
+    --free-dim: rgba(111, 207, 151, 0.1);
+    --busy: #7aa7e0;
+    --busy-dim: rgba(122, 167, 224, 0.16);
+    --hatch: #4a5351;
+    --warn: #d9a75a;
+    --warn-dim: rgba(217, 167, 90, 0.12);
+    --bad: #e2806f;
+    --bad-dim: rgba(226, 128, 111, 0.1);
+    --seg-off: #30373b;
+    --seg-ok: #a8b0ad;
+    --seg-warn: #d9a75a;
+    --seg-high: #e2806f;
+    --seg-neutral: #7aa7e0;
+    --plot-grid: #343b40;
+    --axis: #7f8885;
+    --area-opacity: 0.14;
     --c1: #3987e5;
     --c2: #d95926;
     --c3: #199e70;
@@ -109,35 +110,35 @@
 :root[data-theme="dark"] {
   color-scheme: dark;
   /* console */
-  --bg: #090b0c;
-  --ground: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1.2px) 0 0 / 18px 18px;
-  --panel: #0e1112;
-  --panel-2: #14181a;
-  --line: #1c2224;
-  --line-2: #2b3336;
-  --ink: #e6ebe8;
-  --ink-2: #a9b3b0;
-  --ink-3: #77827f;
-  --ink-4: #47504e;
-  --link: #e6ebe8;
-  --focus: #f0b440;
-  --free: #3ee08f;
-  --free-dim: rgba(62, 224, 143, 0.08);
-  --busy: #5fa8ff;
-  --busy-dim: rgba(95, 168, 255, 0.16);
-  --hatch: #39413f;
-  --warn: #f0b440;
-  --warn-dim: rgba(240, 180, 64, 0.1);
-  --bad: #ff6b5b;
-  --bad-dim: rgba(255, 107, 91, 0.08);
-  --seg-off: #1b2123;
-  --seg-ok: #a9b3b0;
-  --seg-warn: #f0b440;
-  --seg-high: #ff6b5b;
-  --seg-neutral: #5fa8ff;
-  --plot-grid: #1a2022;
-  --axis: #5f6a67;
-  --area-opacity: 0.12;
+  --bg: #1b1f22;
+  --ground: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1.2px) 0 0 / 18px 18px;
+  --panel: #22272b;
+  --panel-2: #292f33;
+  --line: #31383d;
+  --line-2: #3e464c;
+  --ink: #d3d8d5;
+  --ink-2: #a8b0ad;
+  --ink-3: #8a9390;
+  --ink-4: #6b7471;
+  --link: #d3d8d5;
+  --focus: #d9a75a;
+  --free: #6fcf97;
+  --free-dim: rgba(111, 207, 151, 0.1);
+  --busy: #7aa7e0;
+  --busy-dim: rgba(122, 167, 224, 0.16);
+  --hatch: #4a5351;
+  --warn: #d9a75a;
+  --warn-dim: rgba(217, 167, 90, 0.12);
+  --bad: #e2806f;
+  --bad-dim: rgba(226, 128, 111, 0.1);
+  --seg-off: #30373b;
+  --seg-ok: #a8b0ad;
+  --seg-warn: #d9a75a;
+  --seg-high: #e2806f;
+  --seg-neutral: #7aa7e0;
+  --plot-grid: #343b40;
+  --axis: #7f8885;
+  --area-opacity: 0.14;
   --c1: #3987e5;
   --c2: #d95926;
   --c3: #199e70;
