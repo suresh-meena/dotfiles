@@ -471,9 +471,13 @@
         link.setAttribute("aria-current", "page");
       }
       link.title = host.target;
-      link.dataset.tone = TOKEN_COLORS[host.state] || "st-bad";
+      // The LED and note follow the overview's attention reasons, so a live
+      // host with unreadable GPUs or a full disk does not show green.
+      const reasons = attentionReasons(host);
+      const failing = reasons.some((reason) => /\bst-bad\b/.test(reason.className));
+      link.dataset.tone = failing ? "st-bad" : reasons.length ? "st-partial" : TOKEN_COLORS[host.state] || "st-bad";
       link.append(el("span", "sb-name", host.target));
-      link.append(token(host.state, ""));
+      link.append(reasons.length ? reasons[0] : token(host.state, ""));
       const strip = rackStrip(host);
       if (strip) link.append(strip);
       li.append(link);
@@ -551,17 +555,57 @@
     if (!host || isSchedulerHost(host) || snapshotStale(host)) return null;
     return gpuReadError(host.sample_nvml_error, host.sample_nvml_supported);
   }
-  function hostNeedsAttention(host) {
-    if (!host || typeof host !== "object") return false;
+  // Why a host needs attention, as state tokens; empty when it does not.
+  function attentionReasons(host) {
+    if (!host || typeof host !== "object") return [];
+    const reasons = [];
     const state = typeof host.state === "string" && host.state ? host.state : UNKNOWN;
-    if (!OK_STATES[state]) return true;
-    if (isSchedulerHost(host)) return false;
-    if (host.last_error || hostGpuError(host)) return true;
+    if (!OK_STATES[state]) reasons.push(token(state));
+    if (isSchedulerHost(host)) return reasons;
+    if (currentError(host)) reasons.push(token(currentError(host)));
+    const gpuError = hostGpuError(host);
+    if (gpuError) reasons.push(el("span", "st st-bad", gpuError));
     const age = _ageRaw(host.last_received);
-    if (_number(age) && age > STALE_SAMPLE_S) return true;
+    if (_number(age) && age > STALE_SAMPLE_S) {
+      reasons.push(el("span", "st st-partial", `last sample ${_dur(age)} ago`));
+    }
     const disk = diskFraction(host);
-    if (disk !== null && disk >= DISK_ISSUE_FRACTION) return true;
-    return false;
+    if (disk !== null && disk >= DISK_ISSUE_FRACTION) {
+      reasons.push(el("span", "st st-partial", `root disk ${Math.round(disk * 100)}% full`));
+    }
+    return reasons;
+  }
+  function hostNeedsAttention(host) {
+    return attentionReasons(host).length > 0;
+  }
+  // The overview's first answer: which hosts need a person, and why. Hard
+  // failures sort above warnings; within each, overview order holds.
+  function attentionList(list) {
+    const flagged = list
+      .map((host) => [host, attentionReasons(host)])
+      .filter(([, reasons]) => reasons.length);
+    const bad = ([, reasons]) => (reasons.some((r) => /\bst-bad\b/.test(r.className)) ? 0 : 1);
+    flagged.sort((a, b) => bad(a) - bad(b));
+    const box = el("section", flagged.length ? "attention" : "attention attention-clear");
+    box.setAttribute("aria-label", "Hosts needing attention");
+    if (!flagged.length) {
+      box.append(el("span", "attention-ok", "all hosts healthy"));
+      return box;
+    }
+    flagged.forEach(([host, reasons]) => {
+      const row = el("div", "attention-row");
+      row.dataset.level = bad([host, reasons]) ? "warn" : "bad";
+      const link = el("a", "attention-host", host.target);
+      link.href = `/host/${encodeURIComponent(host.target)}`;
+      const why = el("span", "attention-why");
+      reasons.forEach((reason, index) => {
+        if (index) why.append(el("span", "sep", " · "));
+        why.append(reason);
+      });
+      row.append(link, why);
+      box.append(row);
+    });
+    return box;
   }
   function gpuSummary(host, counts) {
     const gpuError = hostGpuError(host);
@@ -608,8 +652,13 @@
       ? `${Math.min(100, Math.max(0, (used / item.vram_total) * 100)).toFixed(0)}%`
       : "0%";
     vram.append(vramFill);
-    tile.append(level, el("span", "tile-idx", _int(item.idx)), vram);
     const owners = Array.isArray(item.owners) ? item.owners.filter((o) => typeof o === "string" && o) : [];
+    const note = flag === "idle" && _number(item.vram_free)
+      ? `${Math.round(item.vram_free / 2 ** 30)}G`
+      : flag === "busy" && owners.length
+        ? `${owners[0].slice(0, 3)}${owners.length > 1 ? "+" : ""}`
+        : "";
+    tile.append(level, el("span", "tile-idx", _int(item.idx)), el("span", "tile-note", note), vram);
     const label = [
       `${item.target} GPU ${_int(item.idx)}`,
       shortModel(item.model) || UNKNOWN,
@@ -652,6 +701,10 @@
       const link = el("a", "wall-name", name);
       link.href = `/host/${encodeURIComponent(name)}`;
       head.append(link);
+      if (items.length) {
+        const free = items.filter((item) => itemFlag(item) === "idle").length;
+        head.append(el("span", free ? "wall-free" : "wall-free none", `${free}/${items.length}`));
+      }
       const models = Array.from(new Set(items.map((item) => shortModel(item.model)).filter(Boolean)));
       if (models.length) head.append(el("span", "wall-model", models.join(" + ")));
       group.append(head);
@@ -677,18 +730,9 @@
       key.append(swatch, el("span", null, flag));
       legend.append(key);
     });
-    legend.append(el("span", "key-note", "fill: utilization · bottom bar: vram in use"));
+    legend.append(el("span", "key-note", "n/m: free of host's GPUs · idle tile: free vram · busy tile: owner · fill: utilization · bar: vram in use"));
     panel.append(legend);
     return panel;
-  }
-
-  // One line in the overview; the full reason is the tooltip and the host
-  // page's issues panel.
-  function errorClip(text) {
-    if (!text) return DASH;
-    const clip = el("span", "cell-clip", text);
-    clip.title = text;
-    return {node: clip, raw: text};
   }
 
   function renderOverview(rows, idleDoc) {
@@ -706,7 +750,9 @@
     cards.append(card("busy GPUs", summaryValue(idleDoc, "busy"), "busy"));
     cards.append(card("stale GPUs", summaryValue(idleDoc, "unknown"), "stale"));
     cards.append(card("needs attention", String(attention), attention ? "bad" : "ok"));
-    content.append(cards);
+    const band = el("div", "top-band");
+    band.append(cards, attentionList(list));
+    content.append(band);
     const wall = gpuWall(list, idleDoc);
     if (wall) content.append(wall);
     const sparks = sparkMap(lastSparks);
@@ -722,8 +768,8 @@
       {label: "root disk", num: true},
       {label: "gpu util", num: true},
       {label: "gpu vram", num: true},
-      {label: "error"},
     ];
+    // Errors live in the attention list above, not in a column of their own.
     const tbody = dataTable(columns, "overview");
     list.forEach((host) => {
       if (!host || typeof host !== "object") return;
@@ -773,15 +819,14 @@
           ),
           raw: host.gpu_vram_used,
         },
-        currentError(host) ? token(currentError(host)) : errorClip(hostGpuError(host)),
       ]);
       // An old snapshot's numbers stay readable but must not pass for live:
-      // dim the measurements, keep host, state, age and error at full strength.
+      // dim the measurements, keep host, state and age at full strength.
       if (snapshotStale(host)) {
         tr.className = "row-stale";
         Array.from(tr.childNodes).forEach((td, index) => {
           if (index === 3) td.className += " age-stale";
-          else if (index >= 2 && index < columns.length - 1) td.className += " dim";
+          else if (index >= 2) td.className += " dim";
         });
       }
     });
@@ -802,8 +847,8 @@
         `Everything below is from the last machine snapshot, ${_clock(latest.received_at)} (${_age(latest.received_at)} ago).`));
     }
     const firstSection = content.childNodes.length;
-    renderGpus(host.gpus, host.processes);
     renderMeters(latest);
+    renderGpus(host.gpus, host.processes);
     renderDisks(host.disks);
     renderCharts();
     renderWorkloads(host.processes);
@@ -1053,7 +1098,6 @@
         rootDisk(sample.root_total, sample.root_free),
       ),
     );
-    heading("Meters");
     content.append(panel);
   }
 

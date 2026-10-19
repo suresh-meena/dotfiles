@@ -521,6 +521,11 @@ const cardValues = (content) =>
   const level = collect(tiles[1], "SPAN").find((n) => n.className === "tile-level");
   assert.equal(level.style.height, "95%", "tile fill is utilization as a fraction");
   assert.match(tiles[1].title, /owners alice, bob, carol \+1 more/, "tile tooltip names the owners");
+  assert.deepEqual(
+    tiles.map((n) => textOf(n)),
+    ["2", "0ali+", "178G"],
+    "tiles carry the index, then the owner when busy or the free vram when idle",
+  );
   const table = tables(shim.content)[0];
   const rows = table.querySelector("tbody").rows;
   assert.equal(rows.length, 2, "overview rows");
@@ -846,6 +851,11 @@ const cardValues = (content) =>
   assert.equal(stale.length, 2, "both old snapshots are dimmed, the live row is not");
   const overviewText = textOf(overview.shim.content);
   assert.equal((overviewText.match(/transport/g) || []).length, 1, "only the current error is shown");
+  const attention = collect(overview.shim.content, "SECTION").find((n) => /^attention/.test(n.className));
+  assert.match(textOf(attention), /^gone.*unreachable.*transport/, "the attention list names the host and why");
+  assert.doesNotMatch(textOf(attention), /wf/, "a scheduler host is not flagged for its old helper error");
+  const sideLinks = overview.shim.doc.getElementById("host-list").childNodes.map((li) => li.childNodes[0]);
+  assert.deepEqual(sideLinks.map((a) => a.dataset.tone), ["st-bad", "st-ok", "st-ok"], "sidebar LEDs follow the attention reasons");
   assert.match(overviewText, /live · limited/, "partial reads as live, not as a warning");
   assert.doesNotMatch(overviewText, /_/, "state labels never show raw underscores");
 }
@@ -1023,7 +1033,7 @@ const cardValues = (content) =>
   const text = textOf(overview.shim.content);
   assert.doesNotMatch(text, /no GPUs/, "an NVML failure is not a machine without GPUs");
   assert.match(text, /unreadable/, "the gpus cell says the GPUs could not be read");
-  assert.match(text, /driver and library versions differ; reboot the host/, "the error column says why");
+  assert.match(text, /driver and library versions differ; reboot the host/, "the attention list says why");
   assert.match(text, /1needs attention/, "the host counts as needing attention");
 
   const stale = await run("overview", "", {
