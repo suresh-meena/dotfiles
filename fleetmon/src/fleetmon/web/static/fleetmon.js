@@ -555,6 +555,22 @@
     if (!host || isSchedulerHost(host) || snapshotStale(host)) return null;
     return gpuReadError(host.sample_nvml_error, host.sample_nvml_supported);
   }
+  // Mounts other than / at or past the full-disk line, fullest first. The
+  // root filesystem has its own check from the sample itself.
+  function fullMounts(disks) {
+    return (Array.isArray(disks) ? disks : [])
+      .filter((disk) => disk && typeof disk === "object" && typeof disk.mount === "string" && disk.mount !== "/")
+      .map((disk) => ({mount: disk.mount, fraction: diskItemFraction(disk), free: disk.free_bytes}))
+      .filter((disk) => disk.fraction !== null && disk.fraction >= DISK_ISSUE_FRACTION)
+      .sort((a, b) => b.fraction - a.fraction);
+  }
+  function fullMountsText(full) {
+    const worst = `${full[0].mount} ${Math.round(full[0].fraction * 100)}%`;
+    return full.length === 1
+      ? `${worst} full`
+      : `${full.length} disks ${Math.round(DISK_ISSUE_FRACTION * 100)}%+ full, worst ${worst}`;
+  }
+
   // Why a host needs attention, as state tokens; empty when it does not.
   function attentionReasons(host) {
     if (!host || typeof host !== "object") return [];
@@ -573,6 +589,8 @@
     if (disk !== null && disk >= DISK_ISSUE_FRACTION) {
       reasons.push(el("span", "st st-partial", `root disk ${Math.round(disk * 100)}% full`));
     }
+    const full = fullMounts(host.disks);
+    if (full.length) reasons.push(el("span", "st st-partial", fullMountsText(full)));
     return reasons;
   }
   function hostNeedsAttention(host) {
@@ -849,8 +867,8 @@
     const firstSection = content.childNodes.length;
     renderMeters(latest);
     renderGpus(host.gpus, host.processes);
-    renderDisks(host.disks);
     renderCharts();
+    renderDisks(host.disks);
     renderWorkloads(host.processes);
     renderUsers(host.users, latest);
     if (stale) {
@@ -897,6 +915,8 @@
       const disk = diskFraction(latest);
       if (disk !== null && disk >= DISK_ISSUE_FRACTION)
         issues.push(`Disk ${Math.round(disk * 100)}% full · ${_bytes(latest.root_free)} remaining`);
+      fullMounts(host.disks).forEach((mount) =>
+        issues.push(`Disk ${mount.mount} ${Math.round(mount.fraction * 100)}% full · ${_bytes(mount.free)} remaining`));
       const gpuError = gpuReadError(latest.nvml_error, latest.nvml_supported);
       if (gpuError) issues.push(gpuError);
       const skew = latest.capture_skew_seconds;
@@ -982,8 +1002,8 @@
     const card = el("article", "gpu-card");
     card.dataset.flag = itemFlag(gpu);
     const head = el("div", "gpu-head");
-    const name = el("span", "gpu-name", `GPU ${_int(gpu.idx)} · ${_text(gpu.model)}`);
-    name.title = name.textContent;
+    const name = el("span", "gpu-name", `GPU ${_int(gpu.idx)} · ${shortModel(gpu.model) || _text(gpu.model)}`);
+    name.title = `GPU ${_int(gpu.idx)} · ${_text(gpu.model)}`;
     head.append(name);
     head.append(availabilityToken(itemFlag(gpu), gpu.reason));
     card.append(head);
@@ -1059,15 +1079,19 @@
       : null;
   }
 
+  // The mounts beside the root disk's history: one row, below the charts.
   function renderDisks(disks) {
     heading("Disks");
+    const row = el("div", "disk-row");
+    content.append(row);
     const list = Array.isArray(disks)
       ? disks.filter((disk) => disk && typeof disk === "object")
       : [];
     if (!list.length) {
-      note(
+      row.append(el("p", "note",
         Array.isArray(disks) ? "no disk data in the latest sample" : "disk data unknown for this host",
-      );
+      ));
+      if (diskFigure) row.append(diskFigure);
       return;
     }
     const columns = [{label: "mount"}, {label: "used / total", num: true}];
@@ -1083,7 +1107,8 @@
       ]);
     });
     tbody.applySavedSort();
-    content.append(scrollTable(tbody.parentNode));
+    row.append(scrollTable(tbody.parentNode));
+    if (diskFigure) row.append(diskFigure);
   }
 
   function renderMeters(latest) {
@@ -1979,18 +2004,21 @@
   const svgNS = "http://www.w3.org/2000/svg";
   const W = 480;
   const H = 180;
-  const PAD = {l: 48, r: 12, t: 8, b: 24};
+  // The top pad leaves room for the "100%" label at the larger axis type.
+  const PAD = {l: 48, r: 12, t: 14, b: 24};
   const PALETTE = ["c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"];
   const CHART_COLORS = {cpu: "c1", ram: "c7", disk: "c2"};
   const X_LABELS = 4;
   const SPARK = {w: 64, h: 22};
+  // GPUs first: they are what the fleet is for. Root disk history is
+  // rarely needed, so it sits beside the disk table below these.
   const CHARTS = [
-    ["cpu", "cpu"],
-    ["ram", "ram used"],
-    ["disk", "root disk used"],
     ["gpu_util", "gpu utilization"],
     ["gpu_vram", "gpu vram used"],
+    ["cpu", "cpu"],
+    ["ram", "ram used"],
   ];
+  const DISK_CHART = ["disk", "root disk used"];
   function svg(tag, cls) {
     const node = document.createElementNS(svgNS, tag);
     if (cls) node.setAttribute("class", cls);
@@ -2056,12 +2084,14 @@
 
   let chartPanel = null;
   let chartPanelSource = null;
+  let diskFigure = null;
   function renderCharts() {
     heading("History");
     if (chartPanel && chartPanelSource === lastCharts) {
       content.append(renderRanges(), chartPanel);
       return;
     }
+    diskFigure = null;
     content.append(renderRanges());
     if (!chartsLoaded) {
       note("loading history…");
@@ -2086,6 +2116,8 @@
       if (!chartSeries) return;
       chartPanel.append(chartFigure(title, chartSeries));
     });
+    const disk = groups.get(DISK_CHART[0]);
+    if (disk) diskFigure = chartFigure(DISK_CHART[1], disk);
     content.append(chartPanel);
   }
 

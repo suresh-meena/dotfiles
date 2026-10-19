@@ -936,6 +936,11 @@ class HubRuntime:
     def overview(self, **_: Any) -> list[dict[str, Any]]:
         rows = [self._freshen_host(dict(row)) for row in self.db.overview()]
         self._annotate_gpu_summary(rows)
+        # Every mount, so the dashboard can flag a full data disk and not
+        # only the root filesystem.
+        disks = self.db.current_disks()
+        for row in rows:
+            row["disks"] = disks.get(row.get("target") or "", [])
         return rows
 
     def usage_feed(self) -> dict[str, Any]:

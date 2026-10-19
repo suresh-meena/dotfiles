@@ -866,6 +866,26 @@ class Database:
             result["users"] = []
         return result
 
+    def current_disks(self) -> dict[str, list[dict[str, Any]]]:
+        """Every host's mounts from its latest sample, keyed by target.
+
+        Bounded by the hosts table and MAX_STORED_DISKS mounts per host.
+        """
+
+        by_target: dict[str, list[dict[str, Any]]] = {}
+        for row in self.query(
+            "SELECT target, mount, total_bytes, free_bytes FROM current_disks "
+            "ORDER BY target, mount"
+        ):
+            by_target.setdefault(row["target"], []).append(
+                {
+                    "mount": row["mount"],
+                    "total_bytes": row["total_bytes"],
+                    "free_bytes": row["free_bytes"],
+                }
+            )
+        return by_target
+
     def current_processes(self, target: str) -> list[sqlite3.Row]:
         return self.query(
             """

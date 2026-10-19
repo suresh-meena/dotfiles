@@ -226,6 +226,8 @@ def test_valid_poll_surfaces_self_reported_addresses_and_disks(tmp_path):
         {"mount": "/data", "total_bytes": 500, "free_bytes": 200},
     ]
     assert runtime.hosts()[0]["addresses"] == ["100.64.1.2", "10.0.0.5"]
+    # The overview carries every mount too, for its full-disk warnings.
+    assert runtime.overview()[0]["disks"] == host["disks"]
     runtime.close()
 
 

@@ -639,7 +639,7 @@ const cardValues = (content) =>
   assert.match(text, /History/, "history grid before long tables");
   const figures = collect(content, "FIGURE");
   assert.equal(figures.length, 2, "cpu + gpu_util figures; empty series skipped");
-  assert.deepEqual(figures.map((n) => n.dataset.series), ["1", "2"], "figures carry their series count");
+  assert.deepEqual(figures.map((n) => n.dataset.series), ["2", "1"], "gpu chart first; figures carry their series count");
   const linePaths = collect(content, "PATH").filter((p) => p._attrs.class.includes("line"));
   const areaPaths = collect(content, "PATH").filter((p) => p._attrs.class.includes("area"));
   assert.equal(linePaths.length, 3, "one solid line per series");
@@ -654,6 +654,55 @@ const cardValues = (content) =>
   assert.equal(inputs.length, 2, "workload search + gpu-only toggle");
   assert.ok(text.includes(HOSTILE), "hostile username kept as literal text");
   assert.ok(!text.includes("undefined") && !text.includes("[object Object]"), "no raw JS values");
+}
+
+// disks: the mount table and the root disk chart share one row below the charts
+{
+  const disk = {chart: "disk", label: "root disk used", unit: "percent",
+    points: Array.from({length: 10}, (_, i) => [1_788_590_000 + i * 60, 0.4])};
+  const {shim} = await run("host", "alpha", {
+    "/api/hosts/alpha?limit=1": {...HOST, disks: [{mount: "/", total_bytes: 100 * 2 ** 30, free_bytes: 60 * 2 ** 30}]},
+    "/api/hosts/alpha/charts?hours=24": {...CHARTS, series: [...CHARTS.series, disk]},
+    "/api/overview": OVERVIEW,
+  });
+  const grid = collect(shim.content, "DIV").find((n) => n.className === "chart-grid");
+  const row = collect(shim.content, "DIV").find((n) => n.className === "disk-row");
+  assert.equal(collect(grid, "FIGURE").length, 2, "the history grid holds the gpu and cpu charts only");
+  assert.deepEqual(row.childNodes.map((n) => n.className || n.tagName), ["table-scroll", "chart"],
+    "the disk table and the root disk chart sit side by side");
+  assert.match(textOf(row), /root disk used/, "the disk chart is the root disk history");
+  const order = shim.content.childNodes.filter((n) => n.tagName === "H3").map(textOf);
+  assert.ok(order.indexOf("Disks") === order.indexOf("History") + 1, `disks follow the history charts: ${order}`);
+}
+
+// full data disks: flagged on the overview and on the host page, root kept separate
+{
+  const disks = [
+    {mount: "/", total_bytes: 100 * 2 ** 30, free_bytes: 50 * 2 ** 30},
+    {mount: "/data1", total_bytes: 100 * 2 ** 30, free_bytes: 7 * 2 ** 30},
+    {mount: "/data2", total_bytes: 100 * 2 ** 30, free_bytes: 1 * 2 ** 30},
+    {mount: "/scratch", total_bytes: 100 * 2 ** 30, free_bytes: 40 * 2 ** 30},
+  ];
+  const overview = await run("overview", "", {
+    "/api/overview": [{...OVERVIEW[0], disks}], "/api/overview/sparklines": SPARKS, [IDLE_URL]: IDLE,
+  });
+  const attention = collect(overview.shim.content, "SECTION").find((n) => /^attention/.test(n.className));
+  assert.match(textOf(attention), /alpha.*2 disks 90%\+ full, worst \/data2 99%/, "full data disks need attention");
+  assert.equal(cardValues(overview.shim.content)[3], "1", "and they count toward needs attention");
+  const one = await run("overview", "", {
+    "/api/overview": [{...OVERVIEW[0], disks: disks.slice(0, 2)}], "/api/overview/sparklines": SPARKS, [IDLE_URL]: IDLE,
+  });
+  assert.match(textOf(collect(one.shim.content, "SECTION").find((n) => /^attention/.test(n.className))),
+    /\/data1 93% full/, "a single full mount is named");
+  const {shim} = await run("host", "alpha", {
+    "/api/hosts/alpha?limit=1": {...HOST, disks},
+    "/api/hosts/alpha/charts?hours=24": CHARTS,
+    "/api/overview": OVERVIEW,
+  });
+  const issues = collect(shim.content, "DIV").find((n) => /^issues/.test(n.className));
+  assert.match(textOf(issues), /Disk \/data2 99% full · 1\.0 GiB remaining/, "the host page lists each full mount");
+  assert.match(textOf(issues), /Disk \/data1 93% full/, "every full mount, fullest first");
+  assert.doesNotMatch(textOf(issues), /scratch|Disk \/ /, "mounts under the line and root are not repeated");
 }
 
 // host without samples stays explicit; no-GPU header derives from host.gpus
