@@ -160,10 +160,16 @@ if [ $? -ne 0 ]; then echo '{"ok":false,"error":"unsafe_root"}'; exit 0; fi
 echo '{"ok":true}'
 '''
 
+# Arguments: root. rsync creates the parents of its destination with the
+# remote umask, and Ubuntu gives users 002, so create them private first: the
+# layout check refuses a group-writable root or releases/ directory.
+PREPARE_SCRIPT = r'''umask 077 && mkdir -p -- "$1/releases" && echo '{"ok":true}' '''
+
 # Arguments: root digest sha256. Recheck the protected root, verify the pushed
 # file, then switch bin/fq-node atomically.
 ACTIVATE_SCRIPT = r'''
 set -u
+umask 077
 root=$1; digest=$2; want=$3
 node_python=${4:-python3}
 home=${HOME:-}
@@ -237,9 +243,18 @@ async def install(cfg, store, transport: Fleetctl, name: str, *, shim: Path = SH
     sha = hashlib.sha256(data).hexdigest()
     digest = sha[:16]
     report: dict[str, Any] = {"node": name, "target": target, "control_root": root, "shim_sha256": sha}
+    res = await transport.exec(target, ["sh", "-c", PREPARE_SCRIPT, "fleetq", root],
+                               timeout=CALL_TIMEOUT_S, mutation=True, expected_role="workstation")
+    body = _body(res)
+    if body is None or not body.get("ok"):
+        raise OnboardError("prepare_failed", f"control_root creation {res.outcome}: {body or res.stderr[-300:]}")
     tmp = Path(tempfile.mkdtemp(prefix="fq-install-"))
     try:
-        (tmp / "fq-node").write_bytes(data)
+        # rsync -a keeps these modes, so fix them rather than trust our umask.
+        fd = os.open(tmp / "fq-node", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.chmod(tmp / "fq-node", 0o600)
         pushed = await transport.sync_push(target, tmp, f"{root}/releases/{digest}/", timeout=PUSH_TIMEOUT_S,
                                            expected_role="workstation")
     finally:

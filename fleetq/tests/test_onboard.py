@@ -73,6 +73,25 @@ def test_install_activates_an_immutable_release_enrolls_and_probes(site):
     store.close()
 
 
+def test_install_keeps_its_root_private_under_a_group_writable_umask(site):
+    # Ubuntu gives users umask 002, and rsync creates the push destination's
+    # parents with it; the layout check then refused the root it had just made.
+    fleet, make = site
+    cfg, store = make()
+    root = fleet.control_root
+    if root.exists():
+        root.rmdir()
+    old = os.umask(0o002)
+    try:
+        report = run(onboard.install(cfg, store, transport(), "ws1"))
+    finally:
+        os.umask(old)
+    assert report["probe"]["fit"]
+    for path in (root, root / "releases", root / "bin"):
+        assert path.stat().st_mode & 0o077 == 0, path
+    store.close()
+
+
 def test_an_upgrade_keeps_the_old_release_for_running_units(site, tmp_path):
     fleet, make = site
     cfg, store = make()

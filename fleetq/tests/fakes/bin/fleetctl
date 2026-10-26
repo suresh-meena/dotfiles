@@ -99,6 +99,7 @@ elif verb == "sync":
     if not src.is_dir():
         envelope("remote_failed", False, rc=23, stderr=f"rsync: change_dir {src} failed")
     dest.mkdir(parents=True, exist_ok=True)
+    os.chmod(dest, src.stat().st_mode & 0o7777)   # rsync -a gives SRC/'s mode to DEST/
     for item in src.iterdir():
         if item.is_dir():
             shutil.copytree(item, dest / item.name, dirs_exist_ok=True)
