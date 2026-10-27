@@ -195,6 +195,23 @@ def test_snapshot_job_runs_end_to_end(env):
     assert len(list((root / "attempts").iterdir())) == 1
 
 
+def test_a_node_keeps_taking_jobs_under_a_group_writable_umask(env):
+    # Ubuntu gives users umask 002. The runner made jobs/<id>/ with it, and the
+    # next staging then refused the whole control root as unsafe.
+    old = os.umask(0o002)
+    try:
+        for key in ("umask-1", "umask-2"):
+            rc, out, err = fq(env, "submit", "--gpus", "0", "--on", "ws1", "--wait", "--timeout", "90s",
+                              "--idempotency-key", key, "--", "python3", "train.py")
+            assert rc == 0, (out, err)
+            assert out["job"]["execution"]["outcome"] == "COMPLETED"
+    finally:
+        os.umask(old)
+    jobs = env["fleet"].control_root / "jobs"
+    for path in (jobs, *jobs.iterdir(), *jobs.glob("*/checkpoint")):
+        assert path.stat().st_mode & 0o077 == 0, path
+
+
 def test_lost_launch_reply_is_adopted_not_rerun(env):
     env["fleet"].faults(drop_once_on="launch")
     counter = env["project"] / "count.sh"

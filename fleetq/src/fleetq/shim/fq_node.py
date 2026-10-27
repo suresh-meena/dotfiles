@@ -916,7 +916,11 @@ def cmd_run(root: ControlRoot, args) -> int:
     # resubmitted after TIMEOUT or preemption can resume where it left off.
     ckpt = root.root / "jobs" / str(manifest["job_id"]) / "checkpoint"
     manifest["resumed"] = ckpt.is_dir() and any(ckpt.iterdir())
-    ckpt.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # One level at a time: mkdir(parents=True) gives parents the unit's umask,
+    # 002 on Ubuntu, and a group-writable jobs/ makes the next staging refuse
+    # the whole control root.
+    for path in (ckpt.parent.parent, ckpt.parent, ckpt):
+        path.mkdir(mode=0o700, exist_ok=True)
     manifest["checkpoint_dir"] = str(ckpt)
     set_fact(adir, "payload_started", {"invocation": invocation})
     with open(adir / "stdout.log", "ab") as out, open(adir / "stderr.log", "ab") as err:
