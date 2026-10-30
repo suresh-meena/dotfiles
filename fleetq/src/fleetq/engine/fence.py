@@ -73,9 +73,9 @@ class ControllerLock:
             self._fd = None
 
 
-def _meta(conn: sqlite3.Connection, key: str) -> str | None:
+def meta(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
     row = conn.execute("SELECT value FROM controller_meta WHERE key = ?", (key,)).fetchone()
-    return row["value"] if row else None
+    return row["value"] if row else default
 
 
 def _set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
@@ -88,7 +88,7 @@ def _set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
 
 def ensure_fleet_id(conn: sqlite3.Connection) -> str:
     """This installation's persistent identity, created once; never bumps the epoch."""
-    fleet_id = _meta(conn, "fleet_id")
+    fleet_id = meta(conn, "fleet_id")
     if fleet_id is None:
         fleet_id = new_id("fleet")
         _set_meta(conn, "fleet_id", fleet_id)
@@ -105,7 +105,7 @@ def start_controller(conn: sqlite3.Connection, *, restored_from_backup: bool = F
     above its highest accepted epoch and its namespace enumerated (§1.3).
     """
     fleet_id = ensure_fleet_id(conn)
-    epoch = int(_meta(conn, "controller_epoch") or "0") + 1
+    epoch = int(meta(conn, "controller_epoch") or "0") + 1
     _set_meta(conn, "controller_epoch", str(epoch))
     _set_meta(conn, "epoch_started_at", utcnow())
     if restored_from_backup:
@@ -118,9 +118,9 @@ def start_controller(conn: sqlite3.Connection, *, restored_from_backup: bool = F
         fleet_id=fleet_id,
         epoch=epoch,
         process_instance_id=new_id("proc"),
-        restored=restored_from_backup or _meta(conn, "restore_discovery_pending") == "1",
+        restored=restored_from_backup or meta(conn, "restore_discovery_pending") == "1",
         restore_epoch_raise_allowed=(restored_from_backup
-                                     or _meta(conn, "restore_epoch_raise_allowed") == "1"),
+                                     or meta(conn, "restore_epoch_raise_allowed") == "1"),
     )
     state.add_event(conn, "controller_started", actor="controller",
                     detail={"epoch": epoch, "instance": ident.process_instance_id, "restored": ident.restored})
@@ -129,7 +129,7 @@ def start_controller(conn: sqlite3.Connection, *, restored_from_backup: bool = F
 
 def raise_epoch_above(conn: sqlite3.Connection, highest_seen: int) -> int:
     """After restore discovery: make our epoch exceed every accepted epoch."""
-    current = int(_meta(conn, "controller_epoch") or "0")
+    current = int(meta(conn, "controller_epoch") or "0")
     if highest_seen >= current:
         current = highest_seen + 1
         _set_meta(conn, "controller_epoch", str(current))
@@ -138,11 +138,11 @@ def raise_epoch_above(conn: sqlite3.Connection, highest_seen: int) -> int:
 
 
 def current_epoch(conn: sqlite3.Connection) -> int:
-    return int(_meta(conn, "controller_epoch") or "0")
+    return int(meta(conn, "controller_epoch") or "0")
 
 
 def restore_discovery_pending(conn: sqlite3.Connection) -> bool:
-    return _meta(conn, "restore_discovery_pending") == "1"
+    return meta(conn, "restore_discovery_pending") == "1"
 
 
 def complete_restore_discovery(conn: sqlite3.Connection) -> None:

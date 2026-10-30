@@ -43,10 +43,6 @@ def _loopback_ok() -> bool:
 pytestmark = pytest.mark.skipif(not _loopback_ok(), reason="needs loopback (run via scripts/test)")
 
 
-@pytest.fixture(scope="module", autouse=True)
-def built():
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "build.py")], check=True, capture_output=True)
-
 
 class Fleet:
     """One fake workstation 'ws1' reachable through the fake fleetctl."""

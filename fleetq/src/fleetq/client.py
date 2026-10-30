@@ -515,7 +515,11 @@ def _post_job(api: Api, args, spec: dict[str, Any]) -> dict[str, Any]:
     # Named by digest: a key is free text, and must not choose where the file goes.
     pending = _pending_dir() / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
     # Saved before transmission, so a lost response is recoverable, not a duplicate (§6.1).
-    pending.write_text(json.dumps({"key": key, "spec": spec, "ts": time.time()}))
+    # Owner-only: the spec may carry --env-file secrets.
+    fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        os.fchmod(fh.fileno(), 0o600)    # an older, wider file keeps its mode through O_TRUNC
+        fh.write(json.dumps({"key": key, "spec": spec, "ts": time.time()}))
     try:
         resp = _with_retries(lambda: api.ok("POST", "/api/v1/jobs", body=spec, headers={"Idempotency-Key": key}))
     except ClientError as exc:
@@ -532,6 +536,7 @@ def _post_job(api: Api, args, spec: dict[str, Any]) -> dict[str, Any]:
 def _pending_dir() -> Path:
     d = Path(os.environ.get("XDG_STATE_HOME", "~/.local/state")).expanduser() / "fleetq" / "pending"
     d.mkdir(parents=True, exist_ok=True)
+    d.chmod(0o700)    # holds job specs, which may carry secrets
     return d
 
 
@@ -1061,11 +1066,8 @@ def cmd_alloc(api: Api, args) -> int:
     """salloc: hold verified-idle GPUs on a workstation for interactive work."""
     import argparse as _argparse
     secs = parse_duration_s(args.time)
-    sub = _argparse.Namespace(**{k: None for k in (
-        "each", "vram", "gpu_model", "cpus", "mem", "scratch", "queue", "account", "qos", "exclude", "needs",
-        "needs_rw", "env", "env_file", "setup", "after", "array", "retry_on", "kill_grace", "collect",
-        "wrap", "script", "script_args", "warn_signal", "warn_before", "begin", "spill_after", "spill_to",
-        "resume", "dir", "in_place", "on", "idempotency_key")})
+    # Start from `fq submit`'s own defaults so a new submit flag cannot be missing here.
+    sub = build_parser().parse_args(["submit"])
     sub.__dict__.update(gpus=args.gpus, name=args.name, time=args.time, on=args.on, mem=args.mem, cpus=args.cpus,
                         vram=args.vram, gpu_model=args.gpu_model, in_place=args.in_place, dir=args.dir,
                         idempotency_key=args.idempotency_key, allow_clusters=False, priority=args.priority,

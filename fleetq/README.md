@@ -9,8 +9,8 @@ gates are in [REFINED_PLAN.md](REFINED_PLAN.md).
 ## Build and local setup
 
 Run `python3 scripts/build.py` in this directory to regenerate the stdlib-only
-`bin/fq` and `build/fq-node` artifacts and the `build/fq.1` man page, which is
-rendered from the same parser as `fq --help`. `scripts/install-daemon --dry-run`
+`bin/fq` and `build/fq-node` artifacts; `python3 scripts/build.py --check`
+fails if they are stale. `scripts/install-daemon --dry-run`
 shows the release paths. Installation creates an immutable release and user
 unit, but does not start it. Python's linked SQLite must carry the WAL-reset
 fix, or its distribution backport must be recorded in the daemon config.
@@ -33,8 +33,6 @@ bind = "127.0.0.1:8089"
 # Production requires an explicit, supported host clock provider.
 clock_provider = "systemd-timesyncd"
 fleetmon_feed_url = "http://127.0.0.1:8088/api/feed/v1/capacity"
-# Set only after configuring a canonical tailnet HTTPS Serve origin.
-# ui_origin = "https://numpi.YOUR-TAILNET.ts.net"
 
 [[node]]
 id = "example-workstation"
@@ -46,12 +44,10 @@ control_root = "/approved/local/fleetq-root"
 # node_python = "/data/home/USER/.local/share/uv/python/.../bin/python3.12"
 ```
 
-Record the state filesystem's UUID from
-`findmnt -no UUID -T /home/YOU/.local/state/fleetq` as `state_fs_uuid` under
-`[daemon]` first. `fleetqd --config CONFIG init` then verifies the filesystem,
-creates a volume sentinel, and prints the `volume_id` to put under `[daemon]`.
-Keep the state directory on the approved SSD. Production startup
-checks both identities, ownership, permissions, and the database path.
+`fleetqd --config CONFIG init` creates the owner-only state directory and an
+init marker in it. The service refuses to start, and never creates a database,
+where that marker is missing. Production startup also checks ownership,
+permissions, and the database path.
 `fleetqd --config CONFIG doctor --json` checks the local prerequisites.
 The user service runs `doctor` before every start. Backups use the online
 SQLite backup command, `fleetqd --config CONFIG backup DEST`. The destination
@@ -87,16 +83,9 @@ verified SQLite backup before switching. Restart the service, inspect
 
 ## Enabling a target
 
-Every target starts disabled. A production config with `enabled = true` must
-name an absolute `evidence_file`. The record binds a retained raw capture to
-the exact target configuration, reviewer, approval time, and required checks.
-For a draft, save the bounded probe/profile output in a private directory and
-run `scripts/draft-target-evidence CONFIG TARGET CAPTURE_FILE > RECORD.json`.
-Review each check, fill `command_profile_version`, `reviewer`, and
-`approved_at`, then set `approved` and verified checks to `true`. Place the
-record beside its raw capture and set `evidence_file` in the node config.
-Changing the target profile invalidates the approval digest. A draft never
-enables dispatch by itself.
+Every target starts disabled. Set `enabled = true` in its `[[node]]` to turn it
+on; run `fleetqd node probe NAME` first and read the capability facts it records.
+An enabled Slurm site must carry a complete budget (below).
 Before production runtime opens the state database, it also checks the local
 fleetctl topology: a bare node must name an enabled workstation target, and a
 Slurm site must name an enabled login target. Enabled nodes cannot share one
@@ -109,7 +98,7 @@ Workstation onboarding is explicit: build the shim, then run
 `fleetqd --config CONFIG node install NAME --i-authorize-target-NAME` for one
 approved machine. `fleetqd node probe NAME` records capability facts; inspect
 the verdict before approval. Cluster onboarding does not install a shim.
-Its evidence must include site automation and budget approval, account/QOS,
+Before enabling one, confirm site automation and budget approval, account/QOS,
 no-requeue, controller identity, durable control storage, query/cancel behavior,
 and visibility. University production calls require the site's own approval.
 
@@ -128,8 +117,7 @@ collect_max_files = 1000
 [[node]]
 id = "approved-managed-site"
 backend = "slurm"
-enabled = false # enable only with retained, reviewed evidence
-evidence_file = "/private/path/site-evidence.json"
+enabled = false # enable only after the site approves automation
 fleetctl_target = "approved-fleetctl-alias"
 [node.budget]
 monitor_per_minute = 1 # replace with approved RPC allowance
@@ -170,7 +158,6 @@ Install the client on any machine with Python 3.11+:
 
 ```bash
 install -m 0755 bin/fq ~/.local/bin/fq
-install -Dm 0644 build/fq.1 ~/.local/share/man/man1/fq.1   # then: man fq
 ```
 
 `fq --help` lists every command with the exit-code contract, environment and

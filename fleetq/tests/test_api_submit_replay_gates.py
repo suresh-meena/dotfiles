@@ -10,7 +10,7 @@ import pytest
 
 from fleetq.api.app import Runtime, create_app
 from fleetq.bundles import BundleLimits
-from fleetq.executors.fake import FakeNode
+from fake_executor import FakeNode
 from fleetq.errors import FqError
 from fleetq.engine import admission, fence
 

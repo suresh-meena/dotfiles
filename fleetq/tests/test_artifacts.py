@@ -17,10 +17,6 @@ SHIM = ROOT / "build" / "fq-node"
 FLEET = "fleet_test"
 
 
-@pytest.fixture(scope="module", autouse=True)
-def built():
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "build.py")], check=True, capture_output=True)
-
 
 @pytest.mark.parametrize("rel,ok", [
     ("out/model.pt", "out/model.pt"), ("a/./b", "a/b"), ("a/../b", "b"),
@@ -197,3 +193,10 @@ def test_shim_refuses_over_the_allowance_and_in_place_jobs(tmp_path):
     assert not (adir / "outbox").exists()
     node.attempt("att_c", in_place="/data/proj")
     assert node.stage("att_c", "x")["error"]["code"] == "in_place_collect"
+
+
+def test_the_committed_artifacts_match_their_sources():
+    """bin/fq and build/fq-node are generated and committed; a stale one fails here, not in the field."""
+    proc = subprocess.run([sys.executable, str(ROOT / "scripts" / "build.py"), "--check"],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr

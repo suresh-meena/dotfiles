@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from fleetq import auth
-from fleetq.executors.fake import FakeNode
+from fake_executor import FakeNode
 
 from harness import Harness
 from test_api import _app, _auth, _client, _spec, run
@@ -54,6 +54,39 @@ def test_waiting_jobs_are_listed_in_the_order_the_scheduler_will_try_them(h):
             assert [j["id"] for j in only] == [high]
             placed = (await c.get("/api/v1/queue?where=n1", headers=_auth(h.token))).json()["jobs"]
             assert sorted(j["id"] for j in placed) == sorted(running)
+    run(go())
+
+
+def test_the_limit_applies_after_the_state_filter(h):
+    async def go():
+        ctl, app = _app(h)
+        async with _client(app) as c:
+            held = (await _submit(c, h, "held", name="held", control={"hold": True})).json()["jobs"][0]
+            later = [(await _submit(c, h, f"w{i}", name=f"w-{i}")).json()["jobs"][0] for i in range(4)]
+            await h.ticks(1)
+            got = (await c.get("/api/v1/queue?state=HD&limit=2", headers=_auth(h.token))).json()["jobs"]
+            assert [j["id"] for j in got] == [held], "a match older than `limit` newer jobs is still found"
+            got = (await c.get("/api/v1/queue?state=PD&limit=2", headers=_auth(h.token))).json()["jobs"]
+            assert sorted(j["id"] for j in got) == sorted(later)[-2:], "the newest matches, `limit` of them"
+    run(go())
+
+
+def test_the_state_filter_pages_through_the_queue_until_the_limit_is_met(h, monkeypatch):
+    from fleetq import views
+    monkeypatch.setattr(views, "_QUEUE_PAGE", 1)
+
+    async def go():
+        ctl, app = _app(h)
+        async with _client(app) as c:
+            held = (await _submit(c, h, "held", name="held", control={"hold": True})).json()["jobs"][0]
+            later = [(await _submit(c, h, f"w{i}", name=f"w-{i}")).json()["jobs"][0] for i in range(4)]
+            await h.ticks(1)
+            got = (await c.get("/api/v1/queue?state=HD&limit=2", headers=_auth(h.token))).json()["jobs"]
+            assert [j["id"] for j in got] == [held]
+            got = (await c.get("/api/v1/queue?state=PD&limit=2", headers=_auth(h.token))).json()["jobs"]
+            assert sorted(j["id"] for j in got) == sorted(later)[-2:]
+            got = (await c.get("/api/v1/queue?state=PD&limit=3", headers=_auth(h.token))).json()["jobs"]
+            assert sorted(j["id"] for j in got) == sorted(later)[-3:]
     run(go())
 
 

@@ -11,6 +11,7 @@ move on.
 
 from __future__ import annotations
 
+import base64
 import enum
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -135,6 +136,23 @@ class LogChunk:
     remote_size: int | None = None
     reachable: bool = True
     deferred: bool = False            # the budget said not now
+
+
+def failed_log_chunks(requests: dict[str, int], *, reachable: bool = True,
+                      deferred: bool = False) -> dict[str, LogChunk]:
+    """An empty chunk per requested stream, carrying why nothing was read."""
+    return {st: LogChunk(st, off, reachable=reachable, deferred=deferred) for st, off in requests.items()}
+
+
+def decode_log_chunk(stream: str, offset: int, data_b64: str | None, size: Any) -> LogChunk:
+    """A delta as the node reports it: base64 bytes plus the stream's total size, when known."""
+    return LogChunk(stream, offset, base64.b64decode(data_b64 or ""),
+                    remote_size=int(size) if isinstance(size, int) or str(size).isdigit() else None)
+
+
+def pull_result(res: Any) -> tuple[bool, str | None]:
+    """The ``collect_pull`` return for a transport result: ok, or the failure outcome."""
+    return res.ok, None if res.ok else res.outcome
 
 
 @dataclass

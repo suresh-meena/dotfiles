@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fleetq.executors.fake import FakeNode
+from fake_executor import FakeNode
 
 from harness import Harness
 

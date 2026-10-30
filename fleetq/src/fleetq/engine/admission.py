@@ -38,18 +38,6 @@ _RESERVED_ENV = frozenset({
 })
 RETRY_CLASSES = frozenset({"node_fail", "exit", "timeout", "oom", "preempted"})
 
-# Features that exist in the spec grammar but are gated until their phase's
-# tests pass (§0.3). An advertised-but-unavailable option is refused, never
-# ignored.
-FEATURES: dict[str, bool] = {
-    "each": True,
-    "array": True,
-    "dependencies": True,
-    "clusters": True,
-    "collect": True,
-    "hold_remote": False,
-}
-
 
 def _bad(message: str, **details: Any) -> FqError:
     return FqError("invalid_argument", message, details=details)
@@ -138,9 +126,6 @@ def normalize_spec(raw: dict[str, Any]) -> dict[str, Any]:
         workdir = {"in_place": _abs_path(wd["in_place"], "workdir.in_place")}
     else:
         raise _bad("workdir must name a bundle or an in_place path")
-    if "script" in command and "in_place" in workdir:
-        # A script path is validated relative to the code root on the node.
-        pass
 
     pl = raw.get("placement") or {}
     if not isinstance(pl, dict):
@@ -343,6 +328,18 @@ def parse_destination(text: str) -> tuple[str, str | None]:
     return target, (queue or None)
 
 
+def _named_destination(known: dict[str, sqlite3.Row], dest: str, *, noun: str = "destination"
+                       ) -> tuple[str, str | None]:
+    """Parse ``dest`` and require it to be a known node, with a queue only on a cluster."""
+    target, queue = parse_destination(dest)
+    if target not in known:
+        raise FqError("invalid_argument", f"unknown {noun} {target!r}",
+                      hint="list destinations with `fq nodes`")
+    if queue is not None and known[target]["backend"] != "slurm":
+        raise FqError("invalid_argument", f"{target!r} is not a cluster; it has no queues")
+    return target, queue
+
+
 def resolve_candidates(
     conn: sqlite3.Connection, spec: dict[str, Any], principal: Principal
 ) -> list[tuple[str, str | None]]:
@@ -358,13 +355,7 @@ def resolve_candidates(
     candidates: list[tuple[str, str | None]] = []
     if named:
         for dest in named:
-            target, queue = parse_destination(dest)
-            if target not in known:
-                raise FqError("invalid_argument", f"unknown destination {target!r}",
-                              hint="list destinations with `fq nodes`")
-            if queue is not None and known[target]["backend"] != "slurm":
-                raise FqError("invalid_argument", f"{target!r} is not a cluster; it has no queues")
-            candidates.append((target, queue))
+            candidates.append(_named_destination(known, dest))
     else:
         for target_id, row in targets.items():
             if row["backend"] == "slurm" and not placement["allow_clusters"]:
@@ -396,12 +387,7 @@ def resolve_candidates(
             narrowed.append((q_site, q_name))
         candidates = narrowed
     for dest in (placement.get("spill") or {}).get("to") or []:
-        target, queue = parse_destination(dest)
-        if target not in known:
-            raise FqError("invalid_argument", f"unknown spill destination {target!r}",
-                          hint="list destinations with `fq nodes`")
-        if queue is not None and known[target]["backend"] != "slurm":
-            raise FqError("invalid_argument", f"{target!r} is not a cluster; it has no queues")
+        target, queue = _named_destination(known, dest, noun="spill destination")
         if (target, queue) not in candidates:
             candidates.append((target, queue))
     if spec["control"].get("interactive"):
@@ -412,8 +398,6 @@ def resolve_candidates(
     named = named or (placement.get("spill") or {}).get("to")
     clusters = [t for t, _ in candidates if known[t]["backend"] == "slurm"]
     if clusters:
-        if not FEATURES["clusters"]:
-            raise FqError("feature_unavailable", "cluster execution is not enabled in this release")
         if not principal.allow_clusters:
             raise FqError("cluster_not_allowed", "this token is not authorized for cluster use",
                           hint="ask for a token created with --clusters")
@@ -690,9 +674,7 @@ def admit(
         members = [{"target": None, "array_index": None}]
     if len(members) > 1 and len(members) > quota["group_size"]:
         raise FqError("quota_exceeded", f"a group of {len(members)} exceeds this token's group limit of {quota['group_size']}")
-    owner_row = conn.execute("SELECT quota_json FROM principals WHERE name = ?", (principal.owner,)).fetchone()
-    owner_limit = int(json.loads(owner_row["quota_json"] if owner_row else "{}").get(
-        "active_jobs", DEFAULT_QUOTAS["human"]["active_jobs"]))
+    owner_limit = DEFAULT_QUOTAS["human"]["active_jobs"]
     # Both limits apply: many agent tokens can't multiply one owner's capacity.
     for scope, count, limit in (
         ("token", active_job_count(conn, token_id=principal.token_id), quota["active_jobs"]),

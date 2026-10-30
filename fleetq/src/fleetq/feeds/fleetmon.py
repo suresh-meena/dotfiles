@@ -24,12 +24,9 @@ TIMEOUT_S = 3.0
 MAX_BYTES = 4 * 1024 * 1024
 
 
-def fetch(url: str, token: str | None = None) -> dict:
-    headers = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+def fetch(url: str) -> dict:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    req = urllib.request.Request(url, headers=headers)
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
     with opener.open(req, timeout=TIMEOUT_S) as resp:
         raw = resp.read(MAX_BYTES + 1)
     if len(raw) > MAX_BYTES:
@@ -45,10 +42,10 @@ def usage_url(capacity_url: str) -> str:
     return urlunsplit(parts._replace(path=parts.path[:-len(suffix)] + "/api/feed/v1/usage"))
 
 
-async def poll_usage_forever(cache: UsageCache, url: str, token: str | None = None) -> None:
+async def poll_usage_forever(cache: UsageCache, url: str) -> None:
     while True:
         try:
-            doc = await asyncio.to_thread(fetch, usage_url(url), token)
+            doc = await asyncio.to_thread(fetch, usage_url(url))
             cache.update(doc)
         except Exception:  # keep the last measurement; report the source outage
             cache.failed = True
@@ -56,10 +53,10 @@ async def poll_usage_forever(cache: UsageCache, url: str, token: str | None = No
         await asyncio.sleep(POLL_S)
 
 
-async def poll_forever(history: IdleHistory, url: str, token: str | None = None) -> None:
+async def poll_forever(history: IdleHistory, url: str) -> None:
     while True:
         try:
-            doc = await asyncio.to_thread(fetch, url, token)
+            doc = await asyncio.to_thread(fetch, url)
             ingest_capacity_feed(history, doc)
         except Exception as exc:  # stale feed = shared placement off, by construction
             log.warning("capacity feed unavailable: %s", exc)

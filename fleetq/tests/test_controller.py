@@ -9,7 +9,7 @@ import pytest
 from fleetq.engine import state
 from fleetq.engine.controller import ControllerConfig
 from fleetq.errors import FqError
-from fleetq.executors.fake import FakeNode
+from fake_executor import FakeNode
 
 from harness import Harness
 
@@ -398,7 +398,7 @@ def test_stale_epoch_disables_dispatch(tmp_path):
 
 def test_orphan_remote_attempt_quarantines_target(tmp_path):
     h = Harness(tmp_path)
-    from fleetq.executors.fake import FakeRemoteAttempt
+    from fake_executor import FakeRemoteAttempt
     h.fake.node("n1").attempts["att_unknown"] = FakeRemoteAttempt("att_unknown", epoch=1, entered=True)
     jid = h.submit(key="k")["jobs"][0]
     _drive(h, 3)

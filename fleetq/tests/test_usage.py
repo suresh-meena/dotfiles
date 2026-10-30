@@ -131,16 +131,16 @@ def test_bad_feed_does_not_replace_good_cache(change):
 def test_background_poll_is_bounded_and_retains_cache_on_failure(monkeypatch):
     value = cache()
     calls = []
-    def fetch(url, token):
-        calls.append((url, token))
+    def fetch(url):
+        calls.append(url)
         raise OSError("hub down")
     async def stop(_seconds):
         raise asyncio.CancelledError
     monkeypatch.setattr(fleetmon, "fetch", fetch)
     monkeypatch.setattr(fleetmon.asyncio, "sleep", stop)
     with pytest.raises(asyncio.CancelledError):
-        run(fleetmon.poll_usage_forever(value, "http://127.0.0.1:8088/prefix/api/feed/v1/capacity", "secret"))
-    assert calls == [("http://127.0.0.1:8088/prefix/api/feed/v1/usage", "secret")]
+        run(fleetmon.poll_usage_forever(value, "http://127.0.0.1:8088/prefix/api/feed/v1/capacity"))
+    assert calls == ["http://127.0.0.1:8088/prefix/api/feed/v1/usage"]
     assert value.view()["source"]["state"] == "unavailable"
     with pytest.raises(ValueError):
         fleetmon.usage_url("http://127.0.0.1:8088/other")

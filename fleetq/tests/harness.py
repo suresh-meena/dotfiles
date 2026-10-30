@@ -12,7 +12,7 @@ from fleetq import auth
 from fleetq.db.store import Store
 from fleetq.engine import admission, fence, state
 from fleetq.engine.controller import Controller, ControllerConfig
-from fleetq.executors.fake import FakeExecutor, FakeNode
+from fake_executor import FakeExecutor, FakeNode
 from fleetq.util import utcnow
 
 DEFAULT_CAPACITY = {"ram_budget_mb": 64000, "cpus": 32, "scratch_budget_mb": 100000, "job_slots": 4,

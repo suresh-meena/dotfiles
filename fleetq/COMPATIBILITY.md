@@ -2,8 +2,8 @@
 
 The entries below describe the implemented interface or required capability.
 They do not claim that a particular host or university site has passed a
-canary. Record host/site versions and probe results in each target's approved
-evidence file before setting `enabled = true`.
+canary. Record host/site versions and probe results for each target before setting
+`enabled = true`.
 
 | Component | Implemented contract | Deployment evidence |
 |---|---|---|
@@ -17,6 +17,5 @@ evidence file before setting `enabled = true`.
 | Browser | Human-token UI behind one canonical tailnet HTTPS origin. | Verify Serve/Host/Origin behavior, session cookie, CSRF, and browser confirmation flow in the actual deployment. |
 
 Production site approval, a disposable local systemd/Slurm exercise, and
-user-initiated canaries remain separate from repository tests. See
-[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) and the phase gates in
-[REFINED_PLAN.md](REFINED_PLAN.md#12-delivery-phases-and-release-gates).
+user-initiated canaries remain separate from repository tests. See the phase
+gates in [REFINED_PLAN.md](REFINED_PLAN.md#12-delivery-phases-and-release-gates).

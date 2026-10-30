@@ -1,6 +1,6 @@
 """fleetqd: the numpi daemon and its local administration commands.
 
-    fleetqd init   --config C [--volume-id ID]  create state dir + volume sentinel
+    fleetqd init   --config C  create the state dir and its init marker
     fleetqd serve  --config C                   run API + controller (one process)
     fleetqd doctor --config C                   local checks, no remote contact
     fleetqd token  create|revoke|list ...        tokens are issued only on numpi
@@ -117,7 +117,7 @@ def open_store(cfg: DaemonConfig) -> Store:
             raise SystemExit(f"fleetqd: {message}")
         log.warning("dev_mode: %s", message)
     if not cfg.dev_mode:
-        check_state_volume(state_dir, cfg.volume_id, cfg.state_fs_uuid, require_identity=True)
+        check_state_volume(state_dir)
     elif not (state_dir / SENTINEL_NAME).exists():
         raise SystemExit(f"fleetqd: {cfg.state_dir} has no {SENTINEL_NAME}; run `fleetqd init` first")
     cfg.bundle_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -156,8 +156,8 @@ def build_runtime(cfg: DaemonConfig, *, executors: dict[str, Any] | None = None,
                             artifact_dir=cfg.state_dir / "artifacts", clock_ok=clock_ok)
     limits = bundles.BundleLimits(**{k: v for k, v in (cfg.limits.get("bundle") or {}).items()})
     runtime = Runtime(store=store, controller=controller, bundle_dir=cfg.bundle_dir, bundle_limits=limits,
-                      log_cache=log_cache, artifact_dir=cfg.state_dir / "artifacts", ui_origin=cfg.ui_origin,
-                      ui_dev_mode=cfg.dev_mode, clock_ok=clock_ok, clock_health=clock_health)
+                      log_cache=log_cache, artifact_dir=cfg.state_dir / "artifacts",
+                      clock_ok=clock_ok, clock_health=clock_health)
     controller.outbox = outbox
     runtime.usage_cache.configured = bool(cfg.fleetmon_feed_url)
     return store, controller, runtime
@@ -218,17 +218,12 @@ def cmd_init(cfg: DaemonConfig, args) -> int:
         state_dir = validate_state_dir_path(state_dir)
     except RuntimeError as exc:
         raise SystemExit(f"fleetqd init: {exc}") from exc
-    if not cfg.state_fs_uuid or not re.fullmatch(r"[0-9A-Fa-f-]{8,64}", cfg.state_fs_uuid):
-        raise SystemExit("fleetqd init: [daemon] state_fs_uuid is required; refusing to initialize an unverified filesystem")
     try:
         state_info = state_dir.lstat()
-        approved_info = (Path("/dev/disk/by-uuid") / cfg.state_fs_uuid).stat()
     except OSError as exc:
-        raise SystemExit(f"fleetqd init: cannot verify state filesystem {cfg.state_fs_uuid!r}: {exc}") from exc
+        raise SystemExit(f"fleetqd init: cannot inspect {state_dir}: {exc}") from exc
     if not stat.S_ISDIR(state_info.st_mode) or state_info.st_uid != os.getuid() or state_info.st_mode & 0o077:
         raise SystemExit(f"fleetqd init: state directory must be a real owner-only directory: {state_dir}")
-    if not stat.S_ISBLK(approved_info.st_mode) or state_info.st_dev != approved_info.st_rdev:
-        raise SystemExit(f"fleetqd init: {state_dir} is not on approved filesystem {cfg.state_fs_uuid}")
     sentinel = state_dir / SENTINEL_NAME
     try:
         sentinel_info = sentinel.lstat()
@@ -240,16 +235,16 @@ def cmd_init(cfg: DaemonConfig, args) -> int:
             raise SystemExit(f"fleetqd init: existing sentinel must be an owned, private regular file: {sentinel}")
         print(f"{sentinel} already exists: {sentinel.read_text().strip()}")
         return 0
-    volume_id = args.volume_id or secrets.token_hex(8)
+    marker = secrets.token_hex(8)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(sentinel, flags, 0o600)
     try:
-        data = (volume_id + "\n").encode()
+        data = (marker + "\n").encode()
         view = memoryview(data)
         while view:
             written = os.write(fd, view)
             if written <= 0:
-                raise OSError("short write while creating state volume sentinel")
+                raise OSError("short write while creating the init marker")
             view = view[written:]
         os.fsync(fd)
     finally:
@@ -259,7 +254,7 @@ def cmd_init(cfg: DaemonConfig, args) -> int:
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
-    print(f"initialized {state_dir}; set [daemon] volume_id = \"{volume_id}\" in the config")
+    print(f"initialized {state_dir}")
     return 0
 
 
@@ -268,7 +263,7 @@ def cmd_doctor(cfg: DaemonConfig, args) -> int:
     ok, msg = check_sqlite_gate(cfg.sqlite_backport_attestation)
     checks.append(("sqlite_wal_reset_fix", ok, msg))
     try:
-        check_state_volume(cfg.state_dir, cfg.volume_id, cfg.state_fs_uuid, require_identity=not cfg.dev_mode)
+        check_state_volume(cfg.state_dir)
         checks.append(("state_volume", True, str(cfg.state_dir)))
     except RuntimeError as exc:
         checks.append(("state_volume", False, str(exc)))
@@ -490,7 +485,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=os.environ.get("FLEETQ_CONFIG", "~/.config/fleetq/fleetqd.toml"))
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("init")
-    p.add_argument("--volume-id")
     p = sub.add_parser("serve")
     p.add_argument("--restored-from-backup", action="store_true",
                    help="gate dispatch until approved-target discovery and fencing complete")

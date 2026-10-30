@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -127,6 +128,26 @@ def test_a_refused_submission_leaves_no_pending_record(monkeypatch, tmp_path):
     with pytest.raises(client.ClientError):
         client._post_job(Api(), SimpleNamespace(idempotency_key="k1"), {})
     assert list((tmp_path / "state" / "fleetq" / "pending").iterdir()) == []
+
+
+def test_the_pending_record_and_its_directory_are_owner_only(monkeypatch, tmp_path):
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    pending = state / "fleetq" / "pending"
+    pending.mkdir(parents=True, mode=0o755)
+    seen = []
+
+    class Api:
+        def ok(self, method, path, **kw):
+            seen.append((pending.stat().st_mode & 0o777, [p.stat().st_mode & 0o777 for p in pending.iterdir()]))
+            return {"jobs": [7]}
+
+    old = os.umask(0o002)
+    try:
+        client._post_job(Api(), SimpleNamespace(idempotency_key="k1"), {"env": {"TOKEN": "secret"}})
+    finally:
+        os.umask(old)
+    assert seen == [(0o700, [0o600])]
 
 
 def test_submit_wait_names_the_job_before_blocking(monkeypatch, capsys):

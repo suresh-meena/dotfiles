@@ -41,7 +41,6 @@ ATTEMPT_STATES = (
 ATTEMPT_FINAL_STATES = ("REFUSED", "NEVER_STARTED", "RELEASED")
 BACKENDS = ("bare", "slurm", "fake")
 RESERVATION_KINDS = ("gpu", "ram", "cpu", "scratch", "slot", "cluster_gpus", "cluster_jobs")
-OPERATION_STATES = ("INTENDED", "SENT", "DONE", "FAILED", "UNCERTAIN")
 
 
 def _in(values: tuple[str, ...]) -> str:
@@ -173,7 +172,6 @@ CREATE TABLE attempts (
     remote_id TEXT,
     launch_op_id TEXT NOT NULL UNIQUE,
     spec_digest TEXT NOT NULL,
-    profile_digest TEXT,
     boot_id TEXT,
     outcome TEXT CHECK (outcome IS NULL OR outcome IN {_in(EXECUTION_OUTCOMES)}),
     exit_code INTEGER,
@@ -206,22 +204,6 @@ CREATE UNIQUE INDEX gpu_unreleased_unique ON resource_reservations(node_id, gpu_
     WHERE kind = 'gpu' AND released_at IS NULL;
 CREATE INDEX reservations_attempt ON resource_reservations(attempt_id);
 CREATE INDEX reservations_node_open ON resource_reservations(node_id) WHERE released_at IS NULL;
-
--- Durable intents (§1.2 invariant 4): a remote mutation is INTENDED and
--- committed before it is sent, so a crash leaves a record of what may have
--- happened, not a silent gap.
-CREATE TABLE operations (
-    id TEXT PRIMARY KEY,
-    attempt_id TEXT REFERENCES attempts(id),
-    target TEXT,
-    kind TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN {_in(OPERATION_STATES)}),
-    epoch INTEGER NOT NULL,
-    detail_json TEXT NOT NULL DEFAULT '{{}}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX operations_open ON operations(state) WHERE state IN ('INTENDED','SENT','UNCERTAIN');
 
 CREATE TABLE events (
     id INTEGER PRIMARY KEY,
@@ -283,19 +265,6 @@ CREATE TABLE node_gpus (
     PRIMARY KEY (node_id, uuid)
 );
 
-CREATE TABLE observations (
-    id INTEGER PRIMARY KEY,
-    source TEXT NOT NULL,
-    target TEXT NOT NULL,
-    sample_id TEXT NOT NULL,
-    sample_time TEXT NOT NULL,
-    boot_id TEXT,
-    complete INTEGER NOT NULL CHECK (complete IN (0,1)),
-    payload_json TEXT NOT NULL,
-    received_at TEXT NOT NULL,
-    UNIQUE (source, target, sample_id)
-);
-
 CREATE TABLE placement_decisions (
     id INTEGER PRIMARY KEY,
     ts TEXT NOT NULL,
@@ -305,15 +274,6 @@ CREATE TABLE placement_decisions (
     detail_json TEXT NOT NULL DEFAULT '{{}}'
 );
 CREATE INDEX placement_job ON placement_decisions(job_id, id);
-
-CREATE TABLE site_profiles (
-    id TEXT PRIMARY KEY,
-    digest TEXT NOT NULL,
-    profile_json TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
-    approved_by TEXT,
-    approved_at TEXT
-);
 
 CREATE TABLE outbox (
     id INTEGER PRIMARY KEY,
@@ -389,16 +349,5 @@ CREATE TABLE artifacts (
     tries INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL,
     UNIQUE (attempt_id, relpath)
-);
-
--- Minimal identity kept after bulky history expires (§1.3), so a restored or
--- replaying request can never quietly re-execute old work.
-CREATE TABLE recovery_tombstones (
-    attempt_id TEXT PRIMARY KEY,
-    job_id INTEGER NOT NULL,
-    spec_digest TEXT NOT NULL,
-    request_key_digest TEXT,
-    final_state TEXT NOT NULL,
-    recorded_at TEXT NOT NULL
 );
 """

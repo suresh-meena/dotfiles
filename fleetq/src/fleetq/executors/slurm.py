@@ -45,6 +45,9 @@ from .base import (
     ObserveResult,
     ReleaseResult,
     StageResult,
+    decode_log_chunk,
+    failed_log_chunks,
+    pull_result,
 )
 
 TIMEOUT_S = 120
@@ -337,25 +340,20 @@ class SlurmExecutor:
 
     async def read_logs(self, target: str, attempt_id: str, requests: dict[str, int], *, remote_id: str | None,
                         max_bytes: int) -> dict[str, LogChunk]:
-        import base64
         if not remote_id:
-            return {st: LogChunk(st, off) for st, off in requests.items()}   # nothing to read yet
+            return failed_log_chunks(requests)   # nothing to read yet
         site = self._site(target)
         offsets = {st: int(requests.get(st, -1)) for st in ("stdout", "stderr")}
         res, retry, body = await self._exec(target, LOGS_SCRIPT, site.control_root, attempt_id, remote_id,
                                             str(offsets["stdout"]), str(offsets["stderr"]), str(max_bytes),
                                             op_class="monitor", mutation=False, rpc=1)
         if res is None:
-            return {st: LogChunk(st, off, deferred=True) for st, off in requests.items()}
+            return failed_log_chunks(requests, deferred=True)
         if body is None:
-            return {st: LogChunk(st, off, reachable=False) for st, off in requests.items()}
-        out = {}
-        for st, off in requests.items():
-            part = body.get(st) or {}
-            size = part.get("size")
-            out[st] = LogChunk(st, off, base64.b64decode(part.get("data") or ""),
-                               remote_size=int(size) if isinstance(size, int) or str(size).isdigit() else None)
-        return out
+            return failed_log_chunks(requests, reachable=False)
+        parts = {st: body.get(st) or {} for st in requests}
+        return {st: decode_log_chunk(st, off, parts[st].get("data"), parts[st].get("size"))
+                for st, off in requests.items()}
 
 
     # ---- artifacts (§6.4) ------------------------------------------------------------------
@@ -387,7 +385,7 @@ class SlurmExecutor:
                                              f"{site.control_root}/attempts/{attempt_id}/outbox", local,
                                              timeout=STAGE_TIMEOUT_S, admin=True, permit=permit_id,
                                              budget_bytes=self.collect_pull_budget_bytes, expected_role="login")
-        return res.ok, None if res.ok else res.outcome
+        return pull_result(res)
 
     async def collect_clean(self, target: str, attempt_id: str) -> bool:
         site = self._site(target)

@@ -169,9 +169,8 @@ def reserve_files(conn: sqlite3.Connection, job_id: int, attempt_id: str, collec
     only increase its reservation. The Store serializes this check and write
     in one BEGIN IMMEDIATE transaction.
     """
-    job = conn.execute("SELECT j.owner,j.token_id,p.quota_json owner_quota,t.quota_json token_quota "
-                       "FROM jobs j JOIN principals p ON p.name=j.owner "
-                       "JOIN tokens t ON t.id=j.token_id WHERE j.id=?", (job_id,)).fetchone()
+    job = conn.execute("SELECT j.owner,j.token_id,t.quota_json token_quota "
+                       "FROM jobs j JOIN tokens t ON t.id=j.token_id WHERE j.id=?", (job_id,)).fetchone()
     if job is None:
         return False, "job_missing"
 
@@ -189,9 +188,9 @@ def reserve_files(conn: sqlite3.Connection, job_id: int, attempt_id: str, collec
             return None
         return min(configured, cap)
 
-    owner_cap = quota_cap(job["owner_quota"], owner_max_bytes)
-    token_cap = quota_cap(job["token_quota"], owner_cap) if owner_cap is not None else None
-    if owner_cap is None or token_cap is None:
+    owner_cap = owner_max_bytes
+    token_cap = quota_cap(job["token_quota"], owner_cap)
+    if token_cap is None:
         return False, "invalid_artifact_quota"
     required = {c["path"]: c["required"] for c in collect}
     existing = {r["relpath"]: r["size"] for r in conn.execute(

@@ -18,7 +18,7 @@ import asyncio
 import secrets
 from dataclasses import dataclass, field
 
-from .base import (
+from fleetq.executors.base import (
     AttemptContext,
     AttemptObservation,
     CancelResult,

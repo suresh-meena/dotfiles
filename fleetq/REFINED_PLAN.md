@@ -3,7 +3,6 @@
 **Review date:** 23 September 2026  
 **Basis:** `PLAN(5).md`, all 524 source lines, including formatting lines.  
 **Status:** proposed replacement specification, not an implemented or hardware-verified system.  
-**Companion:** `REVIEW_LEDGER.md` maps every original line to its disposition and the replacement section.  
 **Evidence notation:** `P:Lx–Ly` refers to the uploaded plan. `[Rnn]` refers to the primary-source registry at the end. All defaults introduced below are design proposals, not measurements or university policy.
 
 ## 0. Context, decisions, and boundaries

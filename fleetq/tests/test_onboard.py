@@ -20,10 +20,6 @@ from fleetq.transport.fleetctl import Fleetctl
 from test_e2e_bare import FAKES, ROOT, SHIM, Fleet
 
 
-@pytest.fixture(scope="module", autouse=True)
-def built():
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "build.py")], check=True, capture_output=True)
-
 
 @pytest.fixture()
 def site(tmp_path, monkeypatch):

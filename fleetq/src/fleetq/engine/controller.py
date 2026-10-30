@@ -130,11 +130,6 @@ def _later(seconds: float) -> str:
     return (parse_utc(utcnow()) + _dt.timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _meta(conn: sqlite3.Connection, key: str, default: str = "") -> str:
-    row = conn.execute("SELECT value FROM controller_meta WHERE key = ?", (key,)).fetchone()
-    return row["value"] if row else default
-
-
 class Controller:
     def __init__(
         self,
@@ -873,8 +868,6 @@ class Controller:
                     if att["state"] != "STOPPED":
                         outcome = o.outcome or ("UNKNOWN_EXIT" if o.exit_code is None else
                                                 ("COMPLETED" if o.exit_code == 0 else "FAILED"))
-                        if job["desired_state"] == "CANCEL" and outcome == "CANCELLED":
-                            outcome = "CANCELLED"
                         if att["state"] not in ("RUNNING", "STOPPING", "START_UNKNOWN", "SUBMITTED",
                                                 "SUBMISSION_UNKNOWN", "LAUNCHING", "SUBMITTING"):
                             continue
@@ -1123,7 +1116,7 @@ class Controller:
     # ---- placement and dispatch ------------------------------------------------------
 
     async def _place_and_dispatch(self) -> None:
-        paused = await self.store.run(lambda c: _meta(c, "dispatch", "on") != "on" or fence.restore_discovery_pending(c))
+        paused = await self.store.run(lambda c: fence.meta(c, "dispatch", "on") != "on" or fence.restore_discovery_pending(c))
         if paused or not self.clock_ok():
             return
         if len(self._inflight) >= self.config.global_dispatch:
@@ -1241,8 +1234,7 @@ class Controller:
                               json.dumps([{"target": r.target, "reason": r.reason, **r.detail} for r in rejections])))
             return None
         att = state.create_attempt(conn, job_id, backend=placement.backend, target=placement.target,
-                                   epoch=self.ident.epoch, reservations=placement.reservations,
-                                   profile_digest=None)
+                                   epoch=self.ident.epoch, reservations=placement.reservations)
         conn.execute("INSERT INTO placement_decisions (ts, job_id, attempt_id, decision, detail_json) VALUES (?,?,?,?,?)",
                      (utcnow(), job_id, att["id"], "placed",
                       json.dumps({"target": placement.target, "gpus": placement.gpus,
@@ -1334,7 +1326,7 @@ class Controller:
             job = state.get_job(conn, att["job_id"])
             token = conn.execute("SELECT revoked_at FROM tokens WHERE id = ?", (job["token_id"],)).fetchone()
             node = conn.execute("SELECT enabled, drain_kind FROM nodes WHERE id = ?", (att["target"],)).fetchone()
-            paused = _meta(conn, "dispatch", "on") != "on"
+            paused = fence.meta(conn, "dispatch", "on") != "on"
             ok = (job["desired_state"] == "RUN" and job["phase"] == "DISPATCHING" and not paused
                   and token is not None and not token["revoked_at"] and node is not None and node["enabled"]
                   and not node["drain_kind"] and fence.target_dispatch_ready(conn, att["target"]))
@@ -1345,10 +1337,6 @@ class Controller:
                 self._job_after_nonstart(conn, job["id"], reason="launch aborted", backoff=0)
                 return False
             state.update_attempt(conn, attempt_id, state=launch_state, event="launch_intended")
-            conn.execute(
-                "INSERT INTO operations (id, attempt_id, target, kind, state, epoch, created_at, updated_at)"
-                " VALUES (?,?,?,?, 'INTENDED', ?, ?, ?)",
-                (att["launch_op_id"], attempt_id, att["target"], "launch", att["epoch"], utcnow(), utcnow()))
             return True
         if not await self._tx(launch_boundary):
             return
@@ -1375,10 +1363,6 @@ class Controller:
                                 detail={"reply_kind": res.kind.value, "attempt_state": att["state"],
                                         "reason": res.reason})
                 return
-            op_state = {"started": "DONE", "unknown": "UNCERTAIN"}.get(res.kind.value, "FAILED")
-            conn.execute("UPDATE operations SET state = ?, detail_json = ?, updated_at = ? WHERE id = ?",
-                         (op_state, json.dumps({"kind": res.kind.value, "reason": res.reason, **res.detail}), utcnow(),
-                          att["launch_op_id"]))
             if res.kind is LaunchKind.STARTED:
                 next_state = "SUBMITTED" if slurm else "RUNNING"
                 state.update_attempt(conn, attempt_id, state=next_state, event="launched",

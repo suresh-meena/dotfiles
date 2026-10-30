@@ -61,10 +61,8 @@ def _bundle_storage_usage(conn: sqlite3.Connection, digest: str, owner: str, tok
         "SELECT 1 FROM bundle_refs WHERE digest=? AND owner=? AND ref_kind='upload'"
         " AND ref_id=? AND released_at IS NULL LIMIT 1",
         (digest, owner, token_id)).fetchone() is not None
-    owner = conn.execute("SELECT quota_json FROM principals WHERE name=?", (owner,)).fetchone()
-    owner_quota = json.loads(owner["quota_json"] or "{}") if owner else {}
     return (global_used, owner_used, owner_has_ref, int(row["compressed_bytes"]) if row else None,
-            token_used, token_has_ref, owner_quota)
+            token_used, token_has_ref)
 
 
 def _orphan_bundle_bytes(conn: sqlite3.Connection, bundle_dir: Path) -> int:
@@ -106,8 +104,6 @@ class Runtime:
     log_cache: Any = None
     artifact_dir: Path | None = None
     controller_task: asyncio.Task | None = None
-    ui_origin: str | None = None
-    ui_dev_mode: bool = False
     usage_cache: UsageCache = field(default_factory=UsageCache)
 
 
@@ -200,7 +196,7 @@ def create_app(rt: Runtime) -> FastAPI:
                              "dispatch_ready": ready and info["dispatch"] == "on" and clock_healthy, **info},
                             status_code=200 if ready else 503)
 
-    # ---- identity / limits ----------------------------------------------------------
+    # ---- identity ----------------------------------------------------------
 
     @app.get("/api/v1/whoami")
     async def whoami(request: Request):
@@ -208,18 +204,6 @@ def create_app(rt: Runtime) -> FastAPI:
         return {"schema": "fq.whoami/v1", "ok": True, "owner": p.owner, "token": p.token_id, "label": p.label,
                 "kind": p.kind, "scopes": sorted(p.scopes), "allow_clusters": p.allow_clusters,
                 "quota": admission.effective_quota(p)}
-
-    @app.get("/api/v1/limits")
-    async def limits(request: Request):
-        await principal(request)
-        lim = rt.bundle_limits
-        return {"schema": "fq.limits/v1", "ok": True, "api_version": API_VERSION,
-                "features": admission.FEATURES,
-                "bundle": {"max_compressed": lim.max_compressed, "max_file": lim.max_file,
-                           "max_members": lim.max_members, "max_expanded": lim.max_expanded,
-                           "max_owner_bytes": lim.max_owner_bytes,
-                           "max_global_bytes": lim.max_global_bytes} if lim else None,
-                "max_wait_s": MAX_WAIT_S}
 
     # ---- bundles ------------------------------------------------------------------
 
@@ -317,7 +301,7 @@ def create_app(rt: Runtime) -> FastAPI:
                                       details={"reason": exc.code}) from exc
                 candidate = winner_info or info
                 (global_used, owner_used, owner_has_ref, existing_size, token_used, token_has_ref,
-                 owner_quota, orphan_bytes) = await rt.store.run(
+                 orphan_bytes) = await rt.store.run(
                     lambda c: (*_bundle_storage_usage(c, digest, p.owner, p.token_id),
                                _orphan_bundle_bytes(c, rt.bundle_dir)))
                 global_delta = candidate.compressed_bytes if existing_size is None else max(
@@ -330,8 +314,7 @@ def create_app(rt: Runtime) -> FastAPI:
                     0, candidate.compressed_bytes - (existing_size or 0))
                 token_delta = candidate.compressed_bytes if not token_has_ref else max(
                     0, candidate.compressed_bytes - (existing_size or 0))
-                owner_limit = min(int(limits_.max_owner_bytes),
-                                  int(owner_quota.get("bundle_bytes", limits_.max_owner_bytes)))
+                owner_limit = int(limits_.max_owner_bytes)
                 token_limit = int(admission.effective_quota(p)["bundle_bytes"])
                 if token_used + token_delta > token_limit:
                     raise FqError("quota_exceeded", f"token bundle quota {token_limit} bytes would be exceeded")
@@ -796,7 +779,7 @@ def create_app(rt: Runtime) -> FastAPI:
             out = []
             for row in conn.execute("SELECT * FROM nodes ORDER BY id").fetchall():
                 gpus = [dict(g) for g in conn.execute(
-                    "SELECT uuid, model, vram_total, idx, reserved, drained, drain_reason, cooldown_until"
+                    "SELECT uuid, model, vram_total, idx, drained, drain_reason, cooldown_until"
                     " FROM node_gpus WHERE node_id = ? ORDER BY idx", (row["id"],))]
                 held = {r[0]: r[1] for r in conn.execute(
                     "SELECT r.gpu_uuid, j.id FROM resource_reservations r JOIN attempts a ON a.id = r.attempt_id"
@@ -908,6 +891,4 @@ def create_app(rt: Runtime) -> FastAPI:
             c, permit_id, cluster=str(body.get("cluster", "")), op_class=str(body.get("op_class", "")),
             cost=cost))
 
-    from .ui import install_ui
-    install_ui(app, rt)
     return app

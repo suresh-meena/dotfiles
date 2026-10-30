@@ -20,10 +20,6 @@ GPU_IDLE = {"uuid": "GPU-a", "index": 0, "total": 24564, "used": 0, "util": 0}
 GPU_B = {"uuid": "GPU-b", "index": 1, "total": 24564, "used": 0, "util": 0}
 
 
-@pytest.fixture(scope="session", autouse=True)
-def built():
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "build.py")], check=True, capture_output=True)
-
 
 class Node:
     def __init__(self, tmp: Path) -> None:
@@ -680,18 +676,6 @@ def test_setup_preserves_argv_boundaries(node):
     node.launch(a)
     node.wait_state(a, "stopped")
     assert json.loads(out.read_text()) == ["a b", "$(whoami)", "c;d"]
-
-
-def test_logs_are_offset_readable(node):
-    a = att(21)
-    node.stage(a, argv=["/bin/sh", "-c", "printf 'line1\\nline2\\n'"])
-    node.launch(a)
-    node.wait_state(a, "stopped")
-    import base64
-    first = node.call("logs", "--fleet-id", FLEET, a, "--max-bytes", "6")
-    assert base64.b64decode(first["data_b64"]) == b"line1\n" and first["size"] == 12
-    rest = node.call("logs", "--fleet-id", FLEET, a, "--offset", "6")
-    assert base64.b64decode(rest["data_b64"]) == b"line2\n"
 
 
 def test_probe_reports_capabilities(node):

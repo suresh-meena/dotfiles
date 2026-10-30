@@ -115,6 +115,7 @@ def _seconds(a: str | None, b: str | None) -> float | None:
     return max(0.0, (parse_utc(b) - parse_utc(a)).total_seconds())
 
 
+_QUEUE_PAGE = 500    # rows read per batch when a state filter must be applied after the query
 _LATEST = ("LEFT JOIN attempts a ON a.job_id = j.id AND a.n = (SELECT MAX(n) FROM attempts WHERE job_id = j.id)")
 
 
@@ -171,12 +172,22 @@ def queue_rows(conn: sqlite3.Connection, *, owner: str | None, phases: set[str] 
         clauses.append("j.group_id = ?")
         args.append(group)
     sql = ("SELECT j.*, j.started_at AS job_started, a.id AS attempt_id, a.target, a.backend, a.remote_id, a.n,"
-           f" a.started_at AS att_started FROM jobs j {_LATEST}"
-           + (" WHERE " + " AND ".join(clauses) if clauses else "")
-           + " ORDER BY j.id DESC LIMIT ?")
-    rows = [_row(conn, r, now) for r in conn.execute(sql, (*args, limit)).fetchall()]
-    if phases:
-        rows = [r for r in rows if r["phase"] in phases or r["st"] in phases]
+           f" a.started_at AS att_started FROM jobs j {_LATEST} WHERE {{}} ORDER BY j.id DESC LIMIT ?")
+    # The phase filter tests computed fields (`st`), so it cannot go in SQL; page by id until `limit` matches.
+    page = max(limit, _QUEUE_PAGE) if phases else limit
+    rows: list[dict[str, Any]] = []
+    before: list[int] = []
+    while True:
+        where_sql = " AND ".join(clauses + (["j.id < ?"] if before else [])) or "1"
+        batch = conn.execute(sql.format(where_sql), (*args, *before, page)).fetchall()
+        for r in batch:
+            row = _row(conn, r, now)
+            if not phases or row["phase"] in phases or row["st"] in phases:
+                rows.append(row)
+        if len(rows) >= limit or len(batch) < page:
+            break
+        before = [batch[-1]["id"]]
+    rows = rows[:limit]
     position = {job_id: i + 1 for i, job_id in enumerate(dispatch_order or [])}
     for r in rows:
         r["position"] = position.get(r["id"])

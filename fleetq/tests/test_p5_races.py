@@ -6,7 +6,7 @@ import asyncio
 
 from fleetq.engine import state
 from fleetq.executors.base import CollectManifest
-from fleetq.executors.fake import FakeNode
+from fake_executor import FakeNode
 from fleetq.util import utcnow
 
 from harness import Harness

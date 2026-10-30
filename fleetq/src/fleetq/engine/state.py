@@ -187,7 +187,6 @@ def create_attempt(
     target: str,
     epoch: int,
     reservations: Iterable[dict[str, Any]],
-    profile_digest: str | None = None,
     actor: str = "scheduler",
 ) -> sqlite3.Row:
     """Plan an attempt and atomically reserve its resources (§4.4).
@@ -205,9 +204,9 @@ def create_attempt(
     now = utcnow()
     conn.execute(
         "INSERT INTO attempts (id, job_id, n, backend, target, epoch, state, remote_may_be_live,"
-        " launch_op_id, spec_digest, profile_digest, created_at, updated_at)"
-        " VALUES (?,?,?,?,?,?,'PLANNED',0,?,?,?,?,?)",
-        (attempt_id, job_id, n, backend, target, epoch, new_id("op"), job["spec_digest"], profile_digest, now, now),
+        " launch_op_id, spec_digest, created_at, updated_at)"
+        " VALUES (?,?,?,?,?,?,'PLANNED',0,?,?,?,?)",
+        (attempt_id, job_id, n, backend, target, epoch, new_id("op"), job["spec_digest"], now, now),
     )
     for res in reservations:
         conn.execute(
@@ -222,7 +221,7 @@ def create_attempt(
 
 
 _ATTEMPT_MUTABLE = frozenset({
-    "remote_id", "boot_id", "outcome", "exit_code", "exit_signal", "started_at", "ended_at", "profile_digest",
+    "remote_id", "boot_id", "outcome", "exit_code", "exit_signal", "started_at", "ended_at",
 })
 
 

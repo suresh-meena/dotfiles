@@ -85,4 +85,4 @@ def test_volume_guard_rejects_root_and_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: home)
     for path in (Path("/"), home, home.parent):
         with pytest.raises(RuntimeError, match="dedicated"):
-            check_state_volume(path, None, None)
+            check_state_volume(path)

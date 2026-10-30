@@ -9,7 +9,7 @@ import sqlite3
 from fleetq.db.store import Store, migrate
 from fleetq import cli
 from fleetq.engine import fence, state
-from fleetq.executors.fake import FakeNode, FakeRemoteAttempt
+from fake_executor import FakeNode, FakeRemoteAttempt
 
 from harness import Harness
 

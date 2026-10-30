@@ -278,8 +278,6 @@ def _choose_gpus(conn, node_id, mode, spec, want, now, shared) -> tuple[list[str
         uuid = g["uuid"]
         if uuid in reserved:
             reasons[uuid] = "reserved_by_fleetq"
-        elif g["reserved"]:
-            reasons[uuid] = "owner_reserved"
         elif g["drained"]:
             reasons[uuid] = f"drained:{g['drain_reason']}"
         elif g["cooldown_until"] and parse_utc(g["cooldown_until"]) > parse_utc(now):
@@ -313,8 +311,8 @@ def _choose_gpus(conn, node_id, mode, spec, want, now, shared) -> tuple[list[str
 def could_ever_fit(conn: sqlite3.Connection, spec: dict[str, Any], target: str) -> bool:
     """Would ``spec`` fit on ``target`` once everything fleetq placed there has finished?
 
-    Static capability only (budgets, slots, GPUs that aren't owner-reserved or
-    drained and match VRAM/model); current use is ignored. Clusters run their own
+    Static capability only (budgets, slots, GPUs that aren't drained and match
+    VRAM/model); current use is ignored. Clusters run their own
     queue, so fleetq never drains one.
     """
     row = conn.execute("SELECT backend, config_json FROM nodes WHERE id = ? AND enabled = 1", (target,)).fetchone()
@@ -331,7 +329,7 @@ def could_ever_fit(conn: sqlite3.Connection, spec: dict[str, Any], target: str) 
             return False
     res = spec["resources"]
     usable = [g for g in conn.execute("SELECT * FROM node_gpus WHERE node_id = ?", (target,))
-              if not g["reserved"] and not g["drained"]
+              if not g["drained"]
               and not (res["vram_mb"] and (g["vram_total"] or 0) < res["vram_mb"])
               and not (res["gpu_model"] and (g["model"] or "") != res["gpu_model"])]
     return len(usable) >= res["gpus"]

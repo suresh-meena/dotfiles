@@ -9,7 +9,7 @@ import pytest
 
 from fleetq import auth
 from fleetq.engine import state
-from fleetq.executors.fake import FakeNode
+from fake_executor import FakeNode
 from fleetq.util import utcnow
 
 from harness import Harness

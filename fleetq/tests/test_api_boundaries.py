@@ -10,7 +10,7 @@ import httpx
 from fleetq import auth, bundles
 from fleetq.api import app as api_app
 from fleetq.api.app import Runtime, create_app
-from fleetq.executors.fake import FakeNode
+from fake_executor import FakeNode
 
 from harness import Harness
 

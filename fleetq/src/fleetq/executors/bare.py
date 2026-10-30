@@ -35,6 +35,9 @@ from .base import (
     ObserveResult,
     ReleaseResult,
     StageResult,
+    decode_log_chunk,
+    failed_log_chunks,
+    pull_result,
 )
 
 NODE_TIMEOUT_S = 90
@@ -65,6 +68,9 @@ class BareExecutor:
         self.transport = transport
         self.nodes = {n.id: n for n in cfg.nodes if n.backend == "bare"}
         self._fenced_epochs: dict[str, int] = {}
+        # Learned from the controller's fence(); commands that address existing
+        # attempts pass it so the shim can verify enrollment.
+        self.fleet_id = ""
 
     # ---- helpers -----------------------------------------------------------------
 
@@ -207,14 +213,11 @@ class BareExecutor:
 
     @staticmethod
     def _log_chunks(body: dict[str, Any]) -> dict[str, dict[str, LogChunk]]:
-        import base64
         out: dict[str, dict[str, LogChunk]] = {}
         for aid, streams in (body.get("logs") or {}).items():
             for st, c in streams.items():
-                size = c.get("size")
-                out.setdefault(aid, {})[st] = LogChunk(st, int(c.get("offset") or 0),
-                                                       base64.b64decode(c.get("data_b64") or ""),
-                                                       remote_size=int(size) if size is not None else None)
+                out.setdefault(aid, {})[st] = decode_log_chunk(st, int(c.get("offset") or 0),
+                                                               c.get("data_b64"), c.get("size"))
         return out
 
     async def observe(self, target: str, attempt_ids: list[str],
@@ -222,7 +225,7 @@ class BareExecutor:
         node_cfg = self.nodes.get(target)
         if node_cfg is None:
             return ObserveResult(reachable=False, reason="not configured")
-        res, body = await self._call(target, "status", "--fleet-id", self._fleet_id_hint(target), *attempt_ids,
+        res, body = await self._call(target, "status", "--fleet-id", self.fleet_id, *attempt_ids,
                                      *self._log_args(log_requests), mutation=False)
         if body is None or not body.get("ok"):
             return ObserveResult(reachable=False, reason=res.outcome if body is None else body.get("error", {}).get("code"))
@@ -239,7 +242,7 @@ class BareExecutor:
                              logs=self._log_chunks(body))
 
     async def cancel(self, target: str, attempt_id: str, *, epoch: int) -> CancelResult:
-        res, body = await self._call(target, "cancel", "--fleet-id", self._fleet_id_hint(target), "--epoch",
+        res, body = await self._call(target, "cancel", "--fleet-id", self.fleet_id, "--epoch",
                                      str(epoch), attempt_id, mutation=True)
         if body is None or not body.get("ok"):
             return CancelResult(reachable=False, reason=res.outcome)
@@ -250,7 +253,7 @@ class BareExecutor:
         epoch = self._fenced_epochs.get(target)
         if epoch is None:
             return ReleaseResult(released=False, reason="controller_epoch_unknown")
-        res, body = await self._call(target, "release", "--fleet-id", self._fleet_id_hint(target),
+        res, body = await self._call(target, "release", "--fleet-id", self.fleet_id,
                                      "--epoch", str(epoch), attempt_id, mutation=True)
         if body is None or not body.get("ok"):
             return ReleaseResult(released=False, reason=res.outcome)
@@ -258,27 +261,20 @@ class BareExecutor:
 
     async def release_cache_pin(self, target: str, attempt_id: str, *, epoch: int) -> bool:
         """Release a bundle cache pin after the controller has finalized artifacts."""
-        res, body = await self._call(target, "cache-release", "--fleet-id", self._fleet_id_hint(target),
+        res, body = await self._call(target, "cache-release", "--fleet-id", self.fleet_id,
                                      "--epoch", str(epoch), attempt_id, mutation=True)
         return bool(body and body.get("ok") and body.get("released"))
-
-    # The fleet id is carried in manifests/fences; commands that address existing
-    # attempts pass it so the shim can verify enrollment.
-    fleet_id: str = ""
-
-    def _fleet_id_hint(self, target: str) -> str:
-        return self.fleet_id
 
     async def read_logs(self, target: str, attempt_id: str, requests: dict[str, int], *, remote_id: str | None,
                         max_bytes: int) -> dict[str, LogChunk]:
         """Both streams in one status call (a finished attempt's final tail)."""
-        res, body = await self._call(target, "status", "--fleet-id", self._fleet_id_hint(target),
+        res, body = await self._call(target, "status", "--fleet-id", self.fleet_id,
                                      *self._log_args({attempt_id: requests}),
                                      "--log-budget", str(max_bytes * max(1, len(requests))), mutation=False)
         if body is None:
-            return {st: LogChunk(st, off, reachable=False) for st, off in requests.items()}
+            return failed_log_chunks(requests, reachable=False)
         if not body.get("ok"):
-            return {st: LogChunk(st, off) for st, off in requests.items()}   # reachable, source unreadable
+            return failed_log_chunks(requests)   # reachable, source unreadable
         chunks = self._log_chunks(body).get(attempt_id, {})
         return {st: chunks.get(st, LogChunk(st, off)) for st, off in requests.items()}
 
@@ -289,7 +285,7 @@ class BareExecutor:
         epoch = self._fenced_epochs.get(target)
         if epoch is None:
             return CollectManifest(ok=False, error="controller_epoch_unknown")
-        args = ["collect-stage", "--fleet-id", self._fleet_id_hint(target), "--epoch", str(epoch), attempt_id,
+        args = ["collect-stage", "--fleet-id", self.fleet_id, "--epoch", str(epoch), attempt_id,
                 "--max-files", str(max_files), "--max-bytes", str(max_bytes)]
         for path in paths:
             args += ["--path", path]
@@ -306,13 +302,13 @@ class BareExecutor:
         res = await self.transport.sync_pull(node.fleetctl_target or target,
                                              f"{node.control_root}/attempts/{attempt_id}/outbox", local,
                                              timeout=STAGE_TIMEOUT_S, expected_role="workstation")
-        return res.ok, None if res.ok else res.outcome
+        return pull_result(res)
 
     async def collect_clean(self, target: str, attempt_id: str) -> bool:
         epoch = self._fenced_epochs.get(target)
         if epoch is None:
             return False
-        res, body = await self._call(target, "collect-clean", "--fleet-id", self._fleet_id_hint(target),
+        res, body = await self._call(target, "collect-clean", "--fleet-id", self.fleet_id,
                                      "--epoch", str(epoch), attempt_id,
                                      mutation=True)
         return bool(body and body.get("ok"))

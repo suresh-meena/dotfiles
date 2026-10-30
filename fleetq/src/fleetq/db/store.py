@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import os
 import queue
-import re
 import sqlite3
 import stat
 import threading
@@ -266,7 +265,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 
 # ---- state-volume guard (§11) ------------------------------------------------
 
-SENTINEL_NAME = ".fleetq-volume"
+SENTINEL_NAME = ".fleetq-volume"   # written by `fleetqd init`; its absence means init never ran
 
 
 def validate_state_dir_path(state_dir: Path) -> Path:
@@ -304,19 +303,14 @@ def validate_state_dir_path(state_dir: Path) -> Path:
     return normalized
 
 
-def check_state_volume(state_dir: Path, expected_volume_id: str | None,
-                       expected_fs_uuid: str | None = None, *, require_identity: bool = False) -> None:
-    """Refuse to start on the wrong or missing filesystem.
+def check_state_volume(state_dir: Path) -> None:
+    """Refuse to start unless ``fleetqd init`` has been run in this directory.
 
-    ``RequiresMountsFor`` in a user unit is not a complete guard (§11): if the
-    SSD isn't mounted, the directory may still exist on the SD card. The
-    sentinel holds an id written at install time; a missing or different id
-    means this is not the approved state volume, and fleetqd does not create an
-    empty database here.
+    A missing marker means this is not the directory that was set up (for
+    example an unmounted disk), and fleetqd does not create an empty database
+    there.
     """
     state_dir = validate_state_dir_path(Path(state_dir))
-    if require_identity and (not expected_volume_id or not expected_fs_uuid):
-        raise RuntimeError("production state needs both volume_id and state_fs_uuid in [daemon]")
     try:
         directory = state_dir.lstat()
     except OSError as exc:
@@ -328,26 +322,10 @@ def check_state_volume(state_dir: Path, expected_volume_id: str | None,
         sent = sentinel.lstat()
     except OSError as exc:
         raise RuntimeError(
-            f"state volume sentinel {sentinel} is missing: this is not the approved state "
-            "volume (is the SSD mounted?). Refusing to create a new database here."
+            f"{sentinel} is missing: run `fleetqd init` first. Refusing to create a new database here."
         ) from exc
     if not stat.S_ISREG(sent.st_mode) or sent.st_uid != os.getuid() or sent.st_mode & 0o077:
-        raise RuntimeError(f"state volume sentinel must be an owned, private regular file: {sentinel}")
-    found = sentinel.read_text().strip()
-    if expected_volume_id is not None and found != expected_volume_id:
-        raise RuntimeError(
-            f"state volume sentinel says {found!r}, config expects {expected_volume_id!r}; refusing to start"
-        )
-    if expected_fs_uuid is not None:
-        if not re.fullmatch(r"[0-9A-Fa-f-]{8,64}", expected_fs_uuid):
-            raise RuntimeError("state_fs_uuid is not a filesystem UUID")
-        device = Path("/dev/disk/by-uuid") / expected_fs_uuid
-        try:
-            approved_dev = device.stat().st_rdev
-        except OSError as exc:
-            raise RuntimeError(f"approved state filesystem UUID {expected_fs_uuid} is unavailable") from exc
-        if approved_dev != directory.st_dev:
-            raise RuntimeError(f"state directory {state_dir} is not on approved filesystem {expected_fs_uuid}")
+        raise RuntimeError(f"init marker must be an owned, private regular file: {sentinel}")
     database = state_dir / "fleetq.db"
     if database.is_symlink():
         raise RuntimeError(f"database path is a symlink: {database}")

@@ -10,7 +10,7 @@ import pytest
 from fleetq import auth, bundles
 from fleetq.api import app as app_module
 from fleetq.api.app import Runtime, create_app
-from fleetq.executors.fake import FakeNode
+from fake_executor import FakeNode
 from harness import Harness
 
 RESERVE = 2 * 1024**3

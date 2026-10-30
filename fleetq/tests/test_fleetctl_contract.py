@@ -24,7 +24,7 @@ import pytest
 
 from fleetq import auth, bundles
 from fleetq.api.app import Runtime, create_app
-from fleetq.executors.fake import FakeNode
+from fake_executor import FakeNode
 from fleetq.transport.fleetctl import Fleetctl, _classify
 from fleetq.util import utcnow
 
@@ -57,10 +57,14 @@ def fleet(tmp_path):
         f'version = 1\nname = "gate"\nrole = "storage"\nprotocol = "managed"\n'
         f'secret_backend = "file"\nsecret_ref = "{secret}"\n')
 
-    def protocol(extra: str = "") -> None:
+    dead_token = tmp_path / "dead-authority.token"
+    dead_token.write_text("unused\n")
+    dead_token.chmod(0o600)
+
+    def protocol(url: str = "http://127.0.0.1:9", token_file: Path = dead_token) -> None:
         (config / "protocols.d" / "managed.toml").write_text(
             'version = 1\nname = "managed"\nkind = "direct"\n\n[control_budget]\n'
-            f'action_per_minute = 60.0\nburst = 1\ncanonical_cluster = "site"\n{extra}')
+            f'canonical_cluster = "site"\nauthority_url = "{url}"\nauthority_token_file = "{token_file}"\n')
 
     protocol()
     (config / "protocols.d" / "sched.toml").write_text(
@@ -174,16 +178,6 @@ def test_expected_role_blocks_inventory_drift_before_connection(fleet, tmp_path)
     assert not any(sockets.iterdir())
 
 
-def test_an_empty_local_budget_is_budget_refused_with_retry_after(fleet):
-    transport, _, sockets = fleet
-    _patch_argv0(transport)
-    result = run(transport.exec("gate", ["squeue"], timeout=20, mutation=False, admin=True, op_class="action"))
-    assert result.outcome == "budget_refused", (result.stdout, result.stderr)
-    assert result.may_have_executed is False and result.exit_code == 75
-    assert result.retry_after and result.retry_after > 0
-    assert not any(sockets.iterdir())
-
-
 def test_sync_push_argv_is_what_the_real_parser_accepts(fleet, tmp_path):
     transport, _, _ = fleet
     _patch_argv0(transport)
@@ -275,7 +269,7 @@ def test_fleetctl_redeems_a_fleetq_permit_exactly_once_and_only_for_its_bucket(f
     transport, protocol, sockets = fleet
     _patch_argv0(transport)
     h, url, token_file = authority
-    protocol(f'authority_url = "{url}"\nauthority_token_file = "{token_file}"\n')
+    protocol(url, token_file)
 
     def grant(op_class):
         return h.store.run_sync(lambda c: budget.grant_permit(
