@@ -266,43 +266,116 @@ def test_sent_flag_survives_idle_cycles_and_is_not_rearmed_by_them():
     assert events == [] and counts[uuid] == 2 and notified == {uuid: "sent"}
 
 
-def test_delivery_sends_once_and_backs_off_on_failure():
-    uuid = "GPU-x"
+def test_outbox_sends_once_and_backs_off_on_failure(tmp_path):
+    db = Database(tmp_path / "notify.db")
+    url = "https://ntfy/topic"
     event = {
         "event": "gpu_free",
-        "gpu_uuid": uuid,
+        "gpu_uuid": "GPU-x",
         "gpu_index": 0,
         "model": "RTX",
         "observations": 2,
     }
     calls = []
 
-    def poster(url, payload):
+    def poster(_url, payload):
         calls.append(payload)
         return "ok"
 
-    notified, retry = notify.notify_target(
-        "host", [event], {}, 0.0, 100.0, "https://ntfy/topic", poster
-    )
-    assert notified[uuid] == "sent" and retry == 0.0 and len(calls) == 1
-    assert calls[0]["target"] == "host"
-
-    def failing(url, payload):
+    def failing(_url, payload):
+        calls.append(payload)
         return "notify_unreachable"
 
-    notified, retry = notify.notify_target(
-        "host", [event], {}, 0.0, 100.0, "https://ntfy/topic", failing
+    try:
+        db.enqueue_notification(
+            "gpu:host:GPU-x", notify.safe_payload({"target": "host", **event}), 100.0
+        )
+        assert notify.dispatch_outbox(db, url, failing, 100.0) == 0
+        assert calls[0]["target"] == "host" and calls[0]["gpu_uuid"] == "GPU-x"
+        # Backed off: nothing is attempted inside the window.
+        assert notify.dispatch_outbox(db, url, poster, 150.0) == 0
+        assert len(calls) == 1
+        assert notify.dispatch_outbox(db, url, poster, 100.0 + 301.0) == 1
+        assert len(calls) == 2
+        # Delivered exactly once.
+        assert notify.dispatch_outbox(db, url, poster, 1000.0) == 0
+        assert len(calls) == 2
+    finally:
+        db.close()
+
+
+def test_outbox_stops_at_first_failure_and_resumes_in_order(tmp_path):
+    db = Database(tmp_path / "notify.db")
+    url = "https://ntfy/topic"
+    seen = []
+
+    def failing(_url, payload):
+        seen.append(payload["event"])
+        return "notify_unreachable"
+
+    def poster(_url, payload):
+        seen.append(payload["event"])
+        return "ok"
+
+    try:
+        db.enqueue_notification(
+            "host:ada1:poll_failures",
+            notify.safe_payload(
+                {"event": "poll_failures", "target": "ada1", "failures": 3}
+            ),
+            100.0,
+        )
+        db.enqueue_notification(
+            "host:ada1:clock_drift",
+            notify.safe_payload(
+                {"event": "clock_drift", "target": "ada1", "skew_seconds": 2400.0}
+            ),
+            100.0,
+        )
+        assert notify.dispatch_outbox(db, url, failing, 100.0) == 0
+        assert seen == ["poll_failures"]  # delivery stops after the first failure
+        assert notify.dispatch_outbox(db, url, poster, 100.0 + 301.0) == 2
+        # The failed event retries first; the later one follows in the same pass.
+        assert seen == ["poll_failures", "poll_failures", "clock_drift"]
+    finally:
+        db.close()
+
+
+def test_default_poster_maps_http_and_network_outcomes(monkeypatch):
+    sent = []
+
+    class Response:
+        def __init__(self, status):
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def respond(status):
+        def urlopen(request, timeout):
+            sent.append((request.full_url, request.data, timeout))
+            return Response(status)
+
+        return urlopen
+
+    monkeypatch.setattr(notify.urllib.request, "urlopen", respond(204))
+    assert notify.default_poster("https://ntfy/topic", {"event": "gpu_free"}) == "ok"
+    assert sent[0] == (
+        "https://ntfy/topic",
+        b'{"event":"gpu_free"}',
+        notify.NOTIFY_TIMEOUT_SECONDS,
     )
-    assert notified[uuid] == "notify_unreachable"
-    assert retry == 100.0 + notify.NOTIFY_RETRY_SECONDS
-    notified, retry = notify.notify_target(
-        "host", [event], notified, retry, 150.0, "https://ntfy/topic", failing
-    )
-    assert notified[uuid] == "notify_unreachable"
-    notified, retry = notify.notify_target(
-        "host", [event], notified, retry, retry + 1, "https://ntfy/topic", poster
-    )
-    assert notified[uuid] == "sent"
+    monkeypatch.setattr(notify.urllib.request, "urlopen", respond(500))
+    assert notify.default_poster("https://ntfy/topic", {}) == "notify_http_error"
+
+    def unreachable(request, timeout):
+        raise notify.urllib.error.URLError("down")
+
+    monkeypatch.setattr(notify.urllib.request, "urlopen", unreachable)
+    assert notify.default_poster("https://ntfy/topic", {}) == "notify_unreachable"
 
 
 def test_tracking_maps_are_bounded():
@@ -335,49 +408,38 @@ def test_config_errors_never_contain_the_url(monkeypatch):
     assert secret not in str(excinfo.value)
 
 
-def _health_cycle(failures, last_error, skew, notified, poster=None):
-    """One hub cycle: evaluate, deliver, persist exactly like the service."""
+def _health_cycle(failures, last_error, skew, notified):
+    """One hub cycle: evaluate, then mark sent exactly like the service.
+
+    The service queues each event durably and flags it sent; retries belong to
+    the outbox dispatcher, which the outbox tests above cover.
+    """
 
     events, updated = notify.evaluate_host_health(failures, last_error, skew, notified)
     if not events:
         return events, updated  # the service persists the (possibly cleared) map
-    delivered, _retry = notify.notify_host_events(
-        "ada1",
-        events,
-        updated,
-        0.0,
-        100.0,
-        "https://ntfy/topic",
-        poster or (lambda url, payload: "ok"),
-    )
-    return events, delivered
+    updated = dict(updated)
+    for event in events:
+        updated[event["event"]] = "sent"
+    return events, updated
 
 
 def test_health_poll_failure_streak_fires_once_and_rearms_after_success():
-    calls = []
-    events, notified = _health_cycle(
-        3,
-        "transport",
-        None,
-        {},
-        lambda u, p: calls.append(p) or "ok",
-    )
+    events, notified = _health_cycle(3, "transport", None, {})
     assert [e["event"] for e in events] == ["poll_failures"]
     assert events[0]["failures"] == 3 and events[0]["error"] == "transport"
-    assert notified["poll_failures"] == "sent" and len(calls) == 1
+    assert notified["poll_failures"] == "sent"
 
-    # A fourth failure while already notified emits and delivers nothing new.
+    # A fourth failure while already notified emits nothing new.
     events, notified = _health_cycle(4, "transport", None, notified)
-    assert events == [] and len(calls) == 1
+    assert events == []
 
     # Success clears the streak and re-arms the alert.
     events, notified = _health_cycle(0, None, None, notified)
     assert events == [] and "poll_failures" not in notified
-    events, notified = _health_cycle(
-        3, "timeout", None, notified, lambda u, p: calls.append(p) or "ok"
-    )
+    events, notified = _health_cycle(3, "timeout", None, notified)
     assert [e["event"] for e in events] == ["poll_failures"]
-    assert events[0]["error"] == "timeout" and len(calls) == 2
+    assert events[0]["error"] == "timeout"
 
 
 def test_health_failure_streak_below_threshold_never_fires():
@@ -418,94 +480,30 @@ def test_health_boundary_is_inclusive_and_events_can_combine():
     assert [e["event"] for e in events] == ["poll_failures", "clock_drift"]
 
 
-def test_health_failed_delivery_retries_on_a_later_cycle():
-    attempts = []
-
-    def failing(url, payload):
-        attempts.append(payload)
-        return "notify_unreachable"
-
-    events, notified = _health_cycle(3, "transport", None, {}, failing)
-    assert notified["poll_failures"] == "notify_unreachable"
-    first_attempt = len(attempts)
-
-    # While backed off, nothing is re-sent; after the window, delivery retries.
-    notified, retry = notify.notify_host_events(
-        "ada1",
-        events,
-        notified,
-        retry if (retry := 100.0 + notify.NOTIFY_RETRY_SECONDS) else 0.0,
-        150.0,
-        "https://ntfy/topic",
-        failing,
+def test_idle_requires_distinct_fresh_known_boot_observations():
+    newest = observation(gpu_row(), received_at=100)
+    duplicate = observation(gpu_row(), received_at=100)
+    assert (
+        notify.classify_gpu(newest, duplicate, now=101, freshness_seconds=10)[0]
+        == "unknown"
     )
-    assert len(attempts) == first_attempt  # still inside the backoff window
-    notified, _retry = notify.notify_host_events(
-        "ada1",
-        events,
-        notified,
-        retry,
-        retry + 1.0,
-        "https://ntfy/topic",
-        lambda u, p: attempts.append(p) or "ok",
+    older = observation(gpu_row(), received_at=90)
+    assert (
+        notify.classify_gpu(newest, older, now=101, freshness_seconds=10)[0]
+        == "unknown"
     )
-    assert notified["poll_failures"] == "sent" and len(attempts) == first_attempt + 1
-
-
-def test_host_delivery_sends_once_and_backs_off_on_failure():
-    calls = []
-
-    def poster(url, payload):
-        calls.append(payload)
-        return "ok"
-
-    events = [{"event": "clock_drift", "skew_seconds": 2400.0}]
-    notified, retry = notify.notify_host_events(
-        "ada1", events, {}, 0.0, 100.0, "https://ntfy/topic", poster
+    older["received_at"] = 98
+    assert (
+        notify.classify_gpu(newest, older, now=101, freshness_seconds=10)[0] == "idle"
     )
-    assert notified["clock_drift"] == "sent" and retry == 0.0 and len(calls) == 1
-    assert calls[0] == {
-        "target": "ada1",
-        "event": "clock_drift",
-        "skew_seconds": 2400.0,
-    }
-
-    def failing(url, payload):
-        return "notify_unreachable"
-
-    events = [
-        {"event": "poll_failures", "failures": 3, "error": "transport"},
-        {"event": "clock_drift", "skew_seconds": 2400.0},
-    ]
-    notified, retry = notify.notify_host_events(
-        "ada1", events, {}, 0.0, 100.0, "https://ntfy/topic", failing
+    newest["boot_id"] = older["boot_id"] = "unknown"
+    assert (
+        notify.classify_gpu(newest, older, now=101, freshness_seconds=10)[0]
+        == "unknown"
     )
-    assert notified["poll_failures"] == "notify_unreachable"
-    assert "clock_drift" not in notified  # delivery stops after first failure
-    assert retry == 100.0 + notify.NOTIFY_RETRY_SECONDS
-    notified, retry = notify.notify_host_events(
-        "ada1", events, notified, retry, retry + 1, "https://ntfy/topic", failing
-    )
-    assert notified["poll_failures"] == "notify_unreachable"
-    assert "clock_drift" not in notified  # the failed event is retried first
-    notified, retry = notify.notify_host_events(
-        "ada1", events, notified, retry, retry + 1, "https://ntfy/topic", poster
-    )
-    assert notified["poll_failures"] == "sent"
-    assert notified["clock_drift"] == "sent"  # later events follow in the same pass
 
 
-def test_host_delivery_honors_backoff_window():
-    def poster(url, payload):
-        raise AssertionError("must not deliver while backed off")
-
-    notified, retry = notify.notify_host_events(
-        "ada1",
-        [{"event": "poll_failures", "failures": 3, "error": "transport"}],
-        {},
-        200.0,
-        150.0,
-        "https://ntfy/topic",
-        poster,
-    )
-    assert notified == {} and retry == 200.0
+def test_nan_gpu_reading_is_never_idle():
+    newest = observation(gpu_row(utilization=float("nan")), received_at=100)
+    older = observation(gpu_row(), received_at=98)
+    assert notify.classify_gpu(newest, older)[0] == "unknown"

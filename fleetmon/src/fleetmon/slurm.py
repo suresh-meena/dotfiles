@@ -238,7 +238,9 @@ def parse_squeue(
     rows = data.get("jobs", [])
     if not isinstance(rows, list):
         raise ValueError("squeue jobs must be list")
-    return [_validate_squeue_row(row) for row in rows[:max_rows]]
+    if len(rows) > max_rows:
+        raise ValueError("squeue result exceeds row limit")
+    return [_validate_squeue_row(row) for row in rows]
 
 
 SACCT_FIELDS = (
@@ -312,9 +314,13 @@ def parse_sacct(
     max_rows = _max_rows(max_rows)
     text = _bounded_text(data, "sacct")
     result: list[dict[str, str | None]] = []
-    for line in text.splitlines()[: max_rows + 1]:
+    for line in text.splitlines():
         if not line.strip():
             continue
+        # Truncating would let the caller advance its watermark past rows it
+        # never saw, so an over-limit result fails the poll instead.
+        if len(result) >= max_rows:
+            raise ValueError("sacct result exceeds row limit")
         if len(line.encode("utf-8")) > MAX_FIELD_LENGTH:
             raise ValueError("sacct row exceeds limit")
         vals = _split_sacct_line(line, len(fields))
@@ -326,8 +332,6 @@ def parse_sacct(
         if not _valid_job_id(row["job_id"]):
             raise ValueError("sacct row missing valid job_id")
         result.append(row)
-        if len(result) >= max_rows:
-            break
     return result
 
 

@@ -405,6 +405,64 @@
     if (!item || typeof item !== "object") return "stale";
     return gpuFlag(item.flag !== undefined ? item.flag : item.availability);
   }
+  // ---- Hidden GPUs: a per-browser choice to ignore a GPU wherever it is drawn
+  // (its card, chart lines and wall tile, and the idle/busy counts). Nothing is
+  // stopped or deleted, and showing it again restores everything.
+  const HIDDEN_GPUS_KEY = "fleetmon.hiddenGpus";
+  const hiddenGpus = new Set();
+  try {
+    const saved = JSON.parse(localStorage.getItem(HIDDEN_GPUS_KEY) || "[]");
+    if (Array.isArray(saved)) {
+      saved.slice(0, 512).forEach((key) => {
+        if (typeof key === "string") hiddenGpus.add(key);
+      });
+    }
+  } catch (_error) {
+    // Storage blocked: hiding still works until the page reloads.
+  }
+  function gpuKey(host, idx) {
+    return `${host}#${String(idx)}`;
+  }
+  function isGpuHidden(host, idx) {
+    return hiddenGpus.has(gpuKey(host, idx));
+  }
+  function setGpusHidden(keys, hidden) {
+    keys.forEach((key) => (hidden ? hiddenGpus.add(key) : hiddenGpus.delete(key)));
+    try {
+      localStorage.setItem(HIDDEN_GPUS_KEY, JSON.stringify(Array.from(hiddenGpus)));
+    } catch (_error) {
+      // Not persisted; the choice lasts for this page view.
+    }
+    chartPanel = null;
+    renderAll();
+  }
+  function hiddenKeysOn(host) {
+    const prefix = `${host}#`;
+    return Array.from(hiddenGpus).filter((key) => key.startsWith(prefix));
+  }
+  function seriesGpuIndex(item) {
+    const match = /^gpu(\d+)\b/.exec(String(item && item.label));
+    return match ? match[1] : null;
+  }
+  function withoutHiddenGpus(idleDoc) {
+    if (!hiddenGpus.size || !idleDoc || typeof idleDoc !== "object" || Array.isArray(idleDoc)) return idleDoc;
+    const items = rowsOf(idleDoc);
+    const kept = items.filter((item) => !(item && isGpuHidden(item.target, item.idx)));
+    if (kept.length === items.length) return idleDoc;
+    const summary = {...(idleDoc.summary || {}), idle: 0, busy: 0, unknown: 0};
+    kept.forEach((item) => {
+      const flag = itemFlag(item);
+      summary[flag === "stale" ? "unknown" : flag] += 1;
+    });
+    return {...idleDoc, items: kept, summary, hidden_gpus: items.length - kept.length};
+  }
+  function showAllHiddenButton(count) {
+    const button = el("button", "gpu-hide", `${count} hidden · show all`);
+    button.type = "button";
+    button.dataset.focusKey = "gpu-show-all";
+    button.addEventListener("click", () => setGpusHidden(Array.from(hiddenGpus), false));
+    return button;
+  }
   function availabilityToken(value, reason) {
     const flag = gpuFlag(value);
     const span = el("span", `badge badge-${flag}`, flag);
@@ -749,12 +807,14 @@
       legend.append(key);
     });
     legend.append(el("span", "key-note", "n/m: free of host's GPUs · idle tile: free vram · busy tile: owner · fill: utilization · bar: vram in use"));
+    if (idleDoc && idleDoc.hidden_gpus) legend.append(showAllHiddenButton(idleDoc.hidden_gpus));
     panel.append(legend);
     return panel;
   }
 
   function renderOverview(rows, idleDoc) {
     clear();
+    idleDoc = withoutHiddenGpus(idleDoc);
     const list = rowsOf(rows);
     renderSidebar(list);
     if (!list.length) {
@@ -772,7 +832,13 @@
     band.append(cards, attentionList(list));
     content.append(band);
     const wall = gpuWall(list, idleDoc);
-    if (wall) content.append(wall);
+    if (wall) {
+      content.append(wall);
+    } else if (idleDoc && idleDoc.hidden_gpus) {
+      const bar = el("p", "note");
+      bar.append(showAllHiddenButton(idleDoc.hidden_gpus));
+      content.append(bar);
+    }
     const sparks = sparkMap(lastSparks);
     const columns = [
       {label: "host"},
@@ -1006,6 +1072,12 @@
     name.title = `GPU ${_int(gpu.idx)} · ${_text(gpu.model)}`;
     head.append(name);
     head.append(availabilityToken(itemFlag(gpu), gpu.reason));
+    const hide = el("button", "gpu-hide", "hide");
+    hide.type = "button";
+    hide.title = "Ignore this GPU in graphs and counts";
+    hide.dataset.focusKey = `gpu-hide-${gpu.idx}`;
+    hide.addEventListener("click", () => setGpusHidden([gpuKey(target, gpu.idx)], true));
+    head.append(hide);
     card.append(head);
     card.append(
       meterRow(
@@ -1049,6 +1121,17 @@
     return card;
   }
 
+  function gpuStub(gpu) {
+    const stub = el("article", "gpu-card gpu-stub");
+    stub.append(el("span", "gpu-name", `GPU ${_int(gpu.idx)} · hidden`));
+    const show = el("button", "gpu-hide", "show");
+    show.type = "button";
+    show.dataset.focusKey = `gpu-show-${gpu.idx}`;
+    show.addEventListener("click", () => setGpusHidden([gpuKey(target, gpu.idx)], false));
+    stub.append(show);
+    return stub;
+  }
+
   function renderGpus(gpus, processes) {
     heading("GPUs");
     if (!Array.isArray(gpus) || !gpus.length) {
@@ -1064,6 +1147,10 @@
     const grid = el("div", "gpu-grid");
     gpus.forEach((gpu) => {
       if (!gpu || typeof gpu !== "object") return;
+      if (isGpuHidden(target, gpu.idx)) {
+        grid.append(gpuStub(gpu));
+        return;
+      }
       grid.append(
         gpuCard(gpu, procsByUuid.get(gpu.uuid), ownersByUuid.get(gpu.uuid)),
       );
@@ -1647,42 +1734,6 @@
     link.href = `/queue?job=${encodeURIComponent(id)}${finishedParam ? "&finished=1" : ""}`;
     return link;
   }
-  function fleetqConfirmLink(origin, id, action) {
-    if (typeof origin !== "string" || !origin || !["cancel", "hold"].includes(action)) return null;
-    const jobId = String(id);
-    if (!/^[1-9][0-9]{0,18}$/.test(jobId)) return null;
-    let base;
-    try {
-      const parsed = new URL(origin);
-      if (parsed.protocol !== "https:" || parsed.pathname !== "/" || parsed.search || parsed.hash
-          || parsed.username || parsed.password) return null;
-      base = parsed.origin;
-    } catch (_error) {
-      return null;
-    }
-    const link = el("a", "", action);
-    link.href = `${base}/ui/jobs/${encodeURIComponent(jobId)}/confirm/${action}`;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    return link;
-  }
-  function queueActions(job, origin) {
-    const links = [];
-    if (job && job.phase !== "TERMINAL") {
-      const cancel = fleetqConfirmLink(origin, job.id, "cancel");
-      if (cancel) links.push(cancel);
-    }
-    if (job && ["PENDING", "BLOCKED"].includes(job.phase)) {
-      const hold = fleetqConfirmLink(origin, job.id, "hold");
-      if (hold) links.push(hold);
-    }
-    const cell = el("span", "", "");
-    links.forEach((link, index) => {
-      if (index) cell.append(el("span", "", " · "));
-      cell.append(link);
-    });
-    return links.length ? cell : DASH;
-  }
   function decodeTail(b64) {
     if (typeof b64 !== "string" || !b64) return "";
     try {
@@ -1741,7 +1792,7 @@
       const toggle = el("a", "", finishedParam ? "hide finished jobs" : "show finished jobs");
       toggle.href = finishedParam ? "/queue" : "/queue?finished=1";
       const bar = el("p", "note", "");
-      bar.append(toggle, el("span", "", ` · ${_int(doc.pending_in_line)} waiting to be placed · change jobs with fq (cancel, hold, modify, top)${doc.ui_origin ? " · browser actions open fleetq confirmation pages" : ""}`));
+      bar.append(toggle, el("span", "", ` · ${_int(doc.pending_in_line)} waiting to be placed · change jobs with fq (cancel, hold, modify, top)`));
       content.append(bar);
       if (jobParam) renderQueueJob(jobDoc);
     } else {
@@ -1757,7 +1808,6 @@
       {label: "job", num: true}, {label: "name"}, {label: "user"}, {label: "st"}, {label: "where"},
       {label: "gpus", num: true}, {label: "time", num: true}, {label: "limit", num: true},
       {label: "prio", num: true}, {label: "pos", num: true}, {label: "reason"},
-      {label: "actions"},
     ];
     if (jobs.length) {
       const tbody = dataTable(columns, "queue");
@@ -1778,7 +1828,6 @@
         num(_int(job.effective_priority), job.effective_priority),
         num(job.position ? _int(job.position) : DASH, job.position || 0),
         _text(job.reason || (job.phase === "HELD" ? "held" : "")),
-        queueActions(job, doc.ui_origin),
       ]);
       });
       tbody.applySavedSort();
@@ -1831,11 +1880,6 @@
       ["started", times.started ? _clockIso(times.started) : DASH],
       ["ended", times.ended ? _clockIso(times.ended) : DASH],
     ]));
-    const actionLinks = queueActions(job, lastData && lastData.ui_origin);
-    if (actionLinks !== DASH) {
-      heading("Actions in fleetq");
-      content.append(actionLinks);
-    }
     const artifactDoc = doc.artifacts;
     if (artifactDoc && Array.isArray(artifactDoc.files) && artifactDoc.files.length) {
       heading("Artifacts");
@@ -2089,6 +2133,7 @@
     heading("History");
     if (chartPanel && chartPanelSource === lastCharts) {
       content.append(renderRanges(), chartPanel);
+      noteHiddenGpus();
       return;
     }
     diskFigure = null;
@@ -2097,7 +2142,11 @@
       note("loading history…");
       return;
     }
-    const series = Array.isArray(lastCharts && lastCharts.series) ? lastCharts.series : [];
+    const allSeries = Array.isArray(lastCharts && lastCharts.series) ? lastCharts.series : [];
+    const series = allSeries.filter((item) => {
+      const idx = seriesGpuIndex(item);
+      return idx === null || !isGpuHidden(target, idx);
+    });
     const groups = new Map();
     series.forEach((item) => {
       if (!item || !Array.isArray(item.points) || !item.points.length) return;
@@ -2119,6 +2168,12 @@
     const disk = groups.get(DISK_CHART[0]);
     if (disk) diskFigure = chartFigure(DISK_CHART[1], disk);
     content.append(chartPanel);
+    noteHiddenGpus();
+  }
+
+  function noteHiddenGpus() {
+    const count = hiddenKeysOn(target).length;
+    if (count) note(`${count} GPU${count === 1 ? "" : "s"} hidden from these charts; show them from the GPUs section above`);
   }
 
   function appendSeries(root, coords, color, lineWidth, baseline) {

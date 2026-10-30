@@ -204,7 +204,7 @@ def test_failed_backup_does_not_leave_a_partial_file(tmp_path, monkeypatch):
 
 def test_inventory_failure_retries_on_inventory_cadence(tmp_path):
     runtime = HubRuntime(config(tmp_path), discover_fn=inventory)
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     attempts = []
 
     def failed_discovery(*args):

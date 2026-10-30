@@ -66,7 +66,7 @@ def _managed_runtime(tmp_path, feed):
     cfg = config(tmp_path, managed_scheduler_targets=("campus",),
                  scheduler_interval_seconds=60.0)
     runtime = HubRuntime(cfg, discover_fn=lambda *_: _inventory(), poll_controller=NoRemoteCalls())
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     runtime.scheduler = feed
     return runtime
 
@@ -78,7 +78,7 @@ def test_managed_cluster_never_uses_fleetmons_direct_slurm_poller(tmp_path):
         discover_fn=lambda *_: _inventory(), poll_controller=controller,
     )
     try:
-        runtime.refresh_inventory()
+        asyncio.run(runtime.refresh_inventory_async())
         result = asyncio.run(runtime.poll_slurm_target(_inventory().scheduler_targets[0]))
         assert result == "managed_by_fleetqd"
         assert controller.calls == []
@@ -187,7 +187,7 @@ def test_managed_snapshot_status_reaches_queue_and_never_polls_slurm_directly(tm
         discover_fn=lambda *_: _inventory(), poll_controller=controller,
     )
     try:
-        runtime.refresh_inventory()
+        asyncio.run(runtime.refresh_inventory_async())
         runtime.scheduler = feed
 
         # Before the first good observation, fleetmon exposes unknown freshness.
@@ -228,15 +228,15 @@ def test_missing_managed_target_is_reported_without_freezing_the_inventory(tmp_p
         discover_fn=lambda *_: next(scans), poll_controller=NoRemoteCalls(),
     )
     try:
-        runtime.refresh_inventory()
+        asyncio.run(runtime.refresh_inventory_async())
         assert runtime.state.data["inventory_error"] is None
 
-        runtime.refresh_inventory()
+        asyncio.run(runtime.refresh_inventory_async())
         assert "gpu2" in runtime.admitted_names
         assert "gpu2" in {row["target"] for row in runtime.db.hosts()}
         assert "campus" in runtime.state.data["inventory_error"]
 
-        runtime.refresh_inventory()
+        asyncio.run(runtime.refresh_inventory_async())
         assert runtime.state.data["inventory_error"] is None
     finally:
         runtime.close()

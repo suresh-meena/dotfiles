@@ -30,7 +30,6 @@ CLOCK_DRIFT_SECONDS = 120.0
 POLL_FAILURES_NOTIFY = 3
 MAX_NOTIFY_URL_BYTES = 512
 NOTIFY_TIMEOUT_SECONDS = 5.0
-NOTIFY_RETRY_SECONDS = 300.0
 MAX_PAYLOAD_BYTES = 2048
 MAX_TRACKED_GPUS = 32
 NOTIFY_RATE_CAP_PER_MINUTE = 5
@@ -362,76 +361,6 @@ def evaluate_host_health(
         else:
             updated.pop("clock_drift", None)
     return events, updated
-
-
-def notify_host_events(
-    target: str,
-    events: list[dict[str, Any]],
-    notified: dict[str, Any],
-    next_retry: float,
-    now: float,
-    url: str,
-    poster: Callable[[str, dict[str, Any]], str] = default_poster,
-) -> tuple[dict[str, Any], float]:
-    """Deliver host-health events keyed by ``event``, with GPU backoff rules.
-
-    Same bounded behavior as :func:`notify_target`: at most one POST per
-    transition, a failed delivery backs off ``NOTIFY_RETRY_SECONDS`` and is
-    retried on a later cycle, and delivery never blocks polling.
-    """
-
-    if now < next_retry:
-        return notified, next_retry
-    updated = dict(notified)
-    retry = next_retry
-    for event in events:
-        kind = str(event["event"])
-        if updated.get(kind) == "sent":
-            continue
-        payload = {"target": target, **event}
-        result = poster(url, payload)
-        if result == "ok":
-            updated[kind] = "sent"
-        else:
-            updated[kind] = result
-            retry = now + NOTIFY_RETRY_SECONDS
-            break
-    return updated, retry
-
-
-def notify_target(
-    target: str,
-    events: list[dict[str, Any]],
-    notified: dict[str, Any],
-    next_retry: float,
-    now: float,
-    url: str,
-    poster: Callable[[str, dict[str, Any]], str] = default_poster,
-) -> tuple[dict[str, Any], float]:
-    """Deliver at most one POST per GPU transition, honoring backoff.
-
-    Returns (updated notified map, updated next_retry timestamp). A failed
-    delivery backs off ``NOTIFY_RETRY_SECONDS`` and is retried on a later
-    cycle while the GPU remains free; it never blocks polling.
-    """
-
-    if now < next_retry:
-        return notified, next_retry
-    updated = dict(notified)
-    retry = next_retry
-    for event in events:
-        uuid_key = event["gpu_uuid"]
-        if updated.get(uuid_key) == "sent":
-            continue
-        payload = {"target": target, **event}
-        result = poster(url, payload)
-        if result == "ok":
-            updated[uuid_key] = "sent"
-        else:
-            updated[uuid_key] = result
-            retry = now + NOTIFY_RETRY_SECONDS
-            break
-    return updated, retry
 
 
 def prune_tracking(

@@ -16,124 +16,6 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA_VERSION = 4
-# This project has not shipped a migration runner yet.  Existing databases
-# therefore need to prove that they have exactly the schema this code knows
-# how to use; silently applying CREATE TABLE IF NOT EXISTS is not sufficient
-# when a pre-release database has the same user_version but different columns.
-_REQUIRED_COLUMNS = {
-    "schema_migrations": {"version", "applied_at"},
-    "hosts": {
-        "target",
-        "role",
-        "protocol",
-        "state",
-        "helper_path",
-        "helper_version",
-        "last_captured",
-        "last_received",
-        "last_success",
-        "last_error",
-        "backoff",
-        "addresses",
-        "updated_at",
-    },
-    "polls": {"poll_id", "target", "started_at", "ended_at", "outcome", "error"},
-    "host_samples": {
-        "poll_id",
-        "target",
-        "captured_at",
-        "received_at",
-        "cpu_busy",
-        "load1",
-        "load5",
-        "load15",
-        "ram_total",
-        "ram_used",
-        "root_total",
-        "root_free",
-        "capture_skew_seconds",
-        "collection_duration_seconds",
-        "partial",
-        "boot_id",
-        "observation_duration_seconds",
-        "visible_processes",
-        "emitted_processes",
-        "permission_denied",
-        "counters_truncated",
-        "limits_truncated",
-        "nvml_supported",
-        "nvml_error",
-        "psutil_error",
-    },
-    "gpu_samples": {
-        "poll_id",
-        "uuid",
-        "idx",
-        "model",
-        "utilization",
-        "vram_total",
-        "vram_used",
-        "temperature_c",
-        "power_watts",
-        "compute_process_count",
-        "supported",
-        "error",
-        "mig_detected",
-        "instance_supported",
-    },
-    "user_samples": {
-        "poll_id",
-        "target",
-        "uid",
-        "username",
-        "cpu_cores",
-        "rss",
-        "process_count",
-        "gpu_process_count",
-        "vram",
-    },
-    "current_processes": {
-        "target",
-        "pid",
-        "create_time",
-        "name",
-        "executable",
-        "uid",
-        "username",
-        "cpu_cores",
-        "rss",
-        "gpu_uuid",
-        "gpu_index",
-        "vram",
-        "poll_id",
-    },
-    "current_process_allocations": {
-        "target",
-        "pid",
-        "position",
-        "gpu_uuid",
-        "gpu_index",
-        "vram_bytes",
-    },
-    "current_disks": {
-        "target",
-        "mount",
-        "total_bytes",
-        "free_bytes",
-        "poll_id",
-    },
-    "slurm_jobs": {
-        "cluster",
-        "job_id",
-        "array_task_id",
-        "step_id",
-        "state",
-        "payload",
-        "updated_at",
-    },
-    "slurm_poll_state": {"target", "watermark", "state", "error", "updated_at"},
-    "notification_outbox": {"id", "dedupe_key", "payload", "created_at", "next_attempt", "attempts", "sent_at", "last_error"},
-}
 # Ordered, additive-only migrations keyed by the version they produce. Every
 # statement here must be safe to apply to a live database that already holds
 # real history: add a column or a table, never rewrite or drop one. This
@@ -455,6 +337,36 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
 CREATE INDEX IF NOT EXISTS notification_outbox_due
     ON notification_outbox(sent_at, next_attempt, created_at);
 """
+
+
+def _schema_columns() -> dict[str, set[str]]:
+    """The columns every table in ``SCHEMA`` declares, read back from SQLite."""
+
+    scratch = sqlite3.connect(":memory:")
+    try:
+        scratch.executescript(SCHEMA)
+        tables = [
+            row[0]
+            for row in scratch.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+        ]
+        return {
+            table: {
+                row[1] for row in scratch.execute(f"PRAGMA table_info({table})")
+            }
+            for table in tables
+        }
+    finally:
+        scratch.close()
+
+
+# This project has not shipped a migration runner yet.  Existing databases
+# therefore need to prove that they have exactly the schema this code knows
+# how to use; silently applying CREATE TABLE IF NOT EXISTS is not sufficient
+# when a pre-release database has the same user_version but different columns.
+_REQUIRED_COLUMNS = _schema_columns()
 
 
 class DatabaseVersionError(RuntimeError):

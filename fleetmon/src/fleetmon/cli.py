@@ -125,9 +125,9 @@ def _doctor(args: argparse.Namespace) -> int:
     if args.target:
         result["target"] = args.target
         try:
-            from .discovery import admitted_targets, discover
+            from .discovery import admitted_targets, discover_async
 
-            inventory = discover(str(config.fleetctl_path))
+            inventory = asyncio.run(discover_async(str(config.fleetctl_path)))
             matches = [
                 target for target in inventory.targets if target.name == args.target
             ]
@@ -342,43 +342,6 @@ def _hub(args: argparse.Namespace) -> int:
             lock.release()
 
 
-def _smoke(args: argparse.Namespace) -> int:
-    if not _valid_target_argument(args.target):
-        _print_json({"ok": False, "error": "invalid_target"})
-        return 2
-    try:
-        config = _config()
-    except (ConfigError, OSError):
-        _print_json({"ok": False, "error": "invalid_config"})
-        return 2
-    doctor_error = _fleetctl_doctor(config)
-    if doctor_error:
-        _print_json({"ok": False, "error": doctor_error})
-        return 1
-    try:
-        from .smoke import run_smoke
-
-        result = run_smoke(config, args.target)
-    except Exception:
-        _print_json({"ok": False, "error": "smoke_failed"})
-        return 1
-    _print_json(result)
-    return 0 if result.get("ok") else 1
-
-
-def _installer_unavailable(_: argparse.Namespace) -> int:
-    """Fail closed when installer scripts are not part of an installed wheel."""
-
-    _print_json(
-        {
-            "ok": False,
-            "error": "installer_unavailable",
-            "message": "run the separately distributed installer after reviewing it",
-        }
-    )
-    return 3
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fleetmon")
     parser.add_argument(
@@ -411,22 +374,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="run one collection pass without starting the web server",
     )
     hub.set_defaults(func=_hub)
-
-    smoke = subparsers.add_parser("smoke")
-    smoke.add_argument("target")
-    smoke.set_defaults(func=_smoke)
-
-    install_helper = subparsers.add_parser("install-helper")
-    install_helper.add_argument("--dry-run", action="store_true")
-    install_helper.add_argument("target")
-    install_helper.set_defaults(func=_installer_unavailable)
-
-    install_hub = subparsers.add_parser("install-hub")
-    install_hub.add_argument("--dry-run", action="store_true")
-    install_hub.add_argument("--replace", action="store_true")
-    install_hub.add_argument("--python")
-    install_hub.add_argument("--source")
-    install_hub.set_defaults(func=_installer_unavailable)
     return parser
 
 

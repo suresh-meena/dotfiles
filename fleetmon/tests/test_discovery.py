@@ -9,11 +9,21 @@ from fleetmon.discovery import (
     MAX_TARGETS,
     Inventory,
     Protocol,
-    discover,
     discover_async,
     parse_inventory,
 )
 from fleetmon.poller import PollResult
+
+
+def fake_fleetctl(monkeypatch, handler, calls=None):
+    """Serve ``fleetctl <args>`` from ``handler(args)`` instead of a subprocess."""
+
+    async def run(argv, **kwargs):
+        if calls is not None:
+            calls.append(argv[1:])
+        return PollResult(0, json.dumps(handler(argv[1:])).encode(), b"")
+
+    monkeypatch.setattr(discovery_module, "run_command", run)
 
 
 def test_roles_and_protocols_are_safe():
@@ -31,11 +41,10 @@ def test_roles_and_protocols_are_safe():
     assert [x.name for x in inv.scheduler_targets] == ["l"]
 
 
-def test_discover_resolves_distinct_protocols():
+def test_discover_resolves_distinct_protocols(monkeypatch):
     calls = []
 
     def run(argv):
-        calls.append(argv)
         if argv[0] == "list":
             return [
                 {"name": "a", "role": "compute", "protocol": "p"},
@@ -43,7 +52,8 @@ def test_discover_resolves_distinct_protocols():
             ]
         return {"name": "p", "kind": "direct"}
 
-    result = discover(runner=run)
+    fake_fleetctl(monkeypatch, run, calls)
+    result = asyncio.run(discover_async())
     assert len(calls) == 2 and result.direct_targets[1].name == "b"
 
 
@@ -87,11 +97,10 @@ def test_inventory_target_and_tag_counts_are_bounded():
         parse_inventory([dict(target, tags=[str(index) for index in range(65)])])
 
 
-def test_zero_resolution_budget_records_targets_without_admitting_them():
+def test_zero_resolution_budget_records_targets_without_admitting_them(monkeypatch):
     calls = []
 
     def run(argv):
-        calls.append(argv)
         if argv[0] == "list":
             return [
                 {"name": f"t{index}", "role": "compute", "protocol": f"p{index}"}
@@ -99,7 +108,8 @@ def test_zero_resolution_budget_records_targets_without_admitting_them():
             ]
         return {"name": argv[2], "kind": "direct"}
 
-    result = discover(runner=run, resolution_budget=0.0)
+    fake_fleetctl(monkeypatch, run, calls)
+    result = asyncio.run(discover_async(resolution_budget=0.0))
     assert len(calls) == 1
     assert len(result.targets) == 10
     assert result.protocols == {}
@@ -122,7 +132,8 @@ def test_exhausted_resolution_budget_stops_midway(monkeypatch):
         return {"name": argv[2], "kind": "direct"}
 
     monkeypatch.setattr(discovery_module, "time", SimpleNamespace(monotonic=monotonic))
-    result = discover(runner=run, resolution_budget=5.0)
+    fake_fleetctl(monkeypatch, run)
+    result = asyncio.run(discover_async(resolution_budget=5.0))
     assert set(result.protocols) == {f"p{index}" for index in range(5)}
     assert len(result.direct_targets) == 5
 

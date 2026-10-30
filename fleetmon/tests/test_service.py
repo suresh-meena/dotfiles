@@ -15,6 +15,7 @@ from fleetmon.discovery import Inventory, Protocol, Target
 from fleetmon.poller import PollResult
 from fleetmon.protocol import SCHEMA_VERSION, encode_snapshot
 from fleetmon.service import HubRuntime
+from fleetmon.slurm import MAX_SCHEDULER_ROWS
 
 
 def document(helper_version=str(SCHEMA_VERSION)):
@@ -136,8 +137,6 @@ def gpu_document(idle=True, idle_gpus=1, busy_gpus=1, with_rows=True):
 class Controller:
     def __init__(self, result):
         self.result = result
-        self.polling_enabled = True
-        self.disabled_targets = set()
         self.calls = []
         self.active_count = 0
 
@@ -164,12 +163,44 @@ class SlurmFallbackController(Controller):
         return PollResult(0, row.encode(), b"")
 
 
+class SlurmAccountingOverLimitController(Controller):
+    async def poll(self, target, argv, **kwargs):
+        self.calls.append((target, argv, kwargs))
+        if target.endswith(":squeue"):
+            return PollResult(0, b'{"jobs":[{"job_id":1,"state":"RUNNING"}]}', b"")
+        row = "cluster|{}|||user|account|COMPLETED|gpu|node|||||gpu:1|gpu:1"
+        rows = "\n".join(row.format(i + 1) for i in range(MAX_SCHEDULER_ROWS + 1))
+        return PollResult(0, rows.encode(), b"")
+
+
 class SlurmAccountingFailureController(Controller):
     async def poll(self, target, argv, **kwargs):
         self.calls.append((target, argv, kwargs))
         if target.endswith(":squeue"):
             return PollResult(0, b'{"jobs":[{"job_id":1,"state":"RUNNING"}]}', b"")
         return PollResult(None, b"", b"", timed_out=True)
+
+
+@pytest.mark.parametrize(
+    "changes", [{"polling_enabled": False}, {"disabled_targets": ("gpu1",)}]
+)
+def test_polling_kill_switches_are_enforced_at_the_schedule_source(tmp_path, changes):
+    controller = Controller(PollResult(0, encode_snapshot(document()), b""))
+    runtime = HubRuntime(
+        config(tmp_path, **changes),
+        discover_fn=inventory,
+        poll_controller=controller,
+    )
+    try:
+        asyncio.run(runtime.refresh_inventory_async())
+        assert runtime._desired_schedules(runtime.inventory) == {}
+        assert asyncio.run(runtime.run_once()) == []
+        assert controller.calls == []
+        assert [(row["target"], row["state"]) for row in runtime.db.hosts()] == [
+            ("gpu1", "polling_disabled")
+        ]
+    finally:
+        runtime.close()
 
 
 def test_valid_poll_uses_explicit_target_and_commits_atomically(tmp_path):
@@ -179,7 +210,7 @@ def test_valid_poll_uses_explicit_target_and_commits_atomically(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     target = runtime.inventory.direct_targets[0]
 
     result = asyncio.run(runtime.poll_target(target, "/opt/fleetmon/snapshot"))
@@ -213,7 +244,7 @@ def test_valid_poll_surfaces_self_reported_addresses_and_disks(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     target = runtime.inventory.direct_targets[0]
 
     result = asyncio.run(runtime.poll_target(target, "/opt/fleetmon/snapshot"))
@@ -225,7 +256,7 @@ def test_valid_poll_surfaces_self_reported_addresses_and_disks(tmp_path):
         {"mount": "/", "total_bytes": 100, "free_bytes": 50},
         {"mount": "/data", "total_bytes": 500, "free_bytes": 200},
     ]
-    assert runtime.hosts()[0]["addresses"] == ["100.64.1.2", "10.0.0.5"]
+    assert runtime.overview()[0]["addresses"] == ["100.64.1.2", "10.0.0.5"]
     # The overview carries every mount too, for its full-disk warnings.
     assert runtime.overview()[0]["disks"] == host["disks"]
     runtime.close()
@@ -238,7 +269,7 @@ def test_overview_includes_latest_telemetry_metrics(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     try:
         assert (
             asyncio.run(
@@ -264,7 +295,7 @@ def test_sparklines_pass_the_database_provider_through(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     try:
         assert (
             asyncio.run(
@@ -297,7 +328,7 @@ def test_missing_helper_never_launches_a_remote_command(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
 
     result = asyncio.run(runtime.poll_target(runtime.inventory.direct_targets[0]))
 
@@ -313,7 +344,7 @@ def test_invalid_wire_data_stores_only_a_sanitized_error(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
 
     result = asyncio.run(
         runtime.poll_target(
@@ -335,7 +366,7 @@ def test_disk_guard_prevents_launch(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
 
     result = asyncio.run(
         runtime.poll_target(
@@ -357,7 +388,7 @@ def test_helper_version_mismatch_is_rejected(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
 
     result = asyncio.run(
         runtime.poll_target(
@@ -408,7 +439,7 @@ def test_stale_capture_is_not_accepted_as_current(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
 
     result = asyncio.run(
         runtime.poll_target(
@@ -430,7 +461,7 @@ def test_slurm_poll_uses_admin_allowlist_and_updates_watermark(tmp_path):
         discover_fn=lambda: scheduler_inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
 
     result = asyncio.run(runtime.poll_slurm_target(scheduler))
 
@@ -456,7 +487,7 @@ def test_slurm_json_failure_uses_fixed_text_fallback(tmp_path):
         discover_fn=lambda: scheduler_inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     try:
         assert asyncio.run(runtime.poll_slurm_target(scheduler)) == "ok"
         assert any(target.endswith(":squeue-text") for target, _, _ in controller.calls)
@@ -473,7 +504,7 @@ def test_slurm_accounting_failure_does_not_hide_fresh_queue(tmp_path):
         discover_fn=lambda: scheduler_inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     try:
         assert asyncio.run(runtime.poll_slurm_target(scheduler)) == "partial"
         state = runtime.db.query(
@@ -481,8 +512,28 @@ def test_slurm_accounting_failure_does_not_hide_fresh_queue(tmp_path):
         )[0]
         assert state["state"] == "live"
         assert state["error"] == "timeout"
-        assert runtime.hosts()[0]["state"] == "scheduler"
+        assert runtime.overview()[0]["state"] == "scheduler"
         assert runtime.state.target("login1")["last_sacct_attempt"] > 0
+    finally:
+        runtime.close()
+
+
+def test_slurm_accounting_over_limit_fails_without_advancing_watermark(tmp_path):
+    scheduler = Target("login1", True, "login", "slurm")
+    scheduler_inventory = Inventory([scheduler], {"slurm": Protocol("slurm", "slurm")})
+    runtime = HubRuntime(
+        config(tmp_path),
+        discover_fn=lambda: scheduler_inventory,
+        poll_controller=SlurmAccountingOverLimitController(None),
+    )
+    asyncio.run(runtime.refresh_inventory_async())
+    try:
+        assert asyncio.run(runtime.poll_slurm_target(scheduler)) == "partial"
+        target_state = runtime.state.target("login1")
+        assert target_state.get("sacct_watermark") is None
+        assert target_state["sacct_last_error"] == "invalid_json"
+        # Only the queue row landed; the over-limit accounting rows were dropped.
+        assert len(runtime.db.jobs()) == 1
     finally:
         runtime.close()
 
@@ -493,7 +544,7 @@ def test_direct_host_becomes_stale_at_query_time(tmp_path):
         discover_fn=inventory,
         poll_controller=Controller(PollResult(1, b"", b"")),
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     document_value = document()
     runtime.db.snapshot(
         "old-poll",
@@ -502,7 +553,7 @@ def test_direct_host_becomes_stale_at_query_time(tmp_path):
         received_at=time.time() - 61,
     )
     try:
-        assert runtime.hosts()[0]["state"] == "stale"
+        assert runtime.overview()[0]["state"] == "stale"
     finally:
         runtime.close()
 
@@ -515,14 +566,14 @@ def test_scheduler_becomes_stale_when_last_query_is_old(tmp_path):
         discover_fn=lambda: scheduler_inventory,
         poll_controller=Controller(None),
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     runtime.db.set_slurm_state("login1", None, "live")
     runtime.db.conn.execute(
         "UPDATE slurm_poll_state SET updated_at=? WHERE target=?",
         (time.time() - 121, "login1"),
     )
     try:
-        assert runtime.hosts()[0]["state"] == "slurm_stale"
+        assert runtime.overview()[0]["state"] == "slurm_stale"
     finally:
         runtime.close()
 
@@ -536,7 +587,7 @@ def test_slurm_recovery_clamps_old_watermark_to_24_hours(tmp_path):
         discover_fn=lambda: scheduler_inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     runtime.state.update_target(
         "login1",
         sacct_watermark=(datetime.now(timezone.utc) - timedelta(days=30)).isoformat(),
@@ -746,7 +797,7 @@ def test_auth_token_never_reaches_log_output(tmp_path, caplog):
     )
     try:
         with caplog.at_level(logging.DEBUG), suppress(Exception):
-            runtime.refresh_inventory()
+            asyncio.run(runtime.refresh_inventory_async())
         status = runtime.hub_status()
         assert token not in caplog.text
         assert token not in str(status)
@@ -815,6 +866,26 @@ def test_hub_self_monitor_tracks_cpu_and_alerts_on_sustained_breach(tmp_path):
         runtime.close()
 
 
+def test_hub_health_saves_state_only_when_something_changed(tmp_path):
+    runtime = HubRuntime(
+        config(tmp_path),
+        discover_fn=inventory,
+        poll_controller=Controller(None),
+    )
+    try:
+        saves = []
+        runtime.state.save = lambda: saves.append(1)
+        runtime._hub_health(1.0, 10 * 1024 * 1024)  # first call records defaults
+        saves.clear()
+        runtime._hub_health(2.0, 10 * 1024 * 1024)
+        assert saves == []
+        assert runtime.state.data["hub_cpu_percent"] == 2.0
+        runtime._hub_health(6.0, 300 * 1024 * 1024)
+        assert saves == [1]
+    finally:
+        runtime.close()
+
+
 class DelayedController(Controller):
     """Fake controller that records per-target poll counts and delays."""
 
@@ -858,7 +929,7 @@ def test_notification_transitions_fire_rearm_and_refire(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     calls = []
 
     def poster(url, payload):
@@ -923,7 +994,7 @@ def test_stored_missing_gpu_rows_break_the_chain_without_false_alerts(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     calls = []
 
     def poster(url, payload):
@@ -988,7 +1059,7 @@ def test_idle_gpus_listing_shares_classifier_with_host_and_overview(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     target = runtime.inventory.direct_targets[0]
     try:
         # One observation classifies activity immediately but never idle.
@@ -1086,7 +1157,7 @@ def test_idle_gpus_carry_hardened_flag_and_owners(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     target = runtime.inventory.direct_targets[0]
     try:
         assert (
@@ -1123,7 +1194,7 @@ def test_idle_gpus_owner_falls_back_to_uid_when_username_missing(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     target = runtime.inventory.direct_targets[0]
     try:
         assert (
@@ -1164,7 +1235,7 @@ def test_fast_polling_downsamples_history_but_keeps_latest_two(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     target = runtime.inventory.direct_targets[0]
     try:
         for _ in range(4):
@@ -1191,7 +1262,7 @@ def test_slow_target_schedule_never_delays_healthy_targets(tmp_path):
         discover_fn=two_host_inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     _seed_helpers(runtime, "gpu-fast", "gpu-slow")
     runtime._stagger = lambda _key, _interval: 0.0
     try:
@@ -1211,7 +1282,7 @@ def test_run_forever_cancels_promptly_even_mid_poll(tmp_path):
         discover_fn=inventory,
         poll_controller=controller,
     )
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     _seed_helpers(runtime, "gpu1")
     runtime._stagger = lambda _key, _interval: 0.0
     try:

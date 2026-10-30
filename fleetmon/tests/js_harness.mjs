@@ -999,6 +999,45 @@ const cardValues = (content) =>
   assert.equal(range("7d")._attrs["aria-pressed"], "true");
 }
 
+// A GPU hidden in an earlier visit drops out of the overview counts and the wall; one button brings it back.
+{
+  globalThis.localStorage = {getItem: () => JSON.stringify(["gamma#1"]), setItem: () => {}};
+  try {
+    const {shim} = await run("overview", "", {
+      "/api/overview": OVERVIEW,
+      "/api/overview/sparklines": SPARKS,
+      [IDLE_URL]: IDLE,
+    });
+    assert.deepEqual(cardValues(shim.content), ["0", "1", "1", "1"], "counts exclude the hidden GPU");
+    const showAll = collect(shim.content, "BUTTON").filter((b) => /1 hidden · show all/.test(b.textContent));
+    assert.equal(showAll.length, 1, "the wall offers one way to show hidden GPUs again");
+    showAll[0].handlers.click[0]();
+    assert.deepEqual(cardValues(shim.content), ["1", "1", "1", "1"], "showing them restores the counts");
+  } finally {
+    delete globalThis.localStorage;
+  }
+}
+
+// A GPU can be hidden and shown again; with no localStorage the choice still holds for the page view.
+{
+  const {shim} = await run("host", "alpha", {
+    "/api/hosts/alpha?limit=1": HOST,
+    "/api/hosts/alpha/charts?hours=24": CHARTS,
+    "/api/overview": OVERVIEW,
+  });
+  const buttons = (label) => collect(shim.content, "BUTTON").filter((b) => b.textContent === label);
+  const total = buttons("hide").length;
+  assert.ok(total >= 1, "every GPU card has a hide button");
+  buttons("hide")[0].handlers.click[0]();
+  assert.equal(buttons("hide").length, total - 1, "the hidden card loses its hide button");
+  assert.equal(buttons("show").length, 1, "and gains a show button");
+  assert.match(textOf(shim.content), /GPU \d+ · hidden/, "a one-line stub stays in its place");
+  assert.match(textOf(shim.content), /1 GPU hidden from these charts/, "the charts say a GPU is left out");
+  buttons("show")[0].handlers.click[0]();
+  assert.equal(buttons("hide").length, total, "showing it restores the card");
+  assert.equal(buttons("show").length, 0);
+}
+
 // ---- queue: fleetq jobs as text, job panel with an output tail, scheduler down ----
 {
   const QUEUE = {
@@ -1041,18 +1080,6 @@ const cardValues = (content) =>
     available: false, configured: false, error: "no scheduler configured",
   }});
   assert.match(textOf(down.shim.content), /no scheduler configured/, "unconfigured scheduler explained");
-
-  const actionsQueue = {...QUEUE, ui_origin: "https://fleetq.example/"};
-  const actions = await run("queue", "", {"/api/scheduler/queue": actionsQueue});
-  const actionLinks = collect(actions.shim.content, "A").filter((a) =>
-    String(a.href || (a._attrs && a._attrs.href) || "").includes("/ui/jobs/")
-  );
-  assert.ok(actionLinks.some((a) => String(a.href || a._attrs.href).endsWith("/confirm/cancel")),
-    "cancel is an optional confirmation-page link");
-  assert.ok(actionLinks.some((a) => String(a.href || a._attrs.href).endsWith("/confirm/hold")),
-    "hold is an optional confirmation-page link");
-  assert.ok(actionLinks.every((a) => (a.rel || (a._attrs && a._attrs.rel)) === "noopener noreferrer"),
-    "external confirmation links are isolated from the opener");
 
   const stale = await run("queue", "", {"/api/scheduler/queue": {
     available: true, jobs: [], managed_slurm_snapshot: {available: false,

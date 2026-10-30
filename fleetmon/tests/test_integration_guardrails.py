@@ -37,8 +37,6 @@ def _scheduler_inventory() -> tuple[Inventory, Target]:
 
 class _NoLaunchController:
     def __init__(self):
-        self.polling_enabled = True
-        self.disabled_targets: set[str] = set()
         self.active_count = 0
         self.calls: list[tuple[object, object]] = []
 
@@ -47,7 +45,7 @@ class _NoLaunchController:
         raise AssertionError("disabled target must not launch a command")
 
 
-def test_per_target_disable_stops_scheduler_poll_before_launch(tmp_path):
+def test_per_target_disable_is_never_scheduled_but_shows_as_disabled(tmp_path):
     inventory, target = _scheduler_inventory()
     controller = _NoLaunchController()
     runtime = HubRuntime(
@@ -56,10 +54,13 @@ def test_per_target_disable_stops_scheduler_poll_before_launch(tmp_path):
         poll_controller=controller,
     )
     try:
-        runtime.refresh_inventory()
-        result = asyncio.run(runtime.poll_slurm_target(target))
-        assert result == "polling_disabled"
+        asyncio.run(runtime.refresh_inventory_async())
+        assert runtime._desired_schedules(inventory) == {}
+        assert asyncio.run(runtime.run_once()) == []
         assert controller.calls == []
+        assert {row["target"]: row["state"] for row in runtime.db.hosts()} == {
+            target.name: "polling_disabled"
+        }
     finally:
         runtime.close()
 
@@ -148,13 +149,3 @@ def test_documented_hub_installer_entrypoint_exists_and_is_executable():
     installer = Path(__file__).parents[1] / "scripts" / "install-hub"
     assert installer.is_file(), "README and plan advertise scripts/install-hub"
     assert installer.stat().st_mode & 0o111, "hub installer must be runnable"
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [["install-hub", "--dry-run"], ["install-helper", "--dry-run", "gpu1"]],
-)
-def test_plan_installer_commands_are_registered(argv):
-    from fleetmon.cli import build_parser
-
-    build_parser().parse_args(argv)

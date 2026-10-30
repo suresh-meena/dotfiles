@@ -137,7 +137,7 @@ def _poll(runtime, times):
 
 def _runtime(tmp_path, documents, **changes):
     runtime = HubRuntime(config(tmp_path, **changes), discover_fn=inventory, poll_controller=Sequence(documents))
-    runtime.refresh_inventory()
+    asyncio.run(runtime.refresh_inventory_async())
     return runtime
 
 

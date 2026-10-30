@@ -425,25 +425,6 @@ def create_app(
         ]
         return document
 
-    @app.get("/api/hosts")
-    async def hosts(
-        limit: int = Query(100),
-        offset: int = Query(0),
-        start: str | None = None,
-        end: str | None = None,
-    ):
-        limit, offset = _page(limit, offset)
-        start, end = _range(start, end)
-        rows = await _invoke_with_executor(
-            app.state.query_executor,
-            app.state.query,
-            "hosts",
-            capacity=app.state.query_capacity,
-            start=start,
-            end=end,
-        )
-        return _page_doc(_bounded(rows, limit, offset), limit, offset)
-
     @app.get("/api/hosts/{target}")
     async def host(
         target: str,

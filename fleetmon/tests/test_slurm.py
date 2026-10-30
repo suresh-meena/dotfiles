@@ -102,8 +102,10 @@ def test_squeue_json_requires_robust_job_identifier_and_bounds_rows():
         parse_squeue({"jobs": [{"name": "no id"}]})
     with pytest.raises(ValueError):
         parse_squeue({"jobs": []}, max_rows=0)
-    rows = parse_squeue({"jobs": [{"job_id": i} for i in range(1, 6)]}, max_rows=2)
-    assert [row["job_id"] for row in rows] == [1, 2]
+    jobs = [{"job_id": i} for i in range(1, 4)]
+    assert len(parse_squeue({"jobs": jobs}, max_rows=3)) == 3
+    with pytest.raises(ValueError, match="row limit"):
+        parse_squeue({"jobs": jobs}, max_rows=2)
 
 
 def test_squeue_rejects_oversized_or_non_json_rows():
@@ -161,7 +163,13 @@ def test_text_squeue_fallback_runs_on_slurm_without_json():
 
 def test_sacct_limits_rows_and_output():
     data = "\n".join(_sacct_row(str(i + 1)) for i in range(4))
-    assert len(parse_sacct(data, max_rows=2)) == 2
+    assert len(parse_sacct(data, max_rows=4)) == 4
+    # An over-limit result must fail, not truncate: the caller advances its
+    # watermark past whatever the parse returned.
+    with pytest.raises(ValueError, match="row limit"):
+        parse_sacct(data, max_rows=2)
+    with pytest.raises(ValueError, match="row limit"):
+        parse_squeue_text(data, max_rows=2)
     with pytest.raises(ValueError):
         parse_sacct("x" * (MAX_SCHEDULER_OUTPUT_BYTES + 1))
 

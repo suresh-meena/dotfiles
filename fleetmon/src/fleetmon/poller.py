@@ -177,8 +177,6 @@ class PollController:
             raise ValueError("invalid poll controller limits")
         self.sem = asyncio.Semaphore(concurrency)
         self.launch_interval = launch_interval
-        self.polling_enabled = True
-        self.disabled_targets: set[str] = set()
         self._active: set[str] = set()
         self._launch_lock = asyncio.Lock()
         self._last_launch = 0.0
@@ -196,25 +194,18 @@ class PollController:
         stdout_limit: int = 262_144,
         stderr_limit: int = 65_536,
     ) -> PollResult | None:
-        if not self.polling_enabled or target in self.disabled_targets:
-            return None
         if target in self._active:
             return None
 
         self._active.add(target)
         try:
             async with self.sem:
-                if not self.polling_enabled or target in self.disabled_targets:
-                    return None
                 async with self._launch_lock:
                     delay = self.launch_interval - (
                         asyncio.get_running_loop().time() - self._last_launch
                     )
                     if delay > 0:
                         await asyncio.sleep(delay)
-                    # This is the final kill-switch check before process creation.
-                    if not self.polling_enabled or target in self.disabled_targets:
-                        return None
                     self._last_launch = asyncio.get_running_loop().time()
 
                 return await run_command(

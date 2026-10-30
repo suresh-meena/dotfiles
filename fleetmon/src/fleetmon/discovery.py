@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
-import selectors
-import subprocess
 import time
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import suppress
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -156,86 +152,10 @@ def parse_protocol(data: Any, name: str = "") -> Protocol:
     return Protocol(protocol_name, kind)
 
 
-def _run_bounded(argv: Sequence[str]) -> tuple[str, str]:
-    """Run fleetctl while retaining only bounded stdout/stderr.
-
-    ``subprocess.run(..., capture_output=True)`` buffers an entire response
-    before the caller can validate it. Inventory is externally supplied data,
-    so read both pipes incrementally and kill the process group at the first
-    limit or timeout.
-    """
-
-    process = subprocess.Popen(
-        list(argv),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
-    assert process.stdout is not None and process.stderr is not None
-    selector = selectors.DefaultSelector()
-    streams = {
-        process.stdout.fileno(): (process.stdout, MAX_DISCOVERY_STDOUT_BYTES),
-        process.stderr.fileno(): (process.stderr, MAX_DISCOVERY_STDERR_BYTES),
-    }
-    for fd in streams:
-        selector.register(fd, selectors.EVENT_READ)
-    buffers = {fd: bytearray() for fd in streams}
-    deadline = time.monotonic() + MAX_DISCOVERY_TIMEOUT_SECONDS
-    failed = ""
-    try:
-        while streams:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                failed = "fleetctl discovery timed out"
-                break
-            events = selector.select(remaining)
-            if not events:
-                failed = "fleetctl discovery timed out"
-                break
-            for key, _ in events:
-                fd = key.fd
-                stream, limit = streams[fd]
-                chunk = os.read(fd, min(65_536, limit - len(buffers[fd]) + 1))
-                if not chunk:
-                    selector.unregister(fd)
-                    streams.pop(fd)
-                    continue
-                buffers[fd].extend(chunk)
-                if len(buffers[fd]) > limit:
-                    failed = "fleetctl discovery output exceeds limit"
-                    break
-            if failed:
-                break
-    finally:
-        selector.close()
-        if failed or process.poll() is None:
-            with suppress(ProcessLookupError, OSError):
-                os.killpg(process.pid, 9)
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        process.stdout.close()
-        process.stderr.close()
-    if failed:
-        raise RuntimeError(failed)
-    if process.returncode != 0:
-        raise RuntimeError("fleetctl discovery failed")
-    stdout_fd, stderr_fd = list(buffers)
-    try:
-        return bytes(buffers[stdout_fd]).decode("utf-8"), bytes(
-            buffers[stderr_fd]
-        ).decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("invalid fleetctl UTF-8") from exc
-
-
 def _protocol_requests(
     targets: list[Target], resolution_budget: float
 ) -> Iterator[tuple[list[str], str]]:
-    """Yield the bounded protocol-resolution plan shared by both discoverers."""
+    """Yield the bounded protocol-resolution plan for discovery."""
 
     protocol_names = sorted({target.protocol for target in targets})
     if len(protocol_names) > MAX_PROTOCOLS:
@@ -247,47 +167,23 @@ def _protocol_requests(
         yield ["protocol", "show", name, "--json"], name
 
 
-def discover(
-    fleetctl: str = "fleetctl",
-    runner: Callable[[Sequence[str]], Any] | None = None,
-    resolution_budget: float = MAX_RESOLUTION_SECONDS,
-) -> Inventory:
-    """Run fleetctl list and resolve each distinct protocol exactly once.
-
-    Total protocol-resolution time is bounded; protocols that cannot be
-    resolved within the budget are left unadmitted, and the inventory itself
-    is never a failure.
-    """
-
-    def run(argv: Sequence[str]) -> Any:
-        if runner is not None:
-            return runner(argv)
-        stdout, _stderr = _run_bounded([fleetctl, *argv])
-        try:
-            return json.loads(stdout)
-        except json.JSONDecodeError as exc:
-            raise ValueError("invalid fleetctl JSON") from exc
-
-    targets = parse_inventory(run(["list", "--json"]))
-    protocols = {
-        name: parse_protocol(run(argv), name)
-        for argv, name in _protocol_requests(targets, resolution_budget)
-    }
-    return Inventory(targets, protocols)
-
-
 async def discover_async(
     fleetctl: str = "fleetctl",
     resolution_budget: float = MAX_RESOLUTION_SECONDS,
 ) -> Inventory:
-    """Asynchronous hub discovery with bounded subprocess output."""
+    """Run fleetctl list and resolve each distinct protocol exactly once.
+
+    Subprocess output is bounded. Total protocol-resolution time is bounded
+    too; protocols that cannot be resolved within the budget are left
+    unadmitted, and the inventory itself is never a failure.
+    """
 
     async def run(argv: list[str]) -> Any:
         result = await run_command(
             [fleetctl, *argv],
-            timeout=20,
-            stdout_limit=1024 * 1024,
-            stderr_limit=64 * 1024,
+            timeout=MAX_DISCOVERY_TIMEOUT_SECONDS,
+            stdout_limit=MAX_DISCOVERY_STDOUT_BYTES,
+            stderr_limit=MAX_DISCOVERY_STDERR_BYTES,
         )
         if result.returncode != 0 or result.timed_out or result.overflow:
             raise RuntimeError("fleetctl discovery failed")

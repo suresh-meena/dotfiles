@@ -78,10 +78,10 @@ node: `squeue --json` (with a bounded text fallback), timezone-correct
 accepts only naive local timestamps) with a tested compatibility field-set
 fallback, and queue freshness kept separate from accounting degradation.
 
-`fleetmon smoke TARGET` now implements the full ten-phase acceptance
-procedure (admission, helper presence, two interval-spaced polls, storage,
-budget, local-only failure injection, integrity, dashboard visibility, kill
-switch) and passed end to end on the canary.
+The ten-phase canary acceptance procedure (admission, helper presence, two
+interval-spaced polls, storage, budget, local-only failure injection,
+integrity, dashboard visibility, kill switch) passed end to end on the canary.
+The `fleetmon smoke` command that automated it has since been removed.
 
 Do not deploy fleet-wide; roll out one target at a time and observe.
 
@@ -178,10 +178,10 @@ fleetmon hub
 fleetmon doctor [--target TARGET]
 fleetmon status
 fleetmon maintain
-fleetmon install-helper [--dry-run] TARGET
-fleetmon install-hub [--dry-run]
-fleetmon smoke TARGET
 ```
+
+Installation is done by `scripts/install-helper` and `scripts/install-hub`, not
+by `fleetmon` subcommands.
 
 `snapshot` imports only helper dependencies (`psutil` and the NVML binding).
 Hub-only dependencies such as FastAPI are never installed or imported on
@@ -331,7 +331,7 @@ be the same person. Slurm accounts are not merged with direct-host users by name
 
 There is no remote Fleetmon service.
 
-`fleetmon install-helper TARGET`:
+`scripts/install-helper --target TARGET`:
 
 1. resolves and re-checks target role/protocol;
 2. refuses login/bridge/storage targets;
@@ -598,13 +598,8 @@ Upgrade flow:
 
 ### One-host smoke test
 
-Use an explicitly admitted canary such as `rtx2080ti`:
-
-```text
-fleetmon smoke rtx2080ti
-```
-
-It must verify:
+Use an explicitly admitted canary such as `rtx2080ti`. There is no
+`fleetmon smoke` command; run the checks by hand. It must verify:
 
 1. role/protocol admission and non-interactive `fleetctl` transport;
 2. Python 3.10+, psutil, NVML, and helper path;

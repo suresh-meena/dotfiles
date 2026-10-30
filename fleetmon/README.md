@@ -176,12 +176,7 @@ as fresh. Old direct-poller state is marked stale during handoff.
 [scheduler]
 url = "http://127.0.0.1:8089"
 managed_targets = ["uni-cluster-login"]
-ui_origin = "https://fleetqd.example.tailnet"
 ```
-
-`ui_origin` is optional. It must be the same canonical HTTPS origin configured
-as fleetqd's `[daemon].ui_origin`; Fleetmon uses it only to link to explicit
-fleetqd confirmation pages.
 
 ## Notifications
 
@@ -232,10 +227,7 @@ directions, and neither direction can change anything:
   scheduler's per-cluster call counts. For targets listed in
   `scheduler.managed_targets`, it also shows the cached all-user Slurm queue
   snapshot and its per-site age/state; the Jobs page labels persisted rows
-  stale after incomplete or old observations. Optionally set
-  `scheduler.ui_origin` to the canonical HTTPS origin configured as fleetqd's
-  `[daemon].ui_origin`; Queue links then open fleetqd's cancel/hold confirmation
-  pages in a new tab. The service token remains read-only and Fleetmon never
+  stale after incomplete or old observations. The service token remains read-only and Fleetmon never
   submits a mutation. Enable the integration with
 
   ```toml

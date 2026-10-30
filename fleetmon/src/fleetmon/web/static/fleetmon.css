@@ -1531,6 +1531,31 @@ svg .overlay {
   color: var(--bg);
 }
 
+/* Hide and show a GPU: a small control, quiet until hovered. */
+.gpu-hide {
+  font: inherit;
+  font-size: 11px;
+  flex: none;
+  background: none;
+  border: 1px solid var(--line-2);
+  color: var(--ink-2);
+  padding: 0.05rem 0.55rem;
+  cursor: pointer;
+}
+.gpu-hide:hover {
+  color: var(--ink);
+  background: var(--panel-2);
+}
+.gpu-stub {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  opacity: 0.7;
+}
+.wall-legend .gpu-hide {
+  margin-left: auto;
+}
+
 /* Overview sparkline column: one CPU trace. */
 svg.spark {
   display: inline-block;

@@ -29,7 +29,6 @@ from .discovery import (
     Inventory,
     Target,
     admitted_targets,
-    discover,
     discover_async,
 )
 from .poller import PollController, PollResult, backoff_seconds
@@ -47,7 +46,7 @@ from .slurm import (
     squeue_argv,
     squeue_text_argv,
 )
-from .state import OperationalState, sanitize_error
+from .state import OperationalState, error_code
 
 LOG = logging.getLogger(__name__)
 SUPPORTED_HELPER_VERSION = str(SCHEMA_VERSION)
@@ -86,7 +85,7 @@ class HubRuntime:
         config: HubConfig,
         *,
         database: Database | None = None,
-        discover_fn: Callable[..., Inventory] = discover,
+        discover_fn: Callable[[], Inventory] | None = None,
         poll_controller: PollController | None = None,
     ):
         self.config = config
@@ -99,8 +98,6 @@ class HubRuntime:
             self.config.ssh_concurrency,
             self.config.launch_interval_seconds,
         )
-        self.controller.polling_enabled = self.config.polling_enabled
-        self.controller.disabled_targets = set(self.config.disabled_targets)
         self.inventory: Inventory | None = None
         self.admitted_names: set[str] = set()
         self.last_inventory = 0.0
@@ -163,37 +160,25 @@ class HubRuntime:
     def _exclude_tags(self) -> set[str]:
         return {self.config.exclude_tag} if self.config.exclude_tag else set()
 
-    def refresh_inventory(self) -> Inventory:
-        """Refresh inventory, retaining the last known good copy on failure."""
-
-        self._last_inventory_attempt = time.monotonic()
-        try:
-            inventory = self._discover()
-        except Exception as exc:
-            return self._inventory_failed(exc)
-        return self._apply_inventory(inventory)
-
     async def refresh_inventory_async(self) -> Inventory:
-        """Refresh without blocking the hub event loop on fleetctl pipes."""
+        """Refresh without blocking the hub event loop on fleetctl pipes.
+
+        ``discover_fn`` is a test seam: a no-argument callable standing in
+        for fleetctl discovery.
+        """
 
         self._last_inventory_attempt = time.monotonic()
         try:
-            if self.discover_fn is discover:
+            if self.discover_fn is None:
                 inventory = await discover_async(str(self.config.fleetctl_path))
             else:
-                inventory = await self._local(self._discover)
+                inventory = await self._local(self.discover_fn)
         except Exception as exc:
             return await self._local(self._inventory_failed, exc)
         return await self._local(self._apply_inventory, inventory)
 
-    def _discover(self) -> Inventory:
-        try:
-            return self.discover_fn(str(self.config.fleetctl_path))
-        except TypeError:
-            return self.discover_fn()
-
     def _inventory_failed(self, exc: Exception) -> Inventory:
-        self.state.data["inventory_error"] = sanitize_error(exc)
+        self.state.data["inventory_error"] = error_code(exc)
         self.state.save()
         if self.inventory is not None:
             return self.inventory
@@ -431,18 +416,6 @@ class HubRuntime:
         return base * (0.9 + 0.2 * fraction)
 
     async def poll_target(self, target: Target, helper_path: str | None = None) -> str:
-        if (
-            not self.config.polling_enabled
-            or target.name in self.config.disabled_targets
-        ):
-            await self._local(
-                self.db.upsert_host,
-                target.name,
-                target.role,
-                target.protocol,
-                "polling_disabled",
-            )
-            return "polling_disabled"
         if not self.admitted(target):
             return "retired"
         prior_state = self.state.target(target.name)
@@ -598,11 +571,6 @@ class HubRuntime:
     async def poll_slurm_target(self, target: Target) -> str:
         if target.name in self.config.managed_scheduler_targets:
             return "managed_by_fleetqd"
-        if (
-            not self.config.polling_enabled
-            or target.name in self.config.disabled_targets
-        ):
-            return "polling_disabled"
         scheduler_names = (
             {item.name for item in self.inventory.scheduler_targets}
             if self.inventory
@@ -847,7 +815,7 @@ class HubRuntime:
         try:
             self.db.backup(destination)
         except Exception as exc:
-            self.last_backup_error = sanitize_error(exc)
+            self.last_backup_error = error_code(exc)
             return
         self.last_backup_error = None
         self.last_backup_success = now
@@ -855,17 +823,23 @@ class HubRuntime:
         self._prune_backups(self.config.backup_dir, BACKUP_KEEP_COUNT)
 
     @staticmethod
-    def _prune_backups(directory: Path, keep: int) -> None:
-        """Keep only the newest ``keep`` timestamped fleet backup files."""
+    def _fleet_backups(directory: Path) -> list[Path]:
+        """Timestamped fleet backups in ``directory``, oldest first."""
 
         try:
-            backups = sorted(
+            return sorted(
                 path
                 for path in directory.iterdir()
                 if path.name.startswith("fleet-") and path.suffix == ".db"
             )
         except OSError:
-            return
+            return []
+
+    @staticmethod
+    def _prune_backups(directory: Path, keep: int) -> None:
+        """Keep only the newest ``keep`` timestamped fleet backup files."""
+
+        backups = HubRuntime._fleet_backups(directory)
         for path in backups[: max(0, len(backups) - keep)]:
             with suppress(OSError):
                 path.unlink()
@@ -877,15 +851,7 @@ class HubRuntime:
         The newest one is what undoes the last upgrade, however old it is.
         """
 
-        try:
-            backups = sorted(
-                path
-                for path in directory.iterdir()
-                if path.name.startswith("fleet-") and path.suffix == ".db"
-            )
-        except OSError:
-            return
-        for path in backups[:-1]:
+        for path in HubRuntime._fleet_backups(directory)[:-1]:
             with suppress(OSError):
                 if path.stat().st_mtime < before:
                     path.unlink()
@@ -901,9 +867,6 @@ class HubRuntime:
             auth_token=self.config.auth_token,
             trusted=self.config.bind_is_trusted(),
         )
-
-    def hosts(self, **_: Any) -> list[dict[str, Any]]:
-        return [self._freshen_host(dict(row)) for row in self.db.hosts()]
 
     def host(self, target: str, **kwargs: Any) -> dict[str, Any] | None:
         value = self.db.host(target, **kwargs)
@@ -1178,7 +1141,6 @@ class HubRuntime:
             value["managed_slurm_snapshot"] = self.managed_slurm_status()
             value["managed_slurm_jobs"] = self._managed_slurm_job_rows()
             return value
-        value["ui_origin"] = self.config.scheduler_ui_origin
         # fleetqd serves this from its local, cached scheduler status snapshot.
         # Keep the queue useful if that endpoint is missing or malformed.
         try:
@@ -1423,6 +1385,15 @@ class HubRuntime:
                 or (isinstance(age, (int, float)) and age < 0)
             ):
                 raise ValueError("managed Slurm site freshness fields are invalid")
+            freshness = {
+                "last_success_at": last_success_text,
+                "last_success_epoch": last_success,
+                "observed_at": observed_text,
+                "observed_epoch": observed,
+                "age_s": float(age)
+                if isinstance(age, (int, float)) and not isinstance(age, bool)
+                else None,
+            }
             if not complete or stale or raw_error:
                 state = "stale" if last_success is not None else "unavailable"
                 reason = str(raw_error or "site snapshot incomplete or stale")[:512]
@@ -1440,18 +1411,11 @@ class HubRuntime:
                 ):
                     raise ValueError("managed Slurm site freshness fields are invalid")
                 if age > max_age or now - observed > max_age or now - last_success > max_age:
-                    state = "stale"
-                    reason = "site snapshot exceeds the freshness limit"
-                    jobs = []
                     output[site_id] = {
-                        "state": state,
-                        "reason": reason,
-                        "jobs": jobs,
-                        "last_success_at": last_success_text,
-                        "last_success_epoch": last_success,
-                        "observed_at": observed_text,
-                        "observed_epoch": observed,
-                        "age_s": float(age),
+                        "state": "stale",
+                        "reason": "site snapshot exceeds the freshness limit",
+                        "jobs": [],
+                        **freshness,
                     }
                     continue
                 rows = site.get("jobs")
@@ -1467,11 +1431,7 @@ class HubRuntime:
                 "state": state,
                 "reason": reason,
                 "jobs": jobs,
-                "last_success_at": last_success_text,
-                "last_success_epoch": last_success,
-                "observed_at": observed_text,
-                "observed_epoch": observed,
-                "age_s": float(age) if isinstance(age, (int, float)) and not isinstance(age, bool) else None,
+                **freshness,
             }
         return output
 
@@ -1553,7 +1513,7 @@ class HubRuntime:
             state = "stale" if age is None or age > freshness_limit else "live"
         elif state == "managed_stale":
             state = "stale"
-        elif state in {"managed_error", "managed"}:
+        elif state == "managed_error":
             state = "stale" if epoch is not None else "unavailable"
         detail = self._managed_slurm_details.get(target, {})
         reason = detail.get("reason")
@@ -1827,6 +1787,15 @@ class HubRuntime:
 
         over_cpu = cpu_percent is not None and cpu_percent > self.HUB_CPU_BUDGET_PERCENT
         over_rss = rss_bytes is not None and rss_bytes > self.HUB_RSS_BUDGET_BYTES
+        # hub_cpu_percent is a live reading that changes every tick; it is read
+        # from memory and only rides along with the next real save.
+        persisted = (
+            "hub_breach_streak",
+            "hub_overloaded",
+            "hub_health_notified",
+            "hub_health_next_retry",
+        )
+        before = [self.state.data.get(key) for key in persisted]
         streak = int(self.state.data.get("hub_breach_streak", 0) or 0)
         streak = streak + 1 if (over_cpu or over_rss) else 0
         self.state.data["hub_breach_streak"] = streak
@@ -1838,7 +1807,8 @@ class HubRuntime:
             self.state.data.pop("hub_health_notified", None)
             self.state.data.pop("hub_health_next_retry", None)
             self.db.resolve_notification("hub:overloaded")
-        self.state.save()
+        if [self.state.data.get(key) for key in persisted] != before:
+            self.state.save()
         if streak < 2 or not self.config.notify_url:
             return
         if self.state.data.get("hub_health_notified"):
@@ -1947,17 +1917,10 @@ class HubRuntime:
 
     async def run_once(self) -> list[str]:
         inventory = await self._inventory()
-        direct = [
-            target
-            for target in inventory.direct_targets
-            if target.name in self.admitted_names
+        tasks = [
+            poller(target)
+            for poller, target in self._desired_schedules(inventory).values()
         ]
-        tasks = [self.poll_target(target) for target in direct]
-        tasks.extend(
-            self.poll_slurm_target(target)
-            for target in inventory.scheduler_targets
-            if target.name not in self.config.managed_scheduler_targets
-        )
         if self.config.polling_enabled and self.config.managed_scheduler_targets:
             tasks.append(self.poll_managed_slurm())
         if not tasks:
@@ -1984,13 +1947,21 @@ class HubRuntime:
         self, inventory: Inventory
     ) -> dict[str, tuple[Callable[[Target], Any], Target]]:
         desired: dict[str, tuple[Callable[[Target], Any], Target]] = {}
+        # The one place polling_enabled and disabled_targets are enforced:
+        # config is frozen, so nothing downstream re-checks them. The
+        # "polling_disabled" host state on the dashboard is set separately by
+        # _apply_inventory.
         if not self.config.polling_enabled:
             return desired
+        disabled = set(self.config.disabled_targets)
         for target in inventory.direct_targets:
-            if target.name in self.admitted_names:
+            if target.name in self.admitted_names and target.name not in disabled:
                 desired[target.name] = (self.poll_target, target)
         for target in inventory.scheduler_targets:
-            if target.name not in self.config.managed_scheduler_targets:
+            if (
+                target.name not in self.config.managed_scheduler_targets
+                and target.name not in disabled
+            ):
                 desired[f"slurm:{target.name}"] = (self.poll_slurm_target, target)
         return desired
 

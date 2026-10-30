@@ -57,8 +57,8 @@ build/configuration error.
   `scripts/install-helper`.
 - A real install still requires the literal, target-matching flag
   `--i-authorize-target-<NAME>`; the fail-closed default is unchanged. Until
-  the authorized canary acceptance gate in `Todo.md` passes on one explicitly
-  authorized canary, do not use the flag.
+  the canary acceptance check in `PLAN(4).md` (One-host smoke test) passes on
+  one explicitly authorized canary, do not use the flag.
 
 ## Wheel hash record (filled at build time, never committed)
 

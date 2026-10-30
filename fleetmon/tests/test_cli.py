@@ -1,26 +1,5 @@
-from pathlib import Path
-
 from fleetmon import cli
 from fleetmon.state import MAX_STATE_BYTES
-
-
-def test_installer_commands_parse_without_mutating_the_host() -> None:
-    parser = cli.build_parser()
-    helper = parser.parse_args(["install-helper", "--dry-run", "gpu1"])
-    hub = parser.parse_args(
-        ["install-hub", "--dry-run", "--python", "/usr/bin/python3"]
-    )
-    assert helper.target == "gpu1"
-    assert helper.dry_run is True
-    assert hub.dry_run is True
-    assert hub.python == "/usr/bin/python3"
-
-
-def test_installer_entrypoint_fails_closed() -> None:
-    before = Path.cwd()
-    args = cli.build_parser().parse_args(["install-hub", "--dry-run"])
-    assert args.func(args) == 3
-    assert Path.cwd() == before
 
 
 def test_read_runtime_state_rejects_nan_infinity_and_malformed(tmp_path):

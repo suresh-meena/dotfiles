@@ -6,6 +6,7 @@ No fleet host is contacted and no listener is opened.
 """
 
 import argparse
+import asyncio
 import json
 import tempfile
 import time
@@ -37,7 +38,7 @@ inventory = Inventory(
 runtime = HubRuntime(
     config(state, polling_enabled=False), discover_fn=lambda *_: inventory
 )
-runtime.refresh_inventory()
+asyncio.run(runtime.refresh_inventory_async())
 now = time.time()
 for index in range(25):
     doc = gpu_document(idle_gpus=2, busy_gpus=2)

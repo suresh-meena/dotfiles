@@ -2,7 +2,7 @@ import asyncio
 import sys
 from contextlib import suppress
 
-from fleetmon.poller import PollController, run_command
+from fleetmon.poller import run_command
 
 
 def test_overflow_kills_without_deadlock():
@@ -24,15 +24,6 @@ def test_timeout_kills_group():
     assert asyncio.run(asyncio.wait_for(go(), 3)).timed_out
 
 
-def test_kill_switch():
-    async def go():
-        c = PollController()
-        c.polling_enabled = False
-        return await c.poll("x", ["false"])
-
-    assert asyncio.run(go()) is None
-
-
 def test_timeout_still_applies_after_stdout_closes():
     async def go():
         code = "import os,time; os.close(1); time.sleep(5)"
@@ -40,20 +31,6 @@ def test_timeout_still_applies_after_stdout_closes():
 
     result = asyncio.run(asyncio.wait_for(go(), 3))
     assert result.timed_out
-
-
-def test_kill_switch_is_rechecked_immediately_before_launch():
-    async def go():
-        controller = PollController(concurrency=1, launch_interval=0.1)
-        controller._last_launch = asyncio.get_running_loop().time()
-        task = asyncio.create_task(
-            controller.poll("gpu1", [sys.executable, "-c", "raise SystemExit(9)"])
-        )
-        await asyncio.sleep(0.01)
-        controller.disabled_targets.add("gpu1")
-        return await task
-
-    assert asyncio.run(go()) is None
 
 
 def test_cancellation_kills_group_with_grandchild_holding_pipes():

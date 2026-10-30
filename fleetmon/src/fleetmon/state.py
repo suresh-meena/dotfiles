@@ -13,20 +13,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import IO, Any
 
-ERROR_CODES = {
-    "timeout",
-    "output_overflow",
-    "transport",
-    "invalid_json",
-    "invalid_schema",
-    "version_mismatch",
-    "polling_disabled",
-    "disk_low",
-}
 MAX_STATE_BYTES = 1024 * 1024
-MAX_TARGET_ENTRIES = 1024
 LAST_UPDATED_KEY = "_updated"
-ACTIVE_KEYS = ("last_success", "helper_path")
 
 
 def reject_json_constant(value: str) -> None:
@@ -70,6 +58,8 @@ def check_json_depth(
 
 
 def error_code(value: str | BaseException) -> str:
+    """Map an exception to a small code; never retain stdout, stderr, or paths."""
+
     text = str(value).lower()
     if "timeout" in text or "timed" in text:
         return "timeout"
@@ -82,13 +72,6 @@ def error_code(value: str | BaseException) -> str:
     if "version" in text:
         return "version_mismatch"
     return "transport"
-
-
-def sanitize_error(value: str | BaseException) -> str:
-    """Map exceptions to a small code; never retain stdout, stderr, or paths."""
-
-    code = error_code(value)
-    return code if code in ERROR_CODES else "transport"
 
 
 class OperationalState:
@@ -117,7 +100,6 @@ class OperationalState:
             return {}
 
     def save(self) -> None:
-        self._prune_targets()
         fd, name = tempfile.mkstemp(prefix=".state-", dir=self.path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -156,65 +138,6 @@ class OperationalState:
             return {}
         entry = targets.get(target, {})
         return dict(entry) if isinstance(entry, dict) else {}
-
-    def _prune_targets(self) -> None:
-        """Bound stored targets and their encoded size before every write.
-
-        Churned or retired entries grow without limit, so drop the
-        least-recently-updated prunable entries first (active targets keep a
-        ``last_success`` or ``helper_path`` and are protected), then the
-        oldest entries overall only if the count cap still cannot be met.
-        """
-
-        targets = self.data.get("targets")
-        if not isinstance(targets, dict):
-            return
-        prunable = {
-            name
-            for name, entry in targets.items()
-            if isinstance(entry, dict)
-            and not any(entry.get(key) for key in ACTIVE_KEYS)
-        }
-        if len(targets) > MAX_TARGET_ENTRIES:
-            order = sorted(
-                targets,
-                key=lambda name: (
-                    name not in prunable,
-                    _updated_at(targets.get(name)),
-                    name,
-                ),
-            )
-            for name in order[: len(targets) - MAX_TARGET_ENTRIES]:
-                del targets[name]
-                prunable.discard(name)
-        while _encoded_size(self.data) > MAX_STATE_BYTES:
-            candidates = sorted(
-                prunable,
-                key=lambda name: (_updated_at(targets.get(name)), name),
-            )
-            if not candidates:
-                break
-            del targets[candidates[0]]
-            prunable.discard(candidates[0])
-
-
-def _updated_at(entry: Any) -> float:
-    if isinstance(entry, dict):
-        value = entry.get(LAST_UPDATED_KEY)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return float(value)
-    return 0.0
-
-
-def _encoded_size(data: dict[str, Any]) -> int:
-    try:
-        return len(
-            json.dumps(
-                data, sort_keys=True, separators=(",", ":"), allow_nan=False
-            ).encode("utf-8")
-        )
-    except (TypeError, ValueError):
-        return MAX_STATE_BYTES + 1
 
 
 class HubLock:
