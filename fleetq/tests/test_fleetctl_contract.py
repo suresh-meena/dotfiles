@@ -234,7 +234,7 @@ def authority(tmp_path):
     def seed(conn):
         conn.execute("INSERT INTO nodes (id, backend, enabled, config_json, updated_at) VALUES (?,?,?,?,?)",
                      ("site", "slurm", 1, json.dumps({"fleetctl_target": "gate",
-                                                      "budget": {"action_per_minute": 600, "burst": 32,
+                                                      "budget": {"monitor_per_minute": 600, "action_per_minute": 600, "transfer_per_minute": 600, "burst": 32,
                                                                  "sessions_per_minute": 60, "sessions_burst": 8,
                                                                  "bytes_per_minute": 1024, "bytes_burst": 1024,
                                                                  "max_sessions_per_operation": 2,
@@ -293,3 +293,23 @@ def test_fleetctl_redeems_a_fleetq_permit_exactly_once_and_only_for_its_bucket(f
     forged = run(transport.exec("gate", ["true"], timeout=20, mutation=True, admin=True, op_class="action",
                                 permit="pmt_forged"))
     assert forged.outcome == "budget_refused"
+
+
+def test_fleetctl_accepts_a_sync_permit_at_the_cost_fleetq_grants(fleet, authority, tmp_path):
+    """fleetq may never ask for more than max_sessions_per_operation sessions, so a sync must cost no more."""
+    from fleetq import budget
+
+    transport, protocol, _ = fleet
+    _patch_argv0(transport)
+    h, url, token_file = authority
+    protocol(url, token_file)
+    src = tmp_path / "inbox"
+    src.mkdir()
+    (src / "payload").write_bytes(b"x" * 100)
+    permit = h.store.run_sync(lambda c: budget.grant_permit(
+        c, cluster="gate", op_class="transfer", cost={"rpc": 6, "sessions": 2, "bytes": 100}, caller="fleetqd"))
+    assert permit["granted"], permit
+    result = run(transport.sync_push("gate", src, "/tmp/x", timeout=20, admin=True,
+                                     permit=permit["permit_id"], budget_bytes=100))
+    # Redeemed at the cost fleetq granted, so fleetctl went on to connect and the unroutable host failed it.
+    assert result.outcome == "transport_failed", (result.stdout, result.stderr)
