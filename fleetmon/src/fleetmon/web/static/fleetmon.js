@@ -2009,6 +2009,9 @@
           hub.polling_enabled ? "enabled" : el("span", "st st-stale", "polling_disabled"),
         ],
         ["in-flight polls", _int(hub.in_flight)],
+        ["polls held back (hourly cap)", hub.polls_held_back && Object.keys(hub.polls_held_back).length
+          ? _text(Object.entries(hub.polls_held_back).map(([name, count]) => `${name} ${count}`).join(", "))
+          : DASH],
         ["inventory age", _dur(hub.inventory_age_seconds)],
         ["inventory error", hub.inventory_error ? token(hub.inventory_error) : DASH],
         [

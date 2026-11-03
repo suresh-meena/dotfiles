@@ -122,7 +122,10 @@ For a responsive dashboard with bounded helper overhead, use a two-second live p
 interval_seconds = 2
 scheduler_interval_seconds = 300
 history_interval_seconds = 60
+max_calls_per_target_per_hour = 180
 ```
+
+`max_calls_per_target_per_hour` is a hard ceiling on SSH calls to any one machine (normal polling is about 60 an hour, a Slurm site about 25). Polls beyond it are held back, logged, and listed on the hub status page, so a bug can never open hundreds of sessions on someone's machine.
 
 The dashboard refreshes live host and GPU cards every two seconds, pauses while its tab is hidden, and keeps the last two readings plus one sample per minute for chart history. The **Idle GPUs** page uses the same freshness rules as alerts, so stale or unavailable readings are shown as unknown rather than advertised as free.
 

@@ -101,6 +101,7 @@ class HubRuntime:
         self.controller = poll_controller or PollController(
             self.config.ssh_concurrency,
             self.config.launch_interval_seconds,
+            self.config.max_calls_per_target_per_hour,
         )
         self.inventory: Inventory | None = None
         self.admitted_names: set[str] = set()
@@ -1912,6 +1913,7 @@ class HubRuntime:
             "status": "critical" if self.state.data.get("disk_low") else "ready",
             "polling_enabled": self.config.polling_enabled,
             "in_flight": self.controller.active_count,
+            "polls_held_back": dict(getattr(self.controller, "rate_limited", {})),
             "inventory_age_seconds": (
                 max(0, time.time() - self.last_inventory)
                 if self.last_inventory

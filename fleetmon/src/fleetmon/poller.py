@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 import sys
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
+
+LOG = logging.getLogger(__name__)
 
 
 def _configure_child_watcher() -> None:
@@ -172,9 +176,22 @@ async def run_command(
 class PollController:
     """Enforce fleet-wide concurrency, launch rate, and one poll per target."""
 
-    def __init__(self, concurrency: int = 2, launch_interval: float = 2.0):
+    def __init__(
+        self,
+        concurrency: int = 2,
+        launch_interval: float = 2.0,
+        max_calls_per_hour: int | None = None,
+    ):
         if concurrency < 1 or launch_interval < 0:
             raise ValueError("invalid poll controller limits")
+        if max_calls_per_hour is not None and max_calls_per_hour < 1:
+            raise ValueError("invalid poll controller limits")
+        # Every call is an SSH session on someone's machine. However it comes
+        # about (a retry loop, a bad interval, a bug), no machine is asked more
+        # than this often in an hour.
+        self.max_calls_per_hour = max_calls_per_hour
+        self._launched: dict[str, deque[float]] = {}
+        self.rate_limited: dict[str, int] = {}
         self.sem = asyncio.Semaphore(concurrency)
         self.launch_interval = launch_interval
         self._active: set[str] = set()
@@ -184,6 +201,29 @@ class PollController:
     @property
     def active_count(self) -> int:
         return len(self._active)
+
+    def _within_hourly_cap(self, label: str) -> bool:
+        """Count one launch against the machine behind LABEL ("host" or "host:squeue")."""
+        if self.max_calls_per_hour is None:
+            return True
+        machine = label.partition(":")[0]
+        now = asyncio.get_running_loop().time()
+        window = self._launched.setdefault(machine, deque())
+        while window and now - window[0] > 3600:
+            window.popleft()
+        if len(window) >= self.max_calls_per_hour:
+            held = self.rate_limited[machine] = self.rate_limited.get(machine, 0) + 1
+            if held == 1 or held % 60 == 0:
+                LOG.warning(
+                    "holding back polls of %s: already %d calls in the last hour "
+                    "(polling.max_calls_per_target_per_hour); %d held back so far",
+                    machine,
+                    len(window),
+                    held,
+                )
+            return False
+        window.append(now)
+        return True
 
     async def poll(
         self,
@@ -206,6 +246,8 @@ class PollController:
                     )
                     if delay > 0:
                         await asyncio.sleep(delay)
+                    if not self._within_hourly_cap(target):
+                        return None
                     self._last_launch = asyncio.get_running_loop().time()
 
                 return await run_command(

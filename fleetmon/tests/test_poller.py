@@ -2,7 +2,7 @@ import asyncio
 import sys
 from contextlib import suppress
 
-from fleetmon.poller import run_command
+from fleetmon.poller import PollController, run_command
 
 
 def test_overflow_kills_without_deadlock():
@@ -80,3 +80,20 @@ def test_cancellation_completes_when_grandchild_survives_child():
 
     elapsed = asyncio.run(asyncio.wait_for(go(), 15))
     assert elapsed < 5
+
+
+def test_a_machine_is_never_called_more_than_its_hourly_cap():
+    async def scenario():
+        controller = PollController(concurrency=1, launch_interval=0, max_calls_per_hour=3)
+        argv = [sys.executable, "-c", "pass"]
+        # "host1" and "host1:squeue" are the same machine, so they share one allowance.
+        results = [
+            await controller.poll("host1" if i % 2 else "host1:squeue", argv) for i in range(5)
+        ]
+        other = await controller.poll("host2", argv)
+        return controller, results, other
+
+    controller, results, other = asyncio.run(scenario())
+    assert [result is not None for result in results] == [True, True, True, False, False]
+    assert other is not None, "another machine keeps its own allowance"
+    assert controller.rate_limited == {"host1": 2}

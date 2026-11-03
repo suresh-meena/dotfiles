@@ -63,6 +63,8 @@ class HubConfig:
     scheduler_timezone: str = "UTC"
     launch_interval_seconds: float = 2.0
     ssh_concurrency: int = 2
+    # A hard ceiling on SSH calls to any one machine; normal polling is ~60 an hour.
+    max_calls_per_target_per_hour: int = 180
     remote_timeout_seconds: float = 20.0
     snapshot_stdout_bytes: int = MAX_SNAPSHOT_STDOUT_BYTES
     stderr_bytes: int = MAX_STDERR_BYTES
@@ -155,6 +157,7 @@ class HubConfig:
         integer_fields = (
             (self.bind_port, "bind_port"),
             (self.ssh_concurrency, "ssh_concurrency"),
+            (self.max_calls_per_target_per_hour, "max_calls_per_target_per_hour"),
             (self.snapshot_stdout_bytes, "snapshot_stdout_bytes"),
             (self.stderr_bytes, "stderr_bytes"),
             (self.retention_days, "retention_days"),
@@ -215,6 +218,8 @@ class HubConfig:
             )
         if not 1 <= self.ssh_concurrency <= MAX_SSH_CONCURRENCY:
             raise ConfigError(f"ssh_concurrency must be 1..{MAX_SSH_CONCURRENCY}")
+        if not 10 <= self.max_calls_per_target_per_hour <= 3600:
+            raise ConfigError("max_calls_per_target_per_hour must be 10..3600")
         if not 1 <= self.remote_timeout_seconds <= MAX_REMOTE_TIMEOUT_SECONDS:
             raise ConfigError(
                 f"remote_timeout_seconds must be 1..{MAX_REMOTE_TIMEOUT_SECONDS:g}"
@@ -506,6 +511,7 @@ def load_config(path: Path | None = None) -> HubConfig:
             "inventory_interval_seconds",
             "launch_interval_seconds",
             "ssh_concurrency",
+            "max_calls_per_target_per_hour",
             "remote_timeout_seconds",
             "snapshot_stdout_bytes",
             "stderr_bytes",
@@ -589,6 +595,12 @@ def load_config(path: Path | None = None) -> HubConfig:
         ssh_concurrency=_integer(
             polling.get("ssh_concurrency", defaults.ssh_concurrency),
             "polling.ssh_concurrency",
+        ),
+        max_calls_per_target_per_hour=_integer(
+            polling.get(
+                "max_calls_per_target_per_hour", defaults.max_calls_per_target_per_hour
+            ),
+            "polling.max_calls_per_target_per_hour",
         ),
         remote_timeout_seconds=_number(
             polling.get("remote_timeout_seconds", defaults.remote_timeout_seconds),
