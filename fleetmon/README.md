@@ -115,12 +115,12 @@ service, or an implicit all-host selector for helper deployment.
 
 ## Configuration
 
-For a responsive dashboard with bounded helper overhead, use a two-second live poll and keep the slower history/scheduler work at one-minute intervals:
+For a responsive dashboard with bounded helper overhead, use a two-second live poll, keep history at one minute, and ask shared Slurm login nodes only every five minutes (the default; each poll is an SSH session on a machine other people use):
 
 ```toml
 [polling]
 interval_seconds = 2
-scheduler_interval_seconds = 60
+scheduler_interval_seconds = 300
 history_interval_seconds = 60
 ```
 

@@ -14,7 +14,7 @@ from fleetmon.config import (
 def test_defaults_are_safe() -> None:
     config = HubConfig.defaults().validate()
     assert config.poll_interval_seconds == 60
-    assert config.scheduler_interval_seconds == 60
+    assert config.scheduler_interval_seconds == 300
     assert config.history_interval_seconds == 60
     assert config.ssh_concurrency == 2
     assert config.retention_days == 14

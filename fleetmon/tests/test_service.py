@@ -181,6 +181,57 @@ class SlurmAccountingFailureController(Controller):
         return PollResult(None, b"", b"", timed_out=True)
 
 
+class SlurmOldAccountingController(Controller):
+    """A Slurm that rejects the full sacct field list but accepts the compatible one."""
+
+    compat_fails = False
+
+    async def poll(self, target, argv, **kwargs):
+        self.calls.append((target, argv, kwargs))
+        if target.endswith(":squeue"):
+            return PollResult(0, b'{"jobs":[{"job_id":1,"state":"RUNNING"}]}', b"")
+        if target.endswith(":sacct") or (self.compat_fails and target.endswith(":sacct-compat")):
+            return PollResult(1, b"", b"sacct: error: invalid field requested")
+        row = "cluster|2|user|account|COMPLETED|gpu|node|||||gpu:1|gpu:1"
+        return PollResult(0, row.encode(), b"")
+
+
+def test_slurm_remembers_the_accounting_fields_a_cluster_accepts(tmp_path):
+    scheduler = Target("login1", True, "login", "slurm")
+    scheduler_inventory = Inventory([scheduler], {"slurm": Protocol("slurm", "slurm")})
+    controller = SlurmOldAccountingController(None)
+    runtime = HubRuntime(
+        config(tmp_path),
+        discover_fn=lambda: scheduler_inventory,
+        poll_controller=controller,
+    )
+    asyncio.run(runtime.refresh_inventory_async())
+
+    def labels():
+        return [call[0].split(":")[-1] for call in controller.calls]
+
+    try:
+        assert asyncio.run(runtime.poll_slurm_target(scheduler)) == "ok"
+        assert labels() == ["squeue", "sacct", "sacct-compat"]
+        assert runtime.state.target("login1")["sacct_compat"] is True
+
+        # Every later accounting poll goes straight to the list the cluster accepts.
+        controller.calls.clear()
+        runtime.state.update_target("login1", last_sacct_attempt=0)
+        assert asyncio.run(runtime.poll_slurm_target(scheduler)) == "ok"
+        assert labels() == ["squeue", "sacct-compat"]
+
+        # If that list stops working, forget it so the next poll probes again.
+        controller.calls.clear()
+        controller.compat_fails = True
+        runtime.state.update_target("login1", last_sacct_attempt=0)
+        assert asyncio.run(runtime.poll_slurm_target(scheduler)) == "partial"
+        assert labels() == ["squeue", "sacct-compat"]
+        assert runtime.state.target("login1")["sacct_compat"] is False
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     "changes", [{"polling_enabled": False}, {"disabled_targets": ("gpu1",)}]
 )
@@ -562,7 +613,7 @@ def test_scheduler_becomes_stale_when_last_query_is_old(tmp_path):
     scheduler = Target("login1", True, "login", "slurm")
     scheduler_inventory = Inventory([scheduler], {"slurm": Protocol("slurm", "slurm")})
     runtime = HubRuntime(
-        config(tmp_path, poll_interval_seconds=30),
+        config(tmp_path, poll_interval_seconds=30, scheduler_interval_seconds=60),
         discover_fn=lambda: scheduler_inventory,
         poll_controller=Controller(None),
     )

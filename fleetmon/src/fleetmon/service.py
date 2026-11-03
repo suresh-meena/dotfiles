@@ -37,6 +37,7 @@ from .scheduler import SchedulerClient
 from .slurm import (
     MAX_SCHEDULER_ROWS,
     SACCT_COMPAT_FIELDS,
+    SACCT_FIELDS,
     fleetctl_slurm_argv,
     parse_sacct,
     parse_squeue,
@@ -59,6 +60,9 @@ RETENTION_MAX_PAUSE_SECONDS = 5.0
 MAX_CAPTURE_SKEW_SECONDS = 24 * 60 * 60
 STALE_AFTER_POLL_INTERVALS = 2
 SCHEDULER_MIN_INTERVAL_SECONDS = 60.0
+# A cluster that rejects the full sacct field list keeps being asked with the
+# compatible one; the full list is retried this often in case Slurm was upgraded.
+SACCT_REPROBE_SECONDS = 7 * 24 * 3600
 SCHEDULE_TICK_SECONDS = 0.2
 SCHEDULE_MAX_TICK_SECONDS = 1.0
 HUB_HEALTH_INTERVAL_SECONDS = 30.0
@@ -650,13 +654,23 @@ class HubRuntime:
             if start < minimum_start or start > now:
                 start = minimum_start
             tz = self.config.scheduler_timezone
+            # Older schedulers reject the newer accounting fields. Once one has
+            # answered only to the compatible list, ask for that directly instead
+            # of sending a request that is known to fail every time.
+            compat_known = (
+                bool(target_state.get("sacct_compat"))
+                and time.time() - float(target_state.get("sacct_compat_at", 0) or 0)
+                < SACCT_REPROBE_SECONDS
+            )
+            used_compat = compat_known
             accounting = await self._poll_slurm_command(
                 target,
-                "sacct",
+                "sacct-compat" if compat_known else "sacct",
                 sacct_argv(
                     sacct_local_time(start, tz),
                     sacct_local_time(now, tz),
                     tz,
+                    compat=compat_known,
                 ),
             )
             rows: list[dict[str, str | None]] | None = None
@@ -667,7 +681,10 @@ class HubRuntime:
                 and not accounting.overflow
             ):
                 try:
-                    rows = parse_sacct(accounting.stdout)
+                    rows = parse_sacct(
+                        accounting.stdout,
+                        fields=SACCT_COMPAT_FIELDS if used_compat else SACCT_FIELDS,
+                    )
                 except (UnicodeDecodeError, ValueError):
                     return await self._local(
                         self._slurm_accounting_failure, target, "invalid_json"
@@ -677,9 +694,16 @@ class HubRuntime:
                 and not accounting.timed_out
                 and not accounting.overflow
             ):
-                # Older schedulers reject newer accounting fields; one bounded
-                # retry with the compatibility field set.
-                accounting = await self._poll_slurm_command(
+                if compat_known:
+                    # The remembered field set stopped working: forget it, so
+                    # the next attempt probes the full list again.
+                    await self._local(
+                        self.state.update_target, target.name, sacct_compat=False
+                    )
+                else:
+                    # One bounded retry with the compatibility field set.
+                    used_compat = True
+                accounting = None if compat_known else await self._poll_slurm_command(
                     target,
                     "sacct-compat",
                     sacct_argv(
@@ -713,6 +737,12 @@ class HubRuntime:
                     last_sacct_attempt=time.time(),
                     sacct_watermark=new_watermark,
                     sacct_last_error=None,
+                    sacct_compat=used_compat,
+                    **(
+                        {"sacct_compat_at": time.time()}
+                        if used_compat and not compat_known
+                        else {}
+                    ),
                 )
                 await self._local(
                     self.db.set_slurm_state, target.name, new_watermark, "live"

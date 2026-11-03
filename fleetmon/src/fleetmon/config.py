@@ -56,7 +56,8 @@ class HubConfig:
     include_tag: str | None = None
     exclude_tag: str | None = None
     poll_interval_seconds: float = 60.0
-    scheduler_interval_seconds: float = 60.0
+    # Scheduler targets are shared login nodes: ask them gently by default.
+    scheduler_interval_seconds: float = 300.0
     history_interval_seconds: float = 60.0
     inventory_interval_seconds: float = 300.0
     scheduler_timezone: str = "UTC"
